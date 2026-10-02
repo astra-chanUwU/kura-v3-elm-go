@@ -14,9 +14,27 @@ import (
 // health endpoint usable before PostgreSQL is configured.
 func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r := chi.NewRouter()
+	r.Use(localDevCORS)
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
 	return r
+}
+
+func localDevCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin == "http://localhost:8000" || origin == "http://127.0.0.1:8000" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", http.MethodGet)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {
