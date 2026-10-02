@@ -1,6 +1,6 @@
 # Kura V3 frontend design — Library workspace
 
-Status: approved-for-review design package. Implementation has not started.
+Status: steps 1–6 of the implementation sequence (§6) are built in `web/`, plus grid virtualization. Steps 7–10 need Go/API work.
 
 This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
@@ -49,7 +49,7 @@ Examples use the seeded demo rows (`make db-seed`, query `demo`), for instance `
 
 When the docked Inspector's own width falls below 300px (CSS container query on the inspector), it switches to a single-column layout: labels above values, tags wrap, history collapses to the last three entries.
 
-Drawers are non-modal: no backdrop, no focus trap, `Esc` closes them when focus is inside. Docked/drawer/hidden preference persists per breakpoint class.
+Drawers are non-modal: no backdrop, no focus trap; `Esc` closes an open drawer before it does anything else. Whether each docked panel is shown persists in `localStorage`; drawers start closed.
 
 ---
 
@@ -137,7 +137,7 @@ type alias ReturnPoint =
 type PanelState = Docked | DrawerOpen | DrawerClosed
 
 type alias Model =
-    { route : Route              -- ?q=…&post=…&view=grid|loupe
+    { route : Route              -- ?q=…, plus &post=…&view=loupe while Loupe is open
     , draftQuery : String
     , search : SearchState
     , sequence : Sequence
@@ -253,7 +253,7 @@ Global commands are ignored while focus is in an editable field, except `Esc`. S
 **Compare rules.** 0–1 selected: select = active, candidate = next item in the sequence. Exactly 2 selected: those two, active on the left. More than 2: select = active (or first selected), `←` `→` cycle the candidate through the other selected items.
 **Survey rules.** Fewer than 2 selected: stay put, StatusBar hint "Select 2–6 images to survey". 2–6: all of them. More than 6: the first 6 in sequence order starting at active, with the hint "Showing 6 of 9 selected".
 
-**Focus order.** TopBar → Navigator → FilterBar → Stage (one tab stop; `role="grid"`, roving `tabindex`, `aria-selected` per cell, active cell has `tabindex="0"`) → Filmstrip (one tab stop) → Inspector → StatusBar. Changing active by keyboard moves DOM focus with it via `Browser.Dom.focus`.
+**Focus order.** TopBar → Navigator → FilterBar → Stage (one tab stop; `role="listbox"` with `aria-multiselectable`, roving `tabindex`, `aria-selected` per cell, active cell has `tabindex="0"`) → Filmstrip (one tab stop) → Inspector → StatusBar. Changing active by keyboard moves DOM focus with it via `Browser.Dom.focus`.
 
 ### Pointer
 
@@ -278,20 +278,20 @@ Marquee drag-selection and panel resizing are deferred.
 
 ## 6. Implementation sequence
 
-| # | Step | Kind |
-| --- | --- | --- |
-| 1 | Move CSS to `web/kura.css` with tokens; build the region shell (TopBar, Navigator, Stage, Inspector, StatusBar) and breakpoints with placeholder panels. | Visual, Elm only |
-| 2 | `Domain.Sequence`, `Domain.Selection`, `App.Keyboard`, `App.Route`; replace `List` + `Maybe Int` with `Array` + active/selected/anchor; roving focus. | Elm only |
-| 3 | Uniform-cell grid with density slider, cell extras, missing-media state, prefs port. | Visual, Elm only |
-| 4 | Loupe as a Stage mode, Filmstrip, return point and scroll/focus restoration; URL `post`/`view`. | Elm only |
-| 5 | Compare and Survey. | Elm only |
-| 6 | Inspector using `PostSummary` fields (id, dims, media type, URLs; tags when present); FilterBar chips; keep stale results while searching; prune selection across re-queries. | Elm only |
-| 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then grid virtualization and incremental loading. | **[API]** + Elm |
-| 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm |
-| 9 | Empty query browses newest posts (today it returns `[]`); Navigator "All posts". | **[API]** |
-| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm |
+| # | Step | Kind | State |
+| --- | --- | --- | --- |
+| 1 | Move CSS to `web/kura.css` with tokens; build the region shell (TopBar, Navigator, Stage, Inspector, StatusBar) and breakpoints with placeholder panels. | Visual, Elm only | Done |
+| 2 | `Domain.Sequence`, `Domain.Selection`, `App.Keyboard`, `App.Route`; replace `List` + `Maybe Int` with `Array` + active/selected/anchor; roving focus. | Elm only | Done |
+| 3 | Uniform-cell grid with density slider, cell extras, missing-media state, prefs port. | Visual, Elm only | Done, virtualized |
+| 4 | Loupe as a Stage mode, Filmstrip, return point and scroll/focus restoration; URL `post`/`view`. | Elm only | Done |
+| 5 | Compare and Survey. | Elm only | Done |
+| 6 | Inspector using `PostSummary` fields (id, dims, media type, URLs; tags when present); FilterBar chips; keep stale results while searching; prune selection across re-queries. | Elm only | Done |
+| 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then incremental loading near the end of the grid. The grid is already virtualized. | **[API]** + Elm | Open |
+| 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm | Open |
+| 9 | Empty query browses newest posts (today it returns `[]`); Navigator "All posts". | **[API]** | Open |
+| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Open |
 
-Steps 1–6 need no backend change and can be verified with the 15 seeded `demo` rows.
+Steps 1–6 need no backend change and can be verified with the 15 seeded `demo` rows. Until steps 8 and 10 land, the Inspector shows placeholders for source/artist/hash/history, and `T`, `B`, `F` and their buttons report that the API is missing.
 
 ---
 

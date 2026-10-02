@@ -1,6 +1,6 @@
 # Kura V3 frontend design handoff — Opus 5.5
 
-Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Waiting for the user's signal before Elm implementation begins. Do not implement or commit frontend code in this handoff.
+Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Elm implementation of its steps 1–6 has landed; the remaining steps (7–10) need Go/API changes and are tracked in that document's implementation sequence.
 
 ## Goal
 

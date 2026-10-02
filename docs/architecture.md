@@ -59,7 +59,7 @@ Domain mutations create immutable revisions. A revert creates another revision t
 
 ## Frontend shape
 
-Elm code is organized by application, domain, API, page, feature, and UI boundaries. The first media slice should establish interfaces for `MediaGrid`, `Selection`, `QuickLook`, `QueryEditor`, and `TagEditor` before adding broad feature surface. Cursor-based result loading, keyboard navigation, density, and virtualization are later behaviors behind those interfaces.
+Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading and tag editing are still to come. See `docs/frontend-design.md`.
 
 ## Deferred infrastructure
 
