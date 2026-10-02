@@ -56,10 +56,19 @@ append posts sequence =
         existing =
             List.filterMap (\index -> get index sequence) (List.range 0 (length sequence - 1))
 
-        additions =
-            List.filter (\post -> not (member post.id sequence)) posts
+        ( _, reversedAdditions ) =
+            List.foldl
+                (\post (seen, additions) ->
+                    if Set.member post.id seen then
+                        ( seen, additions )
+
+                    else
+                        ( Set.insert post.id seen, post :: additions )
+                )
+                ( Set.fromList (List.map .id existing), [] )
+                posts
     in
-    fromList (existing ++ additions)
+    fromList (existing ++ List.reverse reversedAdditions)
 
 
 length : Sequence -> Int
