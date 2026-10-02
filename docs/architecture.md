@@ -22,6 +22,33 @@ Elm MediaGrid
 
 This is a design boundary for the next milestone. The current scaffold keeps the server free of database dependencies and renders an Elm shell without making a network request.
 
+The first API response keeps the browser contract independent from PostgreSQL
+rows:
+
+```http
+GET /api/posts?q=cat
+```
+
+```json
+{
+  "posts": [
+    {
+      "id": "post-123",
+      "preview_url": "/media/post-123/preview.jpg",
+      "original_url": "/media/post-123/original.jpg",
+      "media_type": "image/jpeg",
+      "width": 640,
+      "height": 480
+    }
+  ]
+}
+```
+
+The HTTP layer depends on a `posts.Searcher` interface. The PostgreSQL adapter
+will bind the search string to the handwritten query and map selected columns
+to `PostSummary`; it does not expose database rows directly. Until an adapter
+is configured, `GET /api/posts` returns `503` with `{ "error": "post search unavailable" }`, while `/health` remains available.
+
 ## Server shape
 
 `server/cmd/kura-server` is the executable. Reusable HTTP and domain packages belong under `server/internal/`, so the future CLI can call the public HTTP API instead of importing server implementation details. The intended database path is handwritten SQL, sqlc-generated types, and pgx; no ORM is planned.
