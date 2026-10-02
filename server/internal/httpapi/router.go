@@ -28,6 +28,7 @@ func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r.Use(localDevCORS)
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
+	r.Get("/api/posts/{id}", postDetail(searchers...))
 	r.Handle("/media/*", http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot()))))
 	return r
 }
@@ -117,6 +118,40 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func postDetail(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(chi.URLParam(r, "id"))
+		parsed, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeJSONError(w, http.StatusNotFound, "post not found")
+			return
+		}
+		if len(searchers) == 0 || searchers[0] == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "post detail unavailable")
+			return
+		}
+		detailer, ok := searchers[0].(posts.PostDetailer)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "post detail unavailable")
+			return
+		}
+		detail, err := detailer.GetPostDetail(r.Context(), strconv.FormatInt(parsed, 10))
+		if err != nil {
+			if errors.Is(err, posts.ErrNotFound) {
+				writeJSONError(w, http.StatusNotFound, "post not found")
+				return
+			}
+			if errors.Is(err, posts.ErrUnavailable) {
+				writeJSONError(w, http.StatusServiceUnavailable, "post detail unavailable")
+				return
+			}
+			writeJSONError(w, http.StatusInternalServerError, "post detail failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
 	}
 }
 

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,6 +74,61 @@ func TestSearchPostsDefaultsAndEmptyQuery(t *testing.T) {
 func request(t *testing.T, handler http.Handler, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/posts"+query, nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	return resp
+}
+
+type fakeDetailSearcher struct {
+	fakeSearcher
+	detail posts.PostDetail
+	err    error
+	id     string
+}
+
+func (f *fakeDetailSearcher) GetPostDetail(_ context.Context, id string) (posts.PostDetail, error) {
+	f.id = id
+	return f.detail, f.err
+}
+
+func TestPostDetailJSONAndErrors(t *testing.T) {
+	fake := &fakeDetailSearcher{detail: posts.PostDetail{
+		PostSummary: posts.PostSummary{ID: "2004", PreviewURL: "/preview", OriginalURL: "/original", MediaType: "image/jpeg", Width: 679, Height: 437, Tags: []string{"demo", "kson"}},
+		Source:      "demo/kson.jpeg", Artist: "Kura Demo", Hash: "sha256:test", FileSize: 165554, CreatedAt: "2026-01-02 00:00:04+00",
+	}}
+	r := NewRouter(fake)
+	resp := requestPath(t, r, "/api/posts/2004")
+	if resp.Code != http.StatusOK || fake.id != "2004" {
+		t.Fatalf("unexpected detail response: status=%d id=%q", resp.Code, fake.id)
+	}
+	var got posts.PostDetail
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != fake.detail.Source || got.FileSize != fake.detail.FileSize || len(got.Tags) != 2 {
+		t.Fatalf("detail JSON lost fields: %#v", got)
+	}
+
+	fake.err = posts.ErrNotFound
+	if resp := requestPath(t, r, "/api/posts/2004"); resp.Code != http.StatusNotFound {
+		t.Fatalf("missing detail status=%d", resp.Code)
+	}
+	fake.err = posts.ErrUnavailable
+	if resp := requestPath(t, r, "/api/posts/2004"); resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable detail status=%d", resp.Code)
+	}
+	fake.err = errors.New("database exploded")
+	if resp := requestPath(t, r, "/api/posts/2004"); resp.Code != http.StatusInternalServerError {
+		t.Fatalf("storage detail status=%d", resp.Code)
+	}
+	if resp := requestPath(t, r, "/api/posts/not-an-id"); resp.Code != http.StatusNotFound {
+		t.Fatalf("invalid detail id status=%d", resp.Code)
+	}
+}
+
+func requestPath(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 	return resp

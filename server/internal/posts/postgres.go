@@ -2,7 +2,10 @@ package posts
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -61,6 +64,7 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 			&post.MediaType,
 			&post.Width,
 			&post.Height,
+			&post.Tags,
 		); err != nil {
 			return SearchPage{}, err
 		}
@@ -85,4 +89,34 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 	}
 	page.NextCursor = &token
 	return page, nil
+}
+
+// GetPostDetail returns visible post metadata for the Inspector. Deleted rows
+// are intentionally indistinguishable from missing rows.
+func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDetail, error) {
+	if s == nil || s.pool == nil {
+		return PostDetail{}, ErrUnavailable
+	}
+	var detail PostDetail
+	err := s.pool.QueryRow(ctx, GetPostDetailSQL, id).Scan(
+		&detail.ID,
+		&detail.PreviewURL,
+		&detail.OriginalURL,
+		&detail.MediaType,
+		&detail.Width,
+		&detail.Height,
+		&detail.Source,
+		&detail.Artist,
+		&detail.Hash,
+		&detail.FileSize,
+		&detail.CreatedAt,
+		&detail.Tags,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PostDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return PostDetail{}, err
+	}
+	return detail, nil
 }

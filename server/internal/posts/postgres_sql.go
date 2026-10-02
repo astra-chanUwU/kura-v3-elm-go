@@ -10,11 +10,33 @@ SELECT
     original_url,
     media_type,
     width,
-    height
+    height,
+    tags
 FROM posts
 WHERE deleted_at IS NULL
   AND search_document @@ websearch_to_tsquery('simple', $1)
   AND ($2::bigint IS NULL OR id < $2::bigint)
 ORDER BY id DESC
 LIMIT $3
+`
+
+// GetPostDetailSQL fetches the complete visible Inspector shape. The ID is
+// supplied as text so the HTTP/domain contract remains stable.
+const GetPostDetailSQL = `
+SELECT
+    id::text,
+    preview_url,
+    original_url,
+    media_type,
+    width,
+    height,
+    source,
+    artist,
+    hash,
+    file_size,
+    created_at::text,
+    tags
+FROM posts
+WHERE deleted_at IS NULL
+  AND id = $1::bigint
 `

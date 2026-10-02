@@ -1,6 +1,6 @@
 # Kura V3 frontend design — Library workspace
 
-Status: the Library workspace, grid virtualization, and cursor pagination are built in `web/` and Go. Steps 7–10 need post detail and mutation APIs.
+Status: the Library workspace, grid virtualization, cursor pagination, and read-only Inspector detail loading are built in `web/` and Go. Remaining steps need mutation APIs.
 
 This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
@@ -195,7 +195,7 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `Domain.Sequence` | new | Array + index lookup, next/prev/clamp, window around an index, range between two ids, append page. |
 | `Domain.Selection` | new | `Selection` and its operations: `click`, `toggle`, `range`, `addRange`, `selectAll`, `clear`, `prune`, `targets`. Pure. |
 | `Domain.Query` | new | Query text helpers: split into chips, `addTerm`, `excludeTerm` (`-tag`), `removeTerm`. Uses the PostgreSQL websearch syntax the API already accepts until the KuraQL parser lands. |
-| `Api.Post` | change | `search` accepts an optional cursor and limit; `detail id` remains **[API]**. |
+| `Api.Post` | change | `search` accepts an optional cursor and limit; `detail id` loads Inspector metadata; mutations remain **[API]**. |
 | `Page.Library` | new | Model/Msg/update/view for the workspace: regions, mode, return point, panel states, keyboard dispatch. |
 | `Feature.MediaGrid` | rewrite | Virtualized uniform grid; `Config msg` record (sequence, selection, thumb, extras, viewport, `onCell : PostId -> Modifiers -> msg`, `onOpen`, `onScroll`, `onMediaError`). |
 | `Feature.MediaGrid.Layout` | new | Pure geometry: columns, visible row range, offset of an index, scroll-to-reveal. |

@@ -8,7 +8,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
-import Domain.Post exposing (PostSummary, SearchResponse)
+import Domain.Post exposing (PostDetail, PostSummary, SearchResponse)
 import Domain.Query as Query
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
@@ -27,6 +27,7 @@ import Html.Attributes exposing (attribute, class, classList, id, tabindex, titl
 import Html.Events exposing (onClick, preventDefaultOn)
 import Http
 import Json.Decode as Decode
+import Dict exposing (Dict)
 import Process
 import Set exposing (Set)
 import Task exposing (Task)
@@ -78,6 +79,12 @@ type SearchRequest
     | MoreRequest
 
 
+type DetailState
+    = DetailLoading
+    | DetailReady PostDetail
+    | DetailFailed String
+
+
 type alias Model =
     { key : Nav.Key
     , apiBase : String
@@ -86,6 +93,7 @@ type alias Model =
     , search : SearchState
     , requestId : Int
     , nextCursor : Maybe String
+    , details : Dict String DetailState
     , sequence : Sequence
     , selection : Selection
     , mode : Mode
@@ -144,6 +152,7 @@ init flagsValue url key =
             , search = Idle
             , requestId = 0
             , nextCursor = Nothing
+            , details = Dict.empty
             , sequence = Sequence.empty
             , selection = Selection.empty
             , mode = Grid
@@ -212,6 +221,7 @@ type Msg
     | DraftChanged String
     | SearchSubmitted
     | SearchCompleted Int SearchRequest (Result Http.Error SearchResponse)
+    | DetailCompleted String (Result Http.Error PostDetail)
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -251,8 +261,15 @@ and keeps the Filmstrip centered on the active post.
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     let
-        ( next, cmd ) =
+        ( updated, cmd ) =
             updateHelp msg model
+
+        ( next, detailCmd ) =
+            if updated.selection.active /= model.selection.active then
+                prepareActiveDetail updated
+
+            else
+                ( updated, Cmd.none )
 
         urlFollows =
             case msg of
@@ -288,8 +305,9 @@ update msg model =
 
                 ( _, Nothing ) ->
                     Cmd.none
+
     in
-    ( synced, Cmd.batch [ cmd, syncCmd, filmstripCmd ] )
+    ( synced, Cmd.batch [ cmd, syncCmd, filmstripCmd, detailCmd ] )
 
 
 updateHelp : Msg -> Model -> ( Model, Cmd Msg )
@@ -372,6 +390,22 @@ updateHelp msg model =
 
                     ( _, Err error ) ->
                         ( { model | search = Failed (httpErrorToString error), pendingRoute = Nothing }, Cmd.none )
+
+        DetailCompleted postId result ->
+            ( { model
+                | details =
+                    Dict.insert postId
+                        (case result of
+                            Ok detail ->
+                                DetailReady detail
+
+                            Err error ->
+                                DetailFailed (httpErrorToString error)
+                        )
+                        model.details
+              }
+            , Cmd.none
+            )
 
         Retry ->
             if String.trim model.query == "" then
@@ -736,6 +770,7 @@ clearResults model =
         , search = Idle
         , requestId = model.requestId + 1
         , nextCursor = Nothing
+        , details = Dict.empty
         , sequence = Sequence.empty
         , selection = Selection.empty
         , mode = Grid
@@ -1404,6 +1439,64 @@ activeIndex model =
     model.selection.active |> Maybe.andThen (\postId -> Sequence.indexOf postId model.sequence)
 
 
+activeDetail : Model -> Maybe PostDetail
+activeDetail model =
+    model.selection.active
+        |> Maybe.andThen (\postId -> Dict.get postId model.details)
+        |> Maybe.andThen
+            (\state ->
+                case state of
+                    DetailReady detail ->
+                        Just detail
+
+                    _ ->
+                        Nothing
+            )
+
+
+activeDetailLoading : Model -> Bool
+activeDetailLoading model =
+    model.selection.active
+        |> Maybe.andThen (\postId -> Dict.get postId model.details)
+        |> Maybe.map (\state -> state == DetailLoading)
+        |> Maybe.withDefault False
+
+
+activeDetailError : Model -> Maybe String
+activeDetailError model =
+    model.selection.active
+        |> Maybe.andThen (\postId -> Dict.get postId model.details)
+        |> Maybe.andThen
+            (\state ->
+                case state of
+                    DetailFailed message ->
+                        Just message
+
+                    _ ->
+                        Nothing
+            )
+
+
+prepareActiveDetail : Model -> ( Model, Cmd Msg )
+prepareActiveDetail model =
+    case model.selection.active of
+        Nothing ->
+            ( model, Cmd.none )
+
+        Just postId ->
+            case Dict.get postId model.details of
+                Just (DetailLoading) ->
+                    ( model, Cmd.none )
+
+                Just (DetailReady _) ->
+                    ( model, Cmd.none )
+
+                _ ->
+                    ( { model | details = Dict.insert postId DetailLoading model.details }
+                    , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                    )
+
+
 activePost : Model -> Maybe PostSummary
 activePost model =
     model.selection.active |> Maybe.andThen (\postId -> Sequence.find postId model.sequence)
@@ -1978,6 +2071,9 @@ inspectorView model =
             { apiBase = model.apiBase
             , presentation = inspectorPresentation model
             , active = activePost model
+            , detail = activeDetail model
+            , detailLoading = activeDetailLoading model
+            , detailError = activeDetailError model
             , selectedCount = Selection.count model.selection
             , commonTags = commonTags model
             , missing = model.missing

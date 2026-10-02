@@ -54,6 +54,11 @@ returns `503` and storage failures return `500`. Overlong queries, invalid
 limits, and malformed or query-mismatched cursors return `400`. PostgreSQL's web
 search parser accepts ordinary multiword input.
 
+The Inspector loads read-only metadata on demand from `GET /api/posts/{id}`.
+The detail response extends `PostSummary` with source, artist, hash, file size,
+creation time, and tags; deleted rows return `404` and an unconfigured detail
+adapter returns `503`.
+
 ## Server shape
 
 `server/cmd/kura-server` is the executable. Reusable HTTP and domain packages belong under `server/internal/`, so the future CLI can call the public HTTP API instead of importing server implementation details. The intended database path is handwritten SQL, sqlc-generated types, and pgx; no ORM is planned.

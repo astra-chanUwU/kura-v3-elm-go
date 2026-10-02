@@ -1,6 +1,6 @@
-module Api.Post exposing (search, mediaUrl)
+module Api.Post exposing (detail, search, mediaUrl)
 
-import Domain.Post exposing (SearchResponse, responseDecoder)
+import Domain.Post exposing (PostDetail, SearchResponse, detailDecoder, responseDecoder)
 import Http
 import String
 import Url.Builder
@@ -11,6 +11,14 @@ search apiBase query cursor limit toMsg =
     Http.get
         { url = endpoint apiBase query cursor limit
         , expect = Http.expectJson toMsg responseDecoder
+        }
+
+
+detail : String -> String -> (Result Http.Error PostDetail -> msg) -> Cmd msg
+detail apiBase postId toMsg =
+    Http.get
+        { url = detailEndpoint apiBase postId
+        , expect = Http.expectJson toMsg detailDecoder
         }
 
 
@@ -34,6 +42,15 @@ endpoint apiBase query cursor limit =
 
     else
         Url.Builder.crossOrigin apiBase [ "api", "posts" ] params
+
+
+detailEndpoint : String -> String -> String
+detailEndpoint apiBase postId =
+    if String.trim apiBase == "" then
+        Url.Builder.absolute [ "api", "posts", postId ] []
+
+    else
+        Url.Builder.crossOrigin apiBase [ "api", "posts", postId ] []
 
 
 mediaUrl : String -> String -> String

@@ -11,4 +11,10 @@ if ! command -v psql >/dev/null 2>&1; then
 fi
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$repo_root/db/migrations/001_posts.sql"
+for migration in "$repo_root"/db/migrations/*.sql; do
+    [ -f "$migration" ] || continue
+    case "$migration" in
+        *.gitkeep) continue ;;
+    esac
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration"
+done

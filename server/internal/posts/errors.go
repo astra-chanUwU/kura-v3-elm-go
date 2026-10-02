@@ -9,3 +9,6 @@ var ErrUnavailable = errors.New("post search unavailable")
 // ErrInvalidQuery indicates that PostgreSQL could not parse a full-text
 // search expression supplied by the caller.
 var ErrInvalidQuery = errors.New("invalid post search query")
+
+// ErrNotFound indicates that a post does not exist or has been deleted.
+var ErrNotFound = errors.New("post not found")
