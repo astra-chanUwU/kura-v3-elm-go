@@ -1,9 +1,8 @@
 package posts
 
 // SearchPostsSQL is the handwritten query contract for the PostgreSQL
-// adapter. The adapter will bind $1 to the user query and keep result shaping
-// in Go. The schema and full-text index are introduced with the first DB
-// migration, so no database driver is needed by this contract package yet.
+// adapter. The adapter binds $1 to the user query and keeps result shaping in
+// Go. The schema and full-text index are introduced by db/migrations.
 const SearchPostsSQL = `
 SELECT
     id::text,

@@ -20,7 +20,7 @@ post summaries
 Elm MediaGrid
 ```
 
-This is a design boundary for the next milestone. The current scaffold keeps the server free of database dependencies and renders an Elm shell without making a network request.
+The Go adapter now executes this boundary against PostgreSQL. `db/migrations/001_posts.sql` defines the small searchable `posts` table, and `db/seed.sql` provides deterministic local rows for development.
 
 The first API response keeps the browser contract independent from PostgreSQL
 rows:
@@ -45,9 +45,11 @@ GET /api/posts?q=cat
 ```
 
 The HTTP layer depends on a `posts.Searcher` interface. The PostgreSQL adapter
-will bind the search string to the handwritten query and map selected columns
-to `PostSummary`; it does not expose database rows directly. Until an adapter
-is configured, `GET /api/posts` returns `503` with `{ "error": "post search unavailable" }`, while `/health` remains available.
+binds the search string to the handwritten query and maps selected columns to
+`PostSummary`; it does not expose database rows directly. Empty queries short
+circuit to an empty response, while an unconfigured adapter returns `503` and
+storage failures return `500`. Overlong queries return `400`. PostgreSQL's web
+search parser accepts ordinary multiword input.
 
 ## Server shape
 
@@ -61,4 +63,4 @@ Elm code is organized by application, domain, API, page, feature, and UI boundar
 
 ## Deferred infrastructure
 
-The foundation does not add Docker, Kubernetes, CI, Redis configuration, S3 configuration, authentication libraries, CSS or component frameworks, queues, realtime transports, or Rust crates. Add one only when a concrete Kura requirement and a bounded interface justify it.
+The foundation does not add Docker, Kubernetes, CI, Redis configuration, S3 configuration, authentication libraries, CSS or component frameworks, queues, realtime transports, or Rust crates. Add one only when a concrete Kura requirement and a bounded interface justify it. PostgreSQL setup is intentionally limited to `make db-migrate` and the explicit `make db-seed` development command, which require a local `psql` client and `DATABASE_URL`; no deployment workflow is implied.

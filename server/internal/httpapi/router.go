@@ -10,6 +10,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+const maxSearchQueryLength = 256
+
 // NewRouter returns the HTTP surface. A nil searcher keeps the scaffold's
 // health endpoint usable before PostgreSQL is configured.
 func NewRouter(searchers ...posts.Searcher) http.Handler {
@@ -46,13 +48,26 @@ func health(w http.ResponseWriter, _ *http.Request) {
 
 func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		if query == "" {
+			writeJSON(w, http.StatusOK, posts.SearchResponse{Posts: []posts.PostSummary{}})
+			return
+		}
+		if len([]rune(query)) > maxSearchQueryLength {
+			writeJSONError(w, http.StatusBadRequest, "search query is too long (maximum 256 characters)")
+			return
+		}
 		if len(searchers) == 0 || searchers[0] == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "post search unavailable")
 			return
 		}
 
-		result, err := searchers[0].SearchPosts(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")))
+		result, err := searchers[0].SearchPosts(r.Context(), query)
 		if err != nil {
+			if errors.Is(err, posts.ErrInvalidQuery) {
+				writeJSONError(w, http.StatusBadRequest, "invalid search query")
+				return
+			}
 			if errors.Is(err, posts.ErrUnavailable) {
 				writeJSONError(w, http.StatusServiceUnavailable, "post search unavailable")
 				return

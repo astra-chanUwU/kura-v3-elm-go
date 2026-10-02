@@ -4,12 +4,51 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kura V3</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; color: #25242a; background: #f5f4f1; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      .kura-shell { min-height: 100vh; }
+      .kura-header { display: flex; align-items: baseline; gap: 1.5rem; padding: 1.25rem clamp(1rem, 4vw, 3rem); border-bottom: 1px solid #dcdad3; background: #fbfaf8; }
+      .kura-header h1 { margin: 0; font-size: 1.3rem; letter-spacing: .02em; }
+      .kura-header nav { color: #6b6870; font-size: .9rem; }
+      .kura-main { max-width: 1440px; margin: 0 auto; padding: clamp(1rem, 3vw, 2.5rem); }
+      .search-panel { display: flex; gap: .6rem; max-width: 52rem; margin-bottom: .75rem; }
+      .search-input { flex: 1; min-width: 0; border: 1px solid #bdbab2; border-radius: .4rem; padding: .7rem .8rem; background: #fff; }
+      .search-input:focus { outline: 2px solid #5e77a8; outline-offset: 1px; }
+      .button { border: 1px solid #46444a; border-radius: .35rem; padding: .65rem .85rem; background: #46444a; color: #fff; }
+      .button-subtle { background: transparent; color: #46444a; border-color: #bdbab2; }
+      .search-status { min-height: 1.5rem; margin: .5rem 0 1rem; color: #6b6870; }
+      .search-error { display: flex; align-items: center; gap: .75rem; color: #9a3f36; }
+      .selection-bar { display: flex; align-items: center; gap: .75rem; min-height: 2.7rem; margin-bottom: .75rem; }
+      .selection-bar-empty { visibility: hidden; }
+      .selection-count { font-size: .9rem; font-weight: 600; }
+      .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .8rem; }
+      .media-card { min-width: 0; overflow: hidden; border: 1px solid #dedbd3; border-radius: .45rem; background: #fff; }
+      .media-card-selected { border-color: #5e77a8; box-shadow: 0 0 0 2px #dce5f6; }
+      .media-open { display: block; width: 100%; padding: 0; border: 0; background: #eceae5; aspect-ratio: var(--media-ratio, 1); overflow: hidden; }
+      .media-preview { display: block; width: 100%; height: 100%; object-fit: contain; }
+      .media-card-footer { display: flex; align-items: center; justify-content: space-between; gap: .4rem; padding: .5rem; }
+      .selection-toggle { display: inline-flex; align-items: center; gap: .25rem; padding: .25rem .35rem; border: 1px solid transparent; border-radius: .3rem; background: transparent; color: #46444a; font-size: .8rem; }
+      .selection-toggle:hover, .selection-toggle:focus-visible { border-color: #bdbab2; }
+      .selection-mark { font-size: 1rem; line-height: 1; }
+      .media-meta { margin: 0; color: #77737a; font-size: .72rem; text-align: right; }
+      .quicklook-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 1rem; background: rgba(25, 24, 28, .78); }
+      .quicklook-dialog { display: flex; flex-direction: column; max-width: min(92vw, 72rem); max-height: 94vh; padding: .8rem; border-radius: .5rem; background: #fbfaf8; box-shadow: 0 1rem 3rem rgba(0,0,0,.3); }
+      .quicklook-toolbar, .quicklook-actions { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+      .quicklook-position { margin: 0; color: #6b6870; font-size: .85rem; }
+      .quicklook-image { display: block; max-width: 88vw; max-height: 78vh; margin: .75rem auto; object-fit: contain; }
+      .empty-grid { min-height: 8rem; }
+      @media (max-width: 560px) { .media-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; } .media-card-footer { align-items: flex-start; flex-direction: column; } .media-meta { text-align: left; } }
+    </style>
   </head>
   <body>
     <div id="app"></div>
     <script src="dist/elm.js"></script>
     <script>
-      Elm.Main.init({ node: document.getElementById("app") });
+      Elm.Main.init({ node: document.getElementById("app"), flags: { apiBase: "http://localhost:8080" } });
     </script>
   </body>
 </html>
