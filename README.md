@@ -37,7 +37,11 @@ make web-serve        # serves web/ on http://localhost:8000
 go -C cli run ./cmd/kura search --json "cat demo"
 ```
 
-`make db-migrate` and `make db-seed` require both `DATABASE_URL` and the PostgreSQL `psql` client. `make db-setup` runs both commands for a fresh development database. Migrations never load or reset application data. The seed uses stable `/media/demo/...` URL paths; media fixture files and routes are not included yet, so the rows exercise search results but do not render actual images.
+`make db-migrate` and `make db-seed` require both `DATABASE_URL` and the PostgreSQL `psql` client. `make db-setup` runs both commands for a fresh development database. Migrations never load or reset application data. The seed uses stable `/media/demo/...` URL paths served by the local fixture route described below.
+
+The repository includes twelve small demo fixtures under `web/static/media/demo`, one copied from each supplied sample folder. They are development-only files totaling about 1.5 MB. The seed includes matching deterministic rows with the source folder name in `search_text`, so queries such as `kson` or `Ruin Explorers` return an image that the grid can load.
+
+The Go server serves `/media/...` from `MEDIA_ROOT`. When `MEDIA_ROOT` is unset, the documented `make server-run` command uses `../web/static/media` relative to the `server` module. Set `MEDIA_ROOT` to point at another local fixture directory when needed. The route uses Go's `http.FileServer` rooted at that directory and is intended for local demo media only; it does not provide production media storage.
 
 The health endpoint is `GET http://localhost:8080/health` and returns a small JSON status response. Search uses `GET /api/posts?q=cat` and returns post summaries from visible rows. Empty or whitespace-only queries return `{ "posts": [] }` without contacting PostgreSQL. Queries longer than 256 characters return `400`; an unconfigured database returns `503` and other storage failures return `500`. Search uses PostgreSQL's forgiving web search parser, which accepts ordinary multiword queries.
 
@@ -45,4 +49,4 @@ The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KU
 
 ## Next milestone
 
-The first search-to-MediaGrid slice is now wired through PostgreSQL and the CLI. The next product work can add the fuller lexer, parser, AST, validation, and query-planning layers, followed by real media fixtures and the frontend identity pass.
+The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. The next product work can add the fuller lexer, parser, AST, validation, and query-planning layers before the frontend identity pass.

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
@@ -13,13 +15,23 @@ import (
 const maxSearchQueryLength = 256
 
 // NewRouter returns the HTTP surface. A nil searcher keeps the scaffold's
-// health endpoint usable before PostgreSQL is configured.
+// health endpoint usable before PostgreSQL is configured. Local media is
+// served from MEDIA_ROOT when configured, or ../web/static/media when the
+// server is started with the documented `go -C server run` command.
 func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r := chi.NewRouter()
 	r.Use(localDevCORS)
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
+	r.Handle("/media/*", http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot()))))
 	return r
+}
+
+func mediaRoot() string {
+	if configured := strings.TrimSpace(os.Getenv("MEDIA_ROOT")); configured != "" {
+		return configured
+	}
+	return filepath.Join("..", "web", "static", "media")
 }
 
 func localDevCORS(next http.Handler) http.Handler {
