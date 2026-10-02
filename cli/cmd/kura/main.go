@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,8 +58,8 @@ Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
   --json            Output raw JSON response (pretty-printed)
   --jsonl           Output one JSON object per post (JSON Lines)
-  --limit N         Not yet supported by the API (GET /api/posts has no limit param)
-  --cursor CURSOR   Not yet supported by the API (no cursor pagination yet)
+  --limit N         Page size 1..60 (max 60, omit for server default)
+  --cursor CURSOR   Opaque pagination cursor from previous next_cursor
   -h, --help        Show this help
 
 Output:
@@ -69,15 +70,16 @@ Output:
   --jsonl           One JSON object per post, one line each. Empty results produce
                     no stdout. next_cursor, if present, is written to stderr as a hint.
 
-Unsupported flags:
-  --limit and --cursor are parsed but the current API does not support
-  pagination. Using either flag exits with a non-zero status and an explanatory
-  message instead of pretending to paginate.
+Pagination:
+  GET /api/posts?q=&cursor=&limit= returns {posts:[...],next_cursor:string|null}.
+  Use --limit 1..60 and --cursor from the previous response to page. Each
+  invocation makes one explicit request.
 
 Examples:
   kura search --api-url http://localhost:8080 cat
   KURA_API_URL=http://localhost:8080 kura search --json anime
   kura search --jsonl "landscape mountain"
+  kura search --limit 20 --cursor tok123 cat
 `
 
 type searchConfig struct {
@@ -144,22 +146,37 @@ func runSearch(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 1
 	}
 
-	// Explain unsupported flags rather than pretending.
-	if cfg.limitSet {
-		fmt.Fprintln(stderr, "error: flag --limit is not supported by the current API")
-		fmt.Fprintln(stderr, "the server's GET /api/posts does not accept a limit parameter (search always returns up to 60 results)")
-		fmt.Fprintln(stderr, "remove --limit and retry")
-		return 1
-	}
-	if cfg.cursorSet {
-		fmt.Fprintln(stderr, "error: flag --cursor is not supported by the current API")
-		fmt.Fprintln(stderr, "the server's GET /api/posts does not yet support cursor pagination (next_cursor is reserved for future use)")
-		fmt.Fprintln(stderr, "remove --cursor and retry")
-		return 1
-	}
 	if cfg.jsonOut && cfg.jsonlOut {
 		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
 		return 1
+	}
+
+	// Validate pagination flags: --limit 1..60, --cursor non-empty opaque.
+	limit := 0
+	if cfg.limitSet {
+		v := strings.TrimSpace(cfg.limitVal)
+		if v == "" {
+			fmt.Fprintln(stderr, "error: flag --limit requires a non-empty value")
+			return 1
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: invalid --limit %q: must be an integer between 1 and 60\n", cfg.limitVal)
+			return 1
+		}
+		if n < 1 || n > 60 {
+			fmt.Fprintf(stderr, "error: invalid --limit %d: must be between 1 and 60\n", n)
+			return 1
+		}
+		limit = n
+	}
+	cursor := ""
+	if cfg.cursorSet {
+		if strings.TrimSpace(cfg.cursorVal) == "" {
+			fmt.Fprintln(stderr, "error: flag --cursor requires a non-empty value")
+			return 1
+		}
+		cursor = cfg.cursorVal
 	}
 
 	// Validate api URL early for readable error.
@@ -172,7 +189,7 @@ func runSearch(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	result, err := c.Search(ctx, query)
+	result, err := c.SearchPage(ctx, query, cursor, limit)
 	if err != nil {
 		// Provide readable error. If APIError, message already includes status and server error.
 		fmt.Fprintf(stderr, "error: %v\n", err)

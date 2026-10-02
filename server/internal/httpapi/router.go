@@ -6,13 +6,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
 	"github.com/go-chi/chi/v5"
 )
 
-const maxSearchQueryLength = 256
+const (
+	maxSearchQueryLength = 256
+	defaultSearchLimit   = 60
+	maxSearchLimit       = 60
+)
 
 // NewRouter returns the HTTP surface. A nil searcher keeps the scaffold's
 // health endpoint usable before PostgreSQL is configured. Local media is
@@ -61,12 +66,35 @@ func health(w http.ResponseWriter, _ *http.Request) {
 func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
-		if query == "" {
-			writeJSON(w, http.StatusOK, posts.SearchResponse{Posts: []posts.PostSummary{}})
+		limit, err := parseLimit(r.URL.Query().Get("limit"), r.URL.Query().Has("limit"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "limit must be an integer from 1 to 60")
 			return
 		}
+		if query == "" && r.URL.Query().Has("cursor") {
+			writeJSONError(w, http.StatusBadRequest, "cursor cannot be used with an empty query")
+			return
+		}
+
+		var cursor *posts.Cursor
+		if rawCursor := r.URL.Query().Get("cursor"); rawCursor != "" {
+			decoded, decodeErr := posts.DecodeCursor(rawCursor, query)
+			if decodeErr != nil {
+				writeJSONError(w, http.StatusBadRequest, "invalid search cursor")
+				return
+			}
+			cursor = &decoded
+		} else if r.URL.Query().Has("cursor") {
+			writeJSONError(w, http.StatusBadRequest, "invalid search cursor")
+			return
+		}
+
 		if len([]rune(query)) > maxSearchQueryLength {
 			writeJSONError(w, http.StatusBadRequest, "search query is too long (maximum 256 characters)")
+			return
+		}
+		if strings.TrimSpace(query) == "" {
+			writeJSON(w, http.StatusOK, posts.SearchPage{Posts: []posts.PostSummary{}, NextCursor: nil})
 			return
 		}
 		if len(searchers) == 0 || searchers[0] == nil {
@@ -74,7 +102,7 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 			return
 		}
 
-		result, err := searchers[0].SearchPosts(r.Context(), query)
+		result, err := searchers[0].SearchPosts(r.Context(), query, cursor, limit)
 		if err != nil {
 			if errors.Is(err, posts.ErrInvalidQuery) {
 				writeJSONError(w, http.StatusBadRequest, "invalid search query")
@@ -90,6 +118,25 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func parseLimit(raw string, present bool) (int, error) {
+	if !present {
+		return defaultSearchLimit, nil
+	}
+	if raw == "" {
+		return 0, errors.New("invalid limit")
+	}
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0, errors.New("invalid limit")
+		}
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > maxSearchLimit {
+		return 0, errors.New("invalid limit")
+	}
+	return limit, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -172,3 +172,116 @@ func TestSearch_NilPostsNormalized(t *testing.T) {
 		t.Fatalf("expected 0 posts, got %d", len(res.Posts))
 	}
 }
+
+func TestSearchPage_PaginationParams(t *testing.T) {
+	var gotQ, gotCursor, gotLimit, gotRaw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQ = r.URL.Query().Get("q")
+		gotCursor = r.URL.Query().Get("cursor")
+		gotLimit = r.URL.Query().Get("limit")
+		gotRaw = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[],"next_cursor":null}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	_, err := c.SearchPage(context.Background(), "cat", "tok123", 20)
+	if err != nil {
+		t.Fatalf("SearchPage error: %v", err)
+	}
+	if gotQ != "cat" || gotCursor != "tok123" || gotLimit != "20" {
+		t.Fatalf("pagination params mismatch q=%q cursor=%q limit=%q raw=%q", gotQ, gotCursor, gotLimit, gotRaw)
+	}
+}
+
+func TestSearchPage_LimitBoundaries(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	// valid boundaries 1 and 60 should succeed
+	for _, lim := range []int{1, 60} {
+		hit = false
+		if _, err := c.SearchPage(context.Background(), "cat", "", lim); err != nil {
+			t.Fatalf("limit %d should succeed: %v", lim, err)
+		}
+		if !hit {
+			t.Fatalf("limit %d did not hit server", lim)
+		}
+	}
+	// invalid limits should error without request
+	for _, lim := range []int{0, -1, 61, 100} {
+		if lim == 0 {
+			// 0 means omit, should succeed
+			continue
+		}
+		hit = false
+		if _, err := c.SearchPage(context.Background(), "cat", "", lim); err == nil {
+			t.Fatalf("limit %d should fail", lim)
+		}
+		if hit {
+			t.Fatalf("invalid limit %d should not hit server", lim)
+		}
+		if _, err := c.SearchPage(context.Background(), "cat", "tok", lim); err == nil {
+			t.Fatalf("limit %d with cursor should fail", lim)
+		}
+	}
+}
+
+func TestSearchPage_CursorOpaqueEncoding(t *testing.T) {
+	var gotCursor string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCursor = r.URL.Query().Get("cursor")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	opaque := "a/b+c=123=="
+	if _, err := c.SearchPage(context.Background(), "cat", opaque, 10); err != nil {
+		t.Fatalf("SearchPage error: %v", err)
+	}
+	if gotCursor != opaque {
+		t.Fatalf("cursor mismatch got %q want %q", gotCursor, opaque)
+	}
+}
+
+func TestSearchPage_OmitEmptyCursorAndLimit(t *testing.T) {
+	var gotRaw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRaw = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	if _, err := c.SearchPage(context.Background(), "cat", "", 0); err != nil {
+		t.Fatalf("SearchPage error: %v", err)
+	}
+	if strings.Contains(gotRaw, "cursor=") || strings.Contains(gotRaw, "limit=") {
+		t.Fatalf("expected no cursor/limit params, got %q", gotRaw)
+	}
+}
+
+func TestSearch_IsWrapper(t *testing.T) {
+	var gotCursor, gotLimit string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCursor = r.URL.Query().Get("cursor")
+		gotLimit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[]}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	if _, err := c.Search(context.Background(), "hello"); err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if gotCursor != "" || gotLimit != "" {
+		t.Fatalf("Search wrapper should not send cursor/limit, got cursor=%q limit=%q", gotCursor, gotLimit)
+	}
+}

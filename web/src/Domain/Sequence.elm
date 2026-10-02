@@ -3,6 +3,7 @@ module Domain.Sequence exposing
     , empty
     , find
     , fromList
+    , append
     , get
     , idAt
     , ids
@@ -47,6 +48,18 @@ fromList posts =
                 |> List.indexedMap (\index post -> ( post.id, index ))
                 |> Dict.fromList
         }
+
+
+append : List PostSummary -> Sequence -> Sequence
+append posts sequence =
+    let
+        existing =
+            List.filterMap (\index -> get index sequence) (List.range 0 (length sequence - 1))
+
+        additions =
+            List.filter (\post -> not (member post.id sequence)) posts
+    in
+    fromList (existing ++ additions)
 
 
 length : Sequence -> Int

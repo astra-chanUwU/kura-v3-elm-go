@@ -16,17 +16,20 @@ type PostSummary struct {
 	Height      int    `json:"height"`
 }
 
-// SearchResponse is the response body for GET /api/posts.
-//
-// Pagination is intentionally left out of this first slice. A cursor can be
-// added to this envelope without changing individual PostSummary values.
-type SearchResponse struct {
-	Posts []PostSummary `json:"posts"`
+// SearchPage is the response body for GET /api/posts. NextCursor is null
+// when there is no next page; an empty query always returns a nil cursor.
+type SearchPage struct {
+	Posts      []PostSummary `json:"posts"`
+	NextCursor *string       `json:"next_cursor"`
 }
+
+// SearchResponse remains an alias for callers that used the first slice's
+// envelope. New code should use SearchPage.
+type SearchResponse = SearchPage
 
 // Searcher is the storage boundary used by the HTTP layer. PostgreSQL-backed
 // implementations belong in a separate adapter and must return PostSummary
 // values rather than leaking storage rows into the API.
 type Searcher interface {
-	SearchPosts(ctx context.Context, query string) (SearchResponse, error)
+	SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error)
 }

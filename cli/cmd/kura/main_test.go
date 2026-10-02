@@ -136,24 +136,81 @@ func TestSearch_APIErrorReadable(t *testing.T) {
 	}
 }
 
-func TestSearch_UnsupportedLimitAndCursor(t *testing.T) {
+func TestSearch_Pagination_Params(t *testing.T) {
+	var gotQ, gotCursor, gotLimit string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQ = r.URL.Query().Get("q")
+		gotCursor = r.URL.Query().Get("cursor")
+		gotLimit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"posts":[{"id":"post-123","preview_url":"/p.jpg","original_url":"/o.jpg","media_type":"image/jpeg","width":10,"height":10}],"next_cursor":null}`)
+	}))
+	defer srv.Close()
+
+	code, out, _ := runWithEnv([]string{"search", "--limit", "20", "--cursor", "tok123", "cat"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if gotQ != "cat" || gotCursor != "tok123" || gotLimit != "20" {
+		t.Fatalf("pagination not wired q=%q cursor=%q limit=%q", gotQ, gotCursor, gotLimit)
+	}
+	if !strings.Contains(out, "post-123") {
+		t.Fatalf("output missing post: %q", out)
+	}
+
+	// --limit with = form and --cursor with = form
+	gotQ, gotCursor, gotLimit = "", "", ""
+	code, _, _ = runWithEnv([]string{"search", "--limit=5", "--cursor=abc==", "hello"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if gotLimit != "5" || gotCursor != "abc==" {
+		t.Fatalf("equals form not parsed limit=%q cursor=%q", gotLimit, gotCursor)
+	}
+}
+
+func TestSearch_Pagination_LimitValidation(t *testing.T) {
 	srv := fakeServer(t)
 	defer srv.Close()
 
-	code, _, errOut := runWithEnv([]string{"search", "--limit", "10", "cat"}, map[string]string{"KURA_API_URL": srv.URL})
-	if code == 0 {
-		t.Fatal("expected non-zero for --limit")
+	invalid := []string{"0", "61", "-1", "abc", "100", ""}
+	for _, v := range invalid {
+		args := []string{"search", "--limit", v, "cat"}
+		if v == "" {
+			args = []string{"search", "--limit=", "cat"}
+		}
+		code, _, errOut := runWithEnv(args, map[string]string{"KURA_API_URL": srv.URL})
+		if code == 0 {
+			t.Fatalf("expected failure for limit %q", v)
+		}
+		if !strings.Contains(strings.ToLower(errOut), "limit") {
+			t.Fatalf("expected limit error for %q got %q", v, errOut)
+		}
 	}
-	if !strings.Contains(errOut, "--limit") || !strings.Contains(errOut, "not supported") {
-		t.Fatalf("expected limit unsupported message, got %q", errOut)
+	// valid boundaries
+	for _, v := range []string{"1", "60", "20"} {
+		code, _, errOut := runWithEnv([]string{"search", "--limit", v, "cat"}, map[string]string{"KURA_API_URL": srv.URL})
+		if code != 0 {
+			t.Fatalf("limit %q should pass, got %d %q", v, code, errOut)
+		}
+	}
+}
+
+func TestSearch_Pagination_CursorValidation(t *testing.T) {
+	srv := fakeServer(t)
+	defer srv.Close()
+
+	code, _, errOut := runWithEnv([]string{"search", "--cursor", "", "cat"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code == 0 {
+		t.Fatal("expected failure for empty cursor")
+	}
+	if !strings.Contains(strings.ToLower(errOut), "cursor") {
+		t.Fatalf("expected cursor error got %q", errOut)
 	}
 
-	code, _, errOut = runWithEnv([]string{"search", "--cursor", "abc", "cat"}, map[string]string{"KURA_API_URL": srv.URL})
+	code, _, errOut = runWithEnv([]string{"search", "--cursor", "   ", "cat"}, map[string]string{"KURA_API_URL": srv.URL})
 	if code == 0 {
-		t.Fatal("expected non-zero for --cursor")
-	}
-	if !strings.Contains(errOut, "--cursor") || !strings.Contains(errOut, "not supported") {
-		t.Fatalf("expected cursor unsupported message, got %q", errOut)
+		t.Fatal("expected failure for whitespace cursor")
 	}
 }
 

@@ -62,6 +62,7 @@ type alias SurveySet =
 type SearchState
     = Idle
     | Searching
+    | LoadingMore
     | Ready
     | Failed String
 
@@ -72,6 +73,11 @@ type alias ReturnPoint =
     }
 
 
+type SearchRequest
+    = InitialRequest
+    | MoreRequest
+
+
 type alias Model =
     { key : Nav.Key
     , apiBase : String
@@ -79,6 +85,7 @@ type alias Model =
     , draftQuery : String
     , search : SearchState
     , requestId : Int
+    , nextCursor : Maybe String
     , sequence : Sequence
     , selection : Selection
     , mode : Mode
@@ -136,6 +143,7 @@ init flagsValue url key =
             , draftQuery = route.query
             , search = Idle
             , requestId = 0
+            , nextCursor = Nothing
             , sequence = Sequence.empty
             , selection = Selection.empty
             , mode = Grid
@@ -203,7 +211,7 @@ type Msg
     | UrlRequested Browser.UrlRequest
     | DraftChanged String
     | SearchSubmitted
-    | SearchCompleted Int (Result Http.Error SearchResponse)
+    | SearchCompleted Int SearchRequest (Result Http.Error SearchResponse)
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -350,16 +358,19 @@ updateHelp msg model =
         TermRemoved index ->
             runQuery (Query.removeTerm index model.query) model
 
-        SearchCompleted requestId result ->
+        SearchCompleted requestId requestKind result ->
             if requestId /= model.requestId then
                 ( model, Cmd.none )
 
             else
-                case result of
-                    Ok response ->
-                        resultsArrived response.posts model
+                case ( requestKind, result ) of
+                    ( InitialRequest, Ok response ) ->
+                        resultsArrived response model
 
-                    Err error ->
+                    ( MoreRequest, Ok response ) ->
+                        moreResultsArrived response model
+
+                    ( _, Err error ) ->
                         ( { model | search = Failed (httpErrorToString error), pendingRoute = Nothing }, Cmd.none )
 
         Retry ->
@@ -408,7 +419,15 @@ updateHelp msg model =
 
         GridScrolled viewport ->
             if model.mode == Grid then
-                ( { model | viewport = viewport }, Cmd.none )
+                let
+                    updated =
+                        { model | viewport = viewport }
+                in
+                if shouldLoadMore updated then
+                    loadMore updated
+
+                else
+                    ( updated, Cmd.none )
 
             else
                 ( model, Cmd.none )
@@ -704,8 +723,8 @@ startSearch model query =
         requestId =
             model.requestId + 1
     in
-    ( { model | query = query, draftQuery = query, search = Searching, requestId = requestId }
-    , Api.Post.search model.apiBase query (SearchCompleted requestId)
+    ( { model | query = query, draftQuery = query, search = Searching, requestId = requestId, nextCursor = Nothing }
+    , Api.Post.search model.apiBase query Nothing 60 (SearchCompleted requestId InitialRequest)
     )
 
 
@@ -716,6 +735,7 @@ clearResults model =
         , draftQuery = ""
         , search = Idle
         , requestId = model.requestId + 1
+        , nextCursor = Nothing
         , sequence = Sequence.empty
         , selection = Selection.empty
         , mode = Grid
@@ -728,9 +748,12 @@ clearResults model =
 {-| New results keep the workspace: panels, thumbnail size, and mode stay; the
 active post and selection survive when their posts are still present.
 -}
-resultsArrived : List PostSummary -> Model -> ( Model, Cmd Msg )
-resultsArrived posts model =
+resultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
+resultsArrived response model =
     let
+        posts =
+            response.posts
+
         sequence =
             Sequence.fromList posts
 
@@ -743,6 +766,7 @@ resultsArrived posts model =
         base =
             { model
                 | sequence = sequence
+                , nextCursor = response.nextCursor
                 , selection = selection
                 , mode = mode
                 , search = Ready
@@ -778,6 +802,61 @@ resultsArrived posts model =
                     ( scrolled, Cmd.none )
     in
     ( routed, Cmd.batch [ scrollGridLater top, routeCmd ] )
+
+
+moreResultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
+moreResultsArrived response model =
+    let
+        sequence =
+            Sequence.append response.posts model.sequence
+
+        selection =
+            Selection.prune sequence model.selection
+
+        mode =
+            validMode sequence selection model.mode
+    in
+    ( { model
+        | sequence = sequence
+        , nextCursor = response.nextCursor
+        , selection = selection
+        , mode = mode
+        , search = Ready
+      }
+    , Cmd.none
+    )
+
+
+shouldLoadMore : Model -> Bool
+shouldLoadMore model =
+    case ( model.mode, model.search, model.nextCursor ) of
+        ( Grid, Ready, Just _ ) ->
+            let
+                g =
+                    geometry model
+
+                contentBottom =
+                    Layout.totalHeight g (Sequence.length model.sequence)
+
+                threshold =
+                    max 240 model.viewport.height
+            in
+            model.viewport.scrollTop + model.viewport.height >= contentBottom - threshold
+
+        _ ->
+            False
+
+
+loadMore : Model -> ( Model, Cmd Msg )
+loadMore model =
+    case model.nextCursor of
+        Just cursor ->
+            ( { model | search = LoadingMore }
+            , Api.Post.search model.apiBase model.query (Just cursor) 60 (SearchCompleted model.requestId MoreRequest)
+            )
+
+        Nothing ->
+            ( model, Cmd.none )
 
 
 validMode : Sequence -> Selection -> Mode -> Mode
@@ -1753,7 +1832,7 @@ shell : Model -> Html Msg
 shell model =
     div [ class "kura-shell", preventDefaultOn "keydown" (keyDecoder model) ]
         [ topBar model
-        , div [ class "progress", classList [ ( "is-active", model.search == Searching ) ] ] []
+        , div [ class "progress", classList [ ( "is-active", (model.search == Searching || model.search == LoadingMore) ) ] ] []
         , div [ class "kura-body" ]
             [ navigatorView model
             , div [ class "workspace" ]
@@ -1853,6 +1932,9 @@ countLabel model =
         Searching ->
             "Searching…"
 
+        LoadingMore ->
+            "Loading more…"
+
         _ ->
             if String.trim model.query == "" then
                 ""
@@ -1932,7 +2014,7 @@ stage model =
             , viewport = model.viewport
             , missing = model.missing
             , hidden = model.mode /= Grid
-            , stale = model.search == Searching && not (Sequence.isEmpty model.sequence)
+            , stale = (model.search == Searching || model.search == LoadingMore) && not (Sequence.isEmpty model.sequence)
             , onCell = CellClicked
             , onOpen = CellOpened
             , onCheck = CellChecked
@@ -2038,6 +2120,9 @@ emptyState model =
 
                 Searching ->
                     [ p [] [ text "Searching…" ] ]
+
+                LoadingMore ->
+                    [ p [] [ text "Loading more…" ] ]
 
                 Ready ->
                     [ p [] [ text "No posts found." ] ]

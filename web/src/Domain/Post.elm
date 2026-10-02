@@ -16,6 +16,7 @@ type alias PostSummary =
 
 type alias SearchResponse =
     { posts : List PostSummary
+    , nextCursor : Maybe String
     }
 
 
@@ -33,4 +34,6 @@ decoder =
 
 responseDecoder : Decoder SearchResponse
 responseDecoder =
-    Decode.map SearchResponse (Decode.field "posts" (Decode.list decoder))
+    Decode.map2 SearchResponse
+        (Decode.field "posts" (Decode.list decoder))
+        (Decode.field "next_cursor" (Decode.nullable Decode.string))

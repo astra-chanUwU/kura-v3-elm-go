@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,16 +31,24 @@ func (s *PostgresSearcher) Close() {
 	}
 }
 
-// SearchPosts returns summaries in the stable API shape.
-func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string) (SearchResponse, error) {
+// SearchPosts returns summaries in the stable API shape and uses id keyset
+// pagination to avoid offset work as the result set grows.
+func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error) {
 	if s == nil || s.pool == nil {
-		return SearchResponse{}, ErrUnavailable
+		return SearchPage{}, ErrUnavailable
+	}
+	if limit < 1 || limit > 60 {
+		return SearchPage{}, ErrInvalidQuery
 	}
 
-	response := SearchResponse{Posts: make([]PostSummary, 0)}
-	rows, err := s.pool.Query(ctx, SearchPostsSQL, query)
+	var cursorID any
+	if cursor != nil {
+		cursorID = cursor.ID
+	}
+	page := SearchPage{Posts: make([]PostSummary, 0, limit)}
+	rows, err := s.pool.Query(ctx, SearchPostsSQL, query, cursorID, limit+1)
 	if err != nil {
-		return SearchResponse{}, err
+		return SearchPage{}, err
 	}
 	defer rows.Close()
 
@@ -53,13 +62,27 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string) (Searc
 			&post.Width,
 			&post.Height,
 		); err != nil {
-			return SearchResponse{}, err
+			return SearchPage{}, err
 		}
-		response.Posts = append(response.Posts, post)
+		page.Posts = append(page.Posts, post)
 	}
 	if err := rows.Err(); err != nil {
-		return SearchResponse{}, err
+		return SearchPage{}, err
 	}
-
-	return response, nil
+	if len(page.Posts) <= limit {
+		return page, nil
+	}
+	page.Posts = page.Posts[:limit]
+	lastID := page.Posts[len(page.Posts)-1].ID
+	// Postgres IDs are positive; malformed fixture data cannot create a token.
+	var id int64
+	if _, err := fmt.Sscan(lastID, &id); err != nil || id <= 0 {
+		return SearchPage{}, ErrInvalidQuery
+	}
+	token, err := EncodeCursor(query, id)
+	if err != nil {
+		return SearchPage{}, err
+	}
+	page.NextCursor = &token
+	return page, nil
 }

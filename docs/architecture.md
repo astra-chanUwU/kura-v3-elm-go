@@ -22,8 +22,10 @@ Elm MediaGrid
 
 The Go adapter now executes this boundary against PostgreSQL. `db/migrations/001_posts.sql` defines the small searchable `posts` table, and `db/seed.sql` provides deterministic local rows for development. Twelve matching demo files live under `web/static/media/demo`; the server exposes them at `/media/...` from `MEDIA_ROOT` (defaulting to `../web/static/media` for `go -C server run`).
 
-The first API response keeps the browser contract independent from PostgreSQL
-rows:
+The API response keeps the browser contract independent from PostgreSQL
+rows. Search uses an opaque, query-bound keyset cursor (`id DESC`) and accepts
+`limit=1..60` (default 60); the adapter fetches one extra row to decide whether
+to emit `next_cursor`.
 
 ```http
 GET /api/posts?q=cat
@@ -47,8 +49,9 @@ GET /api/posts?q=cat
 The HTTP layer depends on a `posts.Searcher` interface. The PostgreSQL adapter
 binds the search string to the handwritten query and maps selected columns to
 `PostSummary`; it does not expose database rows directly. Empty queries short
-circuit to an empty response, while an unconfigured adapter returns `503` and
-storage failures return `500`. Overlong queries return `400`. PostgreSQL's web
+circuit to `{ "posts": [], "next_cursor": null }`, while an unconfigured adapter
+returns `503` and storage failures return `500`. Overlong queries, invalid
+limits, and malformed or query-mismatched cursors return `400`. PostgreSQL's web
 search parser accepts ordinary multiword input.
 
 ## Server shape
@@ -59,7 +62,7 @@ Domain mutations create immutable revisions. A revert creates another revision t
 
 ## Frontend shape
 
-Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading and tag editing are still to come. See `docs/frontend-design.md`.
+Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading appends deduplicated pages while preserving active selection, mode, and scroll; tag editing is still to come. See `docs/frontend-design.md`.
 
 ## Deferred infrastructure
 

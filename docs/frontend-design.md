@@ -1,6 +1,6 @@
 # Kura V3 frontend design — Library workspace
 
-Status: steps 1–6 of the implementation sequence (§6) are built in `web/`, plus grid virtualization. Steps 7–10 need Go/API work.
+Status: the Library workspace, grid virtualization, and cursor pagination are built in `web/` and Go. Steps 7–10 need post detail and mutation APIs.
 
 This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
@@ -118,7 +118,7 @@ type alias Selection =
 type alias Sequence =
     { posts : Array PostSummary
     , indexById : Dict PostId Int
-    , nextCursor : Maybe String -- [API] Nothing until cursor pagination exists
+    , nextCursor : Maybe String
     , exhausted : Bool
     }
 
@@ -171,7 +171,7 @@ type alias Model =
 | `Esc` / `G` back to Grid | Grid made visible. If `active == activeAtEntry` or the active cell lies inside the saved viewport, `setViewportOf "media-grid-viewport" 0 scrollTop` restores the exact offset. Otherwise scroll the minimum distance to reveal the active cell. Then `Browser.Dom.focus` the active cell. Selection is unchanged. Clear `returnPoint`. |
 | New query submitted | `search = Searching { stale = True }`; old sequence stays rendered and dimmed. On success: replace sequence, prune selection/active to ids still present, keep mode if its posts survive (else Grid), keep panels and thumb size. If active survives, reveal it; otherwise scroll to top. URL `q` via `Nav.pushUrl` (back/forward re-runs queries, as today). |
 | Search fails | Keep stale sequence visible, show error with Retry in StatusBar. |
-| Scroll near end of grid | **[API]** request next cursor page, append to `Array`. |
+| Scroll near end of grid | request the next cursor page, append deduplicated posts to `Array`, and keep the active selection, mode, and scroll position. |
 | Resize / panel toggle | Re-measure the grid with `Browser.Dom.getViewportOf`; columns recomputed; the first visible row's top item is kept in view. |
 | Reload with `?q=demo&post=2006&view=loupe` | Search, then set active = 2006, enter Loupe with a `ReturnPoint` whose `scrollTop` reveals 2006. |
 
@@ -195,7 +195,7 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `Domain.Sequence` | new | Array + index lookup, next/prev/clamp, window around an index, range between two ids, append page. |
 | `Domain.Selection` | new | `Selection` and its operations: `click`, `toggle`, `range`, `addRange`, `selectAll`, `clear`, `prune`, `targets`. Pure. |
 | `Domain.Query` | new | Query text helpers: split into chips, `addTerm`, `excludeTerm` (`-tag`), `removeTerm`. Uses the PostgreSQL websearch syntax the API already accepts until the KuraQL parser lands. |
-| `Api.Post` | change | Existing `search`; later `searchPage cursor limit` and `detail id` **[API]**. |
+| `Api.Post` | change | `search` accepts an optional cursor and limit; `detail id` remains **[API]**. |
 | `Page.Library` | new | Model/Msg/update/view for the workspace: regions, mode, return point, panel states, keyboard dispatch. |
 | `Feature.MediaGrid` | rewrite | Virtualized uniform grid; `Config msg` record (sequence, selection, thumb, extras, viewport, `onCell : PostId -> Modifiers -> msg`, `onOpen`, `onScroll`, `onMediaError`). |
 | `Feature.MediaGrid.Layout` | new | Pure geometry: columns, visible row range, offset of an index, scroll-to-reveal. |

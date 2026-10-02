@@ -6,21 +6,34 @@ import String
 import Url.Builder
 
 
-search : String -> String -> (Result Http.Error SearchResponse -> msg) -> Cmd msg
-search apiBase query toMsg =
+search : String -> String -> Maybe String -> Int -> (Result Http.Error SearchResponse -> msg) -> Cmd msg
+search apiBase query cursor limit toMsg =
     Http.get
-        { url = endpoint apiBase query
+        { url = endpoint apiBase query cursor limit
         , expect = Http.expectJson toMsg responseDecoder
         }
 
 
-endpoint : String -> String -> String
-endpoint apiBase query =
+endpoint : String -> String -> Maybe String -> Int -> String
+endpoint apiBase query cursor limit =
+    let
+        params =
+            [ Url.Builder.string "q" query
+            , Url.Builder.int "limit" limit
+            ]
+                ++ (case cursor of
+                        Just value ->
+                            [ Url.Builder.string "cursor" value ]
+
+                        Nothing ->
+                            []
+                   )
+    in
     if String.trim apiBase == "" then
-        Url.Builder.absolute [ "api", "posts" ] [ Url.Builder.string "q" query ]
+        Url.Builder.absolute [ "api", "posts" ] params
 
     else
-        Url.Builder.crossOrigin apiBase [ "api", "posts" ] [ Url.Builder.string "q" query ]
+        Url.Builder.crossOrigin apiBase [ "api", "posts" ] params
 
 
 mediaUrl : String -> String -> String

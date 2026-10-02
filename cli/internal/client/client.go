@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -69,8 +70,21 @@ func (e *APIError) Error() string {
 
 // Search executes GET /api/posts?q=query with URL encoding and a request
 // timeout. An empty or whitespace-only query is sent as q= (server returns
-// empty posts without DB contact).
+// empty posts without DB contact). It is a first-page wrapper around
+// SearchPage with no cursor and no limit.
 func (c *Client) Search(ctx context.Context, query string) (SearchResponse, error) {
+	return c.SearchPage(ctx, query, "", 0)
+}
+
+// SearchPage executes GET /api/posts?q=&cursor=&limit= with cursor pagination.
+// query is sent as q (empty allowed for browse). cursor is opaque and sent as
+// cursor when non-empty. limit is page size 1..60; 0 means omit and let the
+// server use its default. Values outside 1..60 return an error without
+// contacting the server.
+func (c *Client) SearchPage(ctx context.Context, query, cursor string, limit int) (SearchResponse, error) {
+	if limit != 0 && (limit < 1 || limit > 60) {
+		return SearchResponse{}, fmt.Errorf("limit must be between 1 and 60, got %d", limit)
+	}
 	base := c.BaseURL
 	if base == "" {
 		base = "http://localhost:8080"
@@ -83,6 +97,12 @@ func (c *Client) Search(ctx context.Context, query string) (SearchResponse, erro
 	u.Path = strings.TrimRight(u.Path, "/") + "/api/posts"
 	q := u.Query()
 	q.Set("q", query)
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	if limit != 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)

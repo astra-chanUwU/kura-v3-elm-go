@@ -1,8 +1,8 @@
 package posts
 
 // SearchPostsSQL is the handwritten query contract for the PostgreSQL
-// adapter. The adapter binds $1 to the user query and keeps result shaping in
-// Go. The schema and full-text index are introduced by db/migrations.
+// adapter. $1 is the normalized query, $2 is the optional keyset id, and $3
+// is limit+1 so the adapter can determine whether another page exists.
 const SearchPostsSQL = `
 SELECT
     id::text,
@@ -14,6 +14,7 @@ SELECT
 FROM posts
 WHERE deleted_at IS NULL
   AND search_document @@ websearch_to_tsquery('simple', $1)
+  AND ($2::bigint IS NULL OR id < $2::bigint)
 ORDER BY id DESC
-LIMIT 60
+LIMIT $3
 `
