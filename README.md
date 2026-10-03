@@ -8,7 +8,7 @@ Kura is an imageboard and media-management application. This repository is the s
 - **Go** owns the HTTP API and domain behavior. The routing and database stack is chi, pgx, and handwritten SQL over PostgreSQL; generated query code is deferred until the domain contract settles.
 - **PostgreSQL** will be durable structured truth. Large media will live behind an S3-compatible object-store abstraction.
 - **Redis, realtime transports, Rust services, queues, and deployment infrastructure** are deliberately deferred until a concrete product requirement needs them.
-- **The `kura` CLI** uses the same HTTP API as Elm. It currently supports `kura search` with human, JSON, and JSONL output.
+- **The `kura` CLI** uses the same HTTP API as Elm. It supports `kura search` plus `kura collection list` and `kura collection posts` with human, JSON, and JSONL output.
 
 The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing with revert, favorites, scores, ordered collections, collection browsing, and a bounded KuraQL filter subset are live.
 
