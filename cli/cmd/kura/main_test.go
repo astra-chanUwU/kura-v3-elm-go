@@ -317,6 +317,88 @@ func TestRootHelp(t *testing.T) {
 	}
 }
 
+func collectionServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/collections", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected collections method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"collections":[{"id":"7","name":"Favorites","post_ids":["11","10"]},{"id":"8","name":"Archive","post_ids":[]}]}`)
+	})
+	mux.HandleFunc("/api/collections/7/posts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected posts method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"posts":[{"id":"11","preview_url":"/p.jpg","original_url":"/o.jpg","media_type":"image/jpeg","width":10,"height":20}],"next_cursor":"next"}`)
+	})
+	mux.HandleFunc("/api/collections/404/posts", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"collection or post not found"}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestCollectionList_HumanAndJSON(t *testing.T) {
+	srv := collectionServer(t)
+	defer srv.Close()
+
+	code, out, errOut := runWithEnv([]string{"collection", "list", "--api-url", srv.URL}, nil)
+	if code != 0 || errOut != "" {
+		t.Fatalf("list human exit=%d out=%q err=%q", code, out, errOut)
+	}
+	if !strings.Contains(out, "7\tFavorites\t2 posts") || !strings.Contains(out, "8\tArchive\t0 posts") {
+		t.Fatalf("unexpected human collection output: %q", out)
+	}
+	code, out, _ = runWithEnv([]string{"collection", "list", "--json"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"collections"`) || !strings.Contains(out, "Favorites") {
+		t.Fatalf("unexpected json collection output code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"collection", "list", "--jsonl", "--api-url=" + srv.URL}, nil)
+	if code != 0 || strings.Count(strings.TrimSpace(out), "\n") != 1 || !strings.Contains(out, `"id":"7"`) {
+		t.Fatalf("unexpected jsonl collection output code=%d out=%q", code, out)
+	}
+}
+
+func TestCollectionPosts_OutputAndErrors(t *testing.T) {
+	srv := collectionServer(t)
+	defer srv.Close()
+
+	code, out, errOut := runWithEnv([]string{"collection", "posts", "--api-url", srv.URL, "7"}, nil)
+	if code != 0 || !strings.Contains(out, "11\timage/jpeg\t10x20") || !strings.Contains(errOut, "next") {
+		t.Fatalf("unexpected posts human exit=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, _ = runWithEnv([]string{"collection", "posts", "--jsonl", "7"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"id":"11"`) {
+		t.Fatalf("unexpected posts jsonl exit=%d out=%q", code, out)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "posts", "--json", "404"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code == 0 || out != "" || !strings.Contains(errOut, "collection or post not found") {
+		t.Fatalf("expected readable API error code=%d out=%q err=%q", code, out, errOut)
+	}
+}
+
+func TestCollection_HelpAndValidation(t *testing.T) {
+	code, out, _ := runWithEnv([]string{"collection", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "kura collection") || !strings.Contains(out, "posts") {
+		t.Fatalf("collection help missing: code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"collection", "posts", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "COLLECTION_ID") {
+		t.Fatalf("collection posts help missing: code=%d out=%q", code, out)
+	}
+	code, _, errOut := runWithEnv([]string{"collection", "posts", "not-an-id"}, nil)
+	if code == 0 || !strings.Contains(errOut, "positive integer") {
+		t.Fatalf("expected id validation error: code=%d err=%q", code, errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"collection", "list", "--json", "--jsonl"}, nil)
+	if code == 0 || !strings.Contains(errOut, "mutually exclusive") {
+		t.Fatalf("expected output flag validation error: code=%d err=%q", code, errOut)
+	}
+}
+
 func TestPostGet_NotInvented(t *testing.T) {
 	code, _, errOut := runWithEnv([]string{"post", "get", "123"}, nil)
 	if code == 0 {
