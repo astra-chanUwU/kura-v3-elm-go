@@ -191,11 +191,11 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `App.Route` | new | Parse/build `?q=&post=&view=`. Replaces `queryFromUrl` / `queryHref` in `Main`. |
 | `App.Keyboard` | new | Decode `keydown` into a `Command` with modifiers; reports whether the target is an editable field. Replaces the `inputFocused` flag. |
 | `App.Prefs` | new | `Prefs` type, JSON codec, outgoing port `savePrefs` (single port; read back via flags from `localStorage`). |
-| `Domain.Post` | keep | `PostSummary`; later `PostDetail` **[API]**. |
+| `Domain.Post` | keep | `PostSummary`, `PostDetail`, tag revisions, and optimistic tag-edit results. |
 | `Domain.Sequence` | new | Array + index lookup, next/prev/clamp, window around an index, range between two ids, append page. |
 | `Domain.Selection` | new | `Selection` and its operations: `click`, `toggle`, `range`, `addRange`, `selectAll`, `clear`, `prune`, `targets`. Pure. |
 | `Domain.Query` | new | Query text helpers: split into chips, `addTerm`, `excludeTerm` (`-tag`), `removeTerm`. Uses the PostgreSQL websearch syntax the API already accepts until the KuraQL parser lands. |
-| `Api.Post` | change | `search` accepts an optional cursor and limit; `detail id` loads Inspector metadata; mutations remain **[API]**. |
+| `Api.Post` | change | `search` accepts an optional cursor and limit; `detail id` loads Inspector metadata; `editTags` submits optimistic bulk tag edits. |
 | `Page.Library` | new | Model/Msg/update/view for the workspace: regions, mode, return point, panel states, keyboard dispatch. |
 | `Feature.MediaGrid` | rewrite | Virtualized uniform grid; `Config msg` record (sequence, selection, thumb, extras, viewport, `onCell : PostId -> Modifiers -> msg`, `onOpen`, `onScroll`, `onMediaError`). |
 | `Feature.MediaGrid.Layout` | new | Pure geometry: columns, visible row range, offset of an index, scroll-to-reveal. |
@@ -205,10 +205,10 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `Feature.Filmstrip` | new | Horizontal window of ±30 items around active; same cell states as the grid. |
 | `Feature.Inspector` | new | Identity, dimensions, media type, source, tags, history; selection summary when `selected` > 1. |
 | `Feature.QueryEditor` | new | TopBar KuraQL field + FilterBar chips. |
-| `Feature.Selection` | change | Action bar: count, clear, tag, add to collection, favorite (actions disabled with reason until **[API]**). |
+| `Feature.Selection` | change | Action bar: count, clear, tag, add to collection, favorite; tag editing is live, collection/favorite actions remain disabled with a reason. |
 | `Feature.Navigator` | new | Saved searches, recent queries, collections. |
-| `Feature.TagEditor` | later | Inspector tag editing. **[API]** |
-| `Feature.RevisionDiff` | later | Inspector history entries. **[API]** |
+| `Feature.TagEditor` | integrated | Compact Inspector add/remove editor for active or selected posts. |
+| `Feature.RevisionDiff` | later | Inspector history entries are currently rendered as a compact list; richer diffs remain open. |
 | `Ui.Layout` | new | Region shells, drawer/sheet wrappers, breakpoints. |
 | `Ui.Button`, `Ui.Kbd`, `Ui.Chip`, `Ui.Icon` | new | Small view helpers; icons are inline SVG paths, no icon library. |
 
@@ -289,9 +289,9 @@ Marquee drag-selection and panel resizing are deferred.
 | 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then incremental loading near the end of the grid. The grid is already virtualized. | **[API]** + Elm | Done |
 | 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm | Done |
 | 9 | Empty query browses newest posts through the same cursor API; Navigator "All posts". | **[API]** | Done |
-| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Open |
+| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Tag edits done; collections/favorites/scores open |
 
-The completed Library slices can be verified with the 15 seeded `demo` rows. Revision history and the `T`, `B`, `F` mutation actions remain for step 10.
+The completed Library slices can be verified with the 15 seeded `demo` rows. Tag revision history and the `T` mutation are live; `B` and `F`, richer revision diffs, and saved-search server state remain open.
 
 ---
 

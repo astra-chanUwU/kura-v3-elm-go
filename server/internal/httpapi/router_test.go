@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -112,6 +113,51 @@ type fakeDetailSearcher struct {
 	detail posts.PostDetail
 	err    error
 	id     string
+}
+
+type fakeTagMutator struct {
+	fakeSearcher
+	result posts.TagEditResponse
+	err    error
+	got    posts.TagEditRequest
+}
+
+func (f *fakeTagMutator) EditTags(_ context.Context, request posts.TagEditRequest) (posts.TagEditResponse, error) {
+	f.got = request
+	return f.result, f.err
+}
+
+func TestTagEditRouteValidationAndErrors(t *testing.T) {
+	fake := &fakeTagMutator{result: posts.TagEditResponse{Posts: []posts.TagEditResult{{ID: "2004", Version: 1, Tags: []string{"night"}, Changed: true}}}}
+	r := NewRouter(fake)
+	req := httptest.NewRequest(http.MethodPost, "/api/posts/tags", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"add":[" night "],"remove":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK || len(fake.got.Add) != 1 || fake.got.Add[0] != "night" {
+		t.Fatalf("unexpected tag edit response: status=%d request=%#v", resp.Code, fake.got)
+	}
+
+	for _, body := range []string{
+		`{"posts":[],"add":["x"]}`,
+		`{"posts":[{"id":"2004","version":0}],"add":["x","x"]}`,
+		`{"posts":[{"id":"2004","version":0}],"add":["x"],"remove":["x"]}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/posts/tags", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("body %s: got status %d", body, response.Code)
+		}
+	}
+
+	fake.err = posts.ErrConflict
+	request := httptest.NewRequest(http.MethodPost, "/api/posts/tags", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"add":["x"]}`))
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d", response.Code)
+	}
 }
 
 func (f *fakeDetailSearcher) GetPostDetail(_ context.Context, id string) (posts.PostDetail, error) {

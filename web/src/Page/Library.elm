@@ -8,7 +8,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
-import Domain.Post exposing (PostDetail, PostSummary, SearchResponse)
+import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget)
 import Domain.Query as Query
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
@@ -111,6 +111,12 @@ type alias Model =
     , pendingRoute : Maybe Route
     , ownQuery : Maybe String
     , urlSeq : Int
+    , tagAddDraft : String
+    , tagRemoveDraft : String
+    , tagSaving : Bool
+    , tagStatus : Maybe String
+    , tagRequestId : Int
+    , tagVersions : Dict String Int
     }
 
 
@@ -170,6 +176,12 @@ init flagsValue url key =
             , pendingRoute = Nothing
             , ownQuery = Nothing
             , urlSeq = 0
+            , tagAddDraft = ""
+            , tagRemoveDraft = ""
+            , tagSaving = False
+            , tagStatus = Nothing
+            , tagRequestId = 0
+            , tagVersions = Dict.empty
             }
     in
     let
@@ -218,6 +230,10 @@ type Msg
     | SearchSubmitted
     | SearchCompleted Int SearchRequest (Result Http.Error SearchResponse)
     | DetailCompleted String (Result Http.Error PostDetail)
+    | TagAddChanged String
+    | TagRemoveChanged String
+    | SaveTags
+    | TagsCompleted Int (Result Http.Error TagEditResponse)
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -395,9 +411,74 @@ updateHelp msg model =
                                 DetailFailed (httpErrorToString error)
                         )
                         model.details
+                , tagVersions =
+                    case result of
+                        Ok detail ->
+                            Dict.insert postId detail.tagVersion model.tagVersions
+
+                        Err _ ->
+                            model.tagVersions
               }
             , Cmd.none
             )
+
+        TagAddChanged value ->
+            ( { model | tagAddDraft = value, tagStatus = Nothing }, Cmd.none )
+
+        TagRemoveChanged value ->
+            ( { model | tagRemoveDraft = value, tagStatus = Nothing }, Cmd.none )
+
+        SaveTags ->
+            saveTags model
+
+        TagsCompleted requestId result ->
+            if requestId /= model.tagRequestId then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok response ->
+                        let
+                            sequence =
+                                List.foldl
+                                    (\post sequence_ -> Sequence.updateTags post.id post.tags sequence_)
+                                    model.sequence
+                                    response.posts
+
+                            versions =
+                                List.foldl (\post versions_ -> Dict.insert post.id post.version versions_) model.tagVersions response.posts
+
+                            refreshed =
+                                case model.selection.active of
+                                    Just postId ->
+                                        ( { model
+                                            | sequence = sequence
+                                            , tagVersions = versions
+                                            , tagSaving = False
+                                            , tagStatus = Just "Tags saved."
+                                            , tagAddDraft = ""
+                                            , tagRemoveDraft = ""
+                                            , details = Dict.insert postId DetailLoading model.details
+                                          }
+                                        , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                                        )
+
+                                    Nothing ->
+                                        ( { model
+                                            | sequence = sequence
+                                            , tagVersions = versions
+                                            , tagSaving = False
+                                            , tagStatus = Just "Tags saved."
+                                            , tagAddDraft = ""
+                                            , tagRemoveDraft = ""
+                                          }
+                                        , Cmd.none
+                                        )
+                        in
+                        refreshed
+
+                    Err error ->
+                        ( { model | tagSaving = False, tagStatus = Just (tagErrorToString error) }, Cmd.none )
 
         Retry ->
             startSearch model model.query
@@ -1707,6 +1788,92 @@ httpErrorToString error =
             "The search response was invalid."
 
 
+tagErrorToString : Http.Error -> String
+tagErrorToString error =
+    case error of
+        Http.BadStatus 409 ->
+            "Tags changed elsewhere. Reload the post and try again."
+
+        Http.BadStatus 404 ->
+            "One selected post no longer exists."
+
+        Http.BadStatus status ->
+            "Tag edit failed (HTTP " ++ String.fromInt status ++ ")."
+
+        Http.BadUrl url ->
+            "Invalid API URL: " ++ url
+
+        Http.Timeout ->
+            "The tag edit timed out."
+
+        Http.NetworkError ->
+            "The tag edit server could not be reached."
+
+        Http.BadBody _ ->
+            "The tag edit response was invalid."
+
+
+saveTags : Model -> ( Model, Cmd Msg )
+saveTags model =
+    let
+        ids =
+            Selection.targets model.sequence model.selection
+
+        targets =
+            List.map (tagTarget model) ids
+
+        add =
+            splitTagDraft model.tagAddDraft
+
+        remove =
+            splitTagDraft model.tagRemoveDraft
+
+        requestId =
+            model.tagRequestId + 1
+    in
+    if List.isEmpty targets then
+        ( { model | tagStatus = Just "Select a post before editing tags." }, Cmd.none )
+
+    else if List.isEmpty add && List.isEmpty remove then
+        ( { model | tagStatus = Just "Enter a tag to add or remove." }, Cmd.none )
+
+    else
+        ( { model | tagSaving = True, tagStatus = Nothing, tagRequestId = requestId }
+        , Api.Post.editTags model.apiBase targets add remove (TagsCompleted requestId)
+        )
+
+
+tagTarget : Model -> String -> TagEditTarget
+tagTarget model postId =
+    { id = postId
+    , version =
+        case Dict.get postId model.tagVersions of
+            Just version ->
+                version
+
+            Nothing ->
+                Dict.get postId model.details
+                    |> Maybe.andThen
+                        (\state ->
+                            case state of
+                                DetailReady detail ->
+                                    Just detail.tagVersion
+
+                                _ ->
+                                    Nothing
+                        )
+                    |> Maybe.withDefault 0
+    }
+
+
+splitTagDraft : String -> List String
+splitTagDraft draft =
+    draft
+        |> String.split ","
+        |> List.map String.trim
+        |> List.filter (String.isEmpty >> not)
+
+
 
 -- KEYBOARD
 
@@ -2070,6 +2237,13 @@ inspectorView model =
             , onClose = KeyCommand ToggleInspector
             , onApiPending = KeyCommand << Pending
             , onMediaError = MediaFailed
+            , tagAdd = model.tagAddDraft
+            , tagRemove = model.tagRemoveDraft
+            , tagStatus = model.tagStatus
+            , tagSaving = model.tagSaving
+            , onTagAdd = TagAddChanged
+            , onTagRemove = TagRemoveChanged
+            , onSaveTags = SaveTags
             }
 
     else

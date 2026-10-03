@@ -20,11 +20,44 @@ type PostSummary struct {
 // PostDetail is the stable read-only representation used by the Inspector.
 type PostDetail struct {
 	PostSummary
-	Source    string `json:"source"`
-	Artist    string `json:"artist"`
-	Hash      string `json:"hash"`
-	FileSize  int64  `json:"file_size"`
-	CreatedAt string `json:"created_at"`
+	Source     string     `json:"source"`
+	Artist     string     `json:"artist"`
+	Hash       string     `json:"hash"`
+	FileSize   int64      `json:"file_size"`
+	CreatedAt  string     `json:"created_at"`
+	TagVersion int        `json:"tag_version"`
+	History    []Revision `json:"history"`
+}
+
+// Revision is an immutable tag-edit entry exposed by the Inspector.
+type Revision struct {
+	Version     int      `json:"version"`
+	Kind        string   `json:"kind"`
+	AddedTags   []string `json:"added_tags"`
+	RemovedTags []string `json:"removed_tags"`
+	CreatedAt   string   `json:"created_at"`
+}
+
+type TagTarget struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+type TagEditRequest struct {
+	Posts  []TagTarget `json:"posts"`
+	Add    []string    `json:"add"`
+	Remove []string    `json:"remove"`
+}
+
+type TagEditResult struct {
+	ID      string   `json:"id"`
+	Version int      `json:"version"`
+	Tags    []string `json:"tags"`
+	Changed bool     `json:"changed"`
+}
+
+type TagEditResponse struct {
+	Posts []TagEditResult `json:"posts"`
 }
 
 // SearchPage is the response body for GET /api/posts. NextCursor is null
@@ -48,4 +81,9 @@ type Searcher interface {
 // PostDetailer is the storage boundary for read-only Inspector metadata.
 type PostDetailer interface {
 	GetPostDetail(ctx context.Context, id string) (PostDetail, error)
+}
+
+// TagMutator is the storage boundary for atomic optimistic tag edits.
+type TagMutator interface {
+	EditTags(ctx context.Context, request TagEditRequest) (TagEditResponse, error)
 }

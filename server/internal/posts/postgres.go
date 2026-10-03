@@ -111,6 +111,7 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 		&detail.FileSize,
 		&detail.CreatedAt,
 		&detail.Tags,
+		&detail.TagVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PostDetail{}, ErrNotFound
@@ -118,5 +119,51 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 	if err != nil {
 		return PostDetail{}, err
 	}
+	detail.History = make([]Revision, 0, 50)
+	rows, err := s.pool.Query(ctx, GetPostRevisionsSQL, id)
+	if err != nil {
+		return PostDetail{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var revision Revision
+		if err := rows.Scan(&revision.Version, &revision.Kind, &revision.AddedTags, &revision.RemovedTags, &revision.CreatedAt); err != nil {
+			return PostDetail{}, err
+		}
+		detail.History = append(detail.History, revision)
+	}
+	if err := rows.Err(); err != nil {
+		return PostDetail{}, err
+	}
 	return detail, nil
+}
+
+// EditTags atomically applies a bounded optimistic tag edit to every target.
+// Row locks keep the version check and revision insert in one transaction.
+func (s *PostgresSearcher) EditTags(ctx context.Context, request TagEditRequest) (TagEditResponse, error) {
+	if s == nil || s.pool == nil {
+		return TagEditResponse{}, ErrUnavailable
+	}
+	validated, err := ValidateTagEdit(request)
+	if err != nil {
+		return TagEditResponse{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return TagEditResponse{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	response := TagEditResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		result, err := s.applyTagEdit(ctx, tx, target, validated.Add, validated.Remove)
+		if err != nil {
+			return TagEditResponse{}, err
+		}
+		response.Posts = append(response.Posts, result)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TagEditResponse{}, err
+	}
+	return response, nil
 }

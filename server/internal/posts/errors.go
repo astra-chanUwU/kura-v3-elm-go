@@ -12,3 +12,9 @@ var ErrInvalidQuery = errors.New("invalid post search query")
 
 // ErrNotFound indicates that a post does not exist or has been deleted.
 var ErrNotFound = errors.New("post not found")
+
+// ErrConflict indicates that a tag edit was based on an older tag version.
+var ErrConflict = errors.New("post tag version conflict")
+
+// ErrInvalidTags indicates malformed tag-edit input.
+var ErrInvalidTags = errors.New("invalid tags")

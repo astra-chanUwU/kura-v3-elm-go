@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
 	r.Get("/api/posts/{id}", postDetail(searchers...))
+	r.Post("/api/posts/tags", editTags(searchers...))
 	r.Handle("/media/*", http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot()))))
 	return r
 }
@@ -48,13 +50,60 @@ func localDevCORS(next http.Handler) http.Handler {
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", http.MethodGet)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func editTags(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if len(searchers) == 0 || searchers[0] == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "tag editing unavailable")
+			return
+		}
+		mutator, ok := searchers[0].(posts.TagMutator)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "tag editing unavailable")
+			return
+		}
+		var request posts.TagEditRequest
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid tag edit JSON")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeJSONError(w, http.StatusBadRequest, "invalid tag edit JSON")
+			return
+		}
+		validated, err := posts.ValidateTagEdit(request)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := mutator.EditTags(r.Context(), validated)
+		if err != nil {
+			switch {
+			case errors.Is(err, posts.ErrInvalidTags):
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, posts.ErrConflict):
+				writeJSONError(w, http.StatusConflict, "post tag version is stale")
+			case errors.Is(err, posts.ErrNotFound):
+				writeJSONError(w, http.StatusNotFound, "post not found")
+			case errors.Is(err, posts.ErrUnavailable):
+				writeJSONError(w, http.StatusServiceUnavailable, "tag editing unavailable")
+			default:
+				writeJSONError(w, http.StatusInternalServerError, "tag edit failed")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {

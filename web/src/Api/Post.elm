@@ -1,7 +1,8 @@
-module Api.Post exposing (detail, search, mediaUrl)
+module Api.Post exposing (detail, editTags, search, mediaUrl)
 
-import Domain.Post exposing (PostDetail, SearchResponse, detailDecoder, responseDecoder)
+import Domain.Post exposing (PostDetail, SearchResponse, TagEditResponse, TagEditTarget, detailDecoder, responseDecoder, tagEditResponseDecoder)
 import Http
+import Json.Encode as Encode
 import String
 import Url.Builder
 
@@ -20,6 +21,30 @@ detail apiBase postId toMsg =
         { url = detailEndpoint apiBase postId
         , expect = Http.expectJson toMsg detailDecoder
         }
+
+
+editTags : String -> List TagEditTarget -> List String -> List String -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
+editTags apiBase targets add remove toMsg =
+    Http.post
+        { url = tagsEndpoint apiBase
+        , body =
+            Http.jsonBody
+                (Encode.object
+                    [ ( "posts", Encode.list encodeTarget targets )
+                    , ( "add", Encode.list Encode.string add )
+                    , ( "remove", Encode.list Encode.string remove )
+                    ]
+                )
+        , expect = Http.expectJson toMsg tagEditResponseDecoder
+        }
+
+
+encodeTarget : TagEditTarget -> Encode.Value
+encodeTarget target =
+    Encode.object
+        [ ( "id", Encode.string target.id )
+        , ( "version", Encode.int target.version )
+        ]
 
 
 endpoint : String -> String -> Maybe String -> Int -> String
@@ -51,6 +76,15 @@ detailEndpoint apiBase postId =
 
     else
         Url.Builder.crossOrigin apiBase [ "api", "posts", postId ] []
+
+
+tagsEndpoint : String -> String
+tagsEndpoint apiBase =
+    if String.trim apiBase == "" then
+        Url.Builder.absolute [ "api", "posts", "tags" ] []
+
+    else
+        Url.Builder.crossOrigin apiBase [ "api", "posts", "tags" ] []
 
 
 mediaUrl : String -> String -> String

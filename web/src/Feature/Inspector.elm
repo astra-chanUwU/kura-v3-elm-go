@@ -1,11 +1,11 @@
 module Feature.Inspector exposing (Config, view)
 
 import Api.Post
-import Domain.Post exposing (PostDetail, PostSummary)
+import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
 import Feature.Selection
-import Html exposing (Html, a, aside, button, dd, div, dl, dt, li, p, text, ul)
-import Html.Attributes exposing (attribute, class, href, rel, style, target, title, type_)
-import Html.Events exposing (on)
+import Html exposing (Html, a, aside, button, dd, div, dl, dt, input, li, p, text, ul)
+import Html.Attributes exposing (attribute, class, disabled, href, placeholder, rel, style, target, title, type_, value)
+import Html.Events exposing (on, onClick, onInput)
 import Json.Decode as Decode
 import Set exposing (Set)
 import Ui.Media
@@ -27,6 +27,13 @@ type alias Config msg =
     , onClose : msg
     , onApiPending : String -> msg
     , onMediaError : String -> msg
+    , tagAdd : String
+    , tagRemove : String
+    , tagStatus : Maybe String
+    , tagSaving : Bool
+    , onTagAdd : String -> msg
+    , onTagRemove : String -> msg
+    , onSaveTags : msg
     }
 
 
@@ -39,6 +46,11 @@ view config =
                 Nothing ->
                     [ p [ class "panel-note" ] [ text "No active post. Click a thumbnail or use the arrow keys." ]
                     , selectionSection config
+                    , if config.selectedCount > 0 then
+                        tagEditor config
+
+                      else
+                        text ""
                     ]
 
                 Just post ->
@@ -46,8 +58,8 @@ view config =
                     , selectionSection config
                     , detailSection config post
                     , Panel.section "Tags" (tagList config (detailTags config post))
-                    , Panel.section "History"
-                        [ p [ class "panel-note" ] [ text "Revision history arrives with the post detail API." ] ]
+                    , tagEditor config
+                    , Panel.section "History" (historyList config)
                     ]
             )
         ]
@@ -170,6 +182,73 @@ tagList config tags =
     else
         [ ul [ class "tag-list" ] (List.map (tagItem config) tags)
         , p [ class "panel-note" ] [ text "Click to filter by a tag; Alt+click to exclude it." ]
+        ]
+
+
+tagEditor : Config msg -> Html msg
+tagEditor config =
+    Panel.section "Edit tags"
+        [ input
+            [ class "query-input"
+            , type_ "text"
+            , placeholder "Add tag"
+            , value config.tagAdd
+            , onInput config.onTagAdd
+            , attribute "aria-label" "Tags to add"
+            , attribute "autocomplete" "off"
+            ]
+            []
+        , input
+            [ class "query-input"
+            , type_ "text"
+            , placeholder "Remove tag"
+            , value config.tagRemove
+            , onInput config.onTagRemove
+            , attribute "aria-label" "Tags to remove"
+            , attribute "autocomplete" "off"
+            ]
+            []
+        , button
+            [ class "button"
+            , type_ "button"
+            , onClick config.onSaveTags
+            , disabled (config.tagSaving || (String.trim config.tagAdd == "" && String.trim config.tagRemove == ""))
+            ]
+            [ text "Save tags" ]
+        , case config.tagStatus of
+            Just status ->
+                p [ class "panel-note status-error" ] [ text status ]
+
+            Nothing ->
+                p [ class "panel-note" ] [ text "Separate multiple tags with commas." ]
+        ]
+
+
+historyList : Config msg -> List (Html msg)
+historyList config =
+    case config.detail of
+        Just detail ->
+            if List.isEmpty detail.history then
+                [ p [ class "panel-note" ] [ text "No tag revisions yet." ] ]
+
+            else
+                [ ul [ class "tag-list" ] (List.map historyItem detail.history) ]
+
+        Nothing ->
+            [ p [ class "panel-note" ] [ text "Select a post to load history." ] ]
+
+
+historyItem : TagRevision -> Html msg
+historyItem revision =
+    li []
+        [ text
+            ("v"
+                ++ String.fromInt revision.version
+                ++ " +"
+                ++ String.join ", " revision.addedTags
+                ++ " -"
+                ++ String.join ", " revision.removedTags
+            )
         ]
 
 

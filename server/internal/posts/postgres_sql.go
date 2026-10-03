@@ -36,8 +36,36 @@ SELECT
     hash,
     file_size,
     created_at::text,
-    tags
+    tags,
+    tag_version
 FROM posts
 WHERE deleted_at IS NULL
   AND id = $1::bigint
+`
+
+// GetPostRevisionsSQL returns the newest Inspector history entries.
+const GetPostRevisionsSQL = `
+SELECT version, kind, added_tags, removed_tags, created_at::text
+FROM post_tag_revisions
+WHERE post_id = $1::bigint
+ORDER BY version DESC
+LIMIT 50
+`
+
+const lockPostForTagEditSQL = `
+SELECT tags, search_text, tag_version
+FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL
+FOR UPDATE
+`
+
+const updatePostTagsSQL = `
+UPDATE posts
+SET tags = $1, search_text = $2, tag_version = $3
+WHERE id = $4::bigint AND deleted_at IS NULL
+`
+
+const insertPostRevisionSQL = `
+INSERT INTO post_tag_revisions (post_id, version, kind, added_tags, removed_tags)
+VALUES ($1::bigint, $2, 'tag_edit', $3, $4)
 `

@@ -59,6 +59,13 @@ The detail response extends `PostSummary` with source, artist, hash, file size,
 creation time, and tags; deleted rows return `404` and an unconfigured detail
 adapter returns `503`.
 
+Tag edits use `POST /api/posts/tags` with selected post ids, their expected
+tag versions, and add/remove lists. The server locks all targets in one
+transaction, rejects stale versions with `409`, updates the generated search
+text, increments each changed post's version, and records an immutable tag
+revision. The detail response includes the current version and the latest 50
+tag revisions.
+
 ## Server shape
 
 `server/cmd/kura-server` is the executable. Reusable HTTP and domain packages belong under `server/internal/`, so the future CLI can call the public HTTP API instead of importing server implementation details. The intended database path is handwritten SQL, sqlc-generated types, and pgx; no ORM is planned.
@@ -67,7 +74,7 @@ Domain mutations create immutable revisions. A revert creates another revision t
 
 ## Frontend shape
 
-Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading appends deduplicated pages while preserving active selection, mode, and scroll; tag editing is still to come. See `docs/frontend-design.md`.
+Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading appends deduplicated pages while preserving active selection, mode, and scroll; tag edits use optimistic versions and immutable revisions. Collections, favorites, and scores remain open. See `docs/frontend-design.md`.
 
 ## Deferred infrastructure
 

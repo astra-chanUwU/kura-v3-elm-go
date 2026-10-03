@@ -15,6 +15,7 @@ module Domain.Sequence exposing
     , range
     , slice
     , step
+    , updateTags
     )
 
 {-| The current search-result sequence shared by Grid, Loupe, Compare, Survey,
@@ -112,6 +113,28 @@ step : Int -> String -> Sequence -> Maybe String
 step delta id sequence =
     indexOf id sequence
         |> Maybe.andThen (\index -> idAt (clamp 0 (length sequence - 1) (index + delta)) sequence)
+
+
+updateTags : String -> List String -> Sequence -> Sequence
+updateTags postId tags sequence =
+    case indexOf postId sequence of
+        Just index ->
+            case get index sequence of
+                Just post ->
+                    let
+                        updated =
+                            { post | tags = tags }
+
+                    in
+                    case sequence of
+                        Sequence data ->
+                            Sequence { data | posts = Array.set index updated data.posts }
+
+                Nothing ->
+                    sequence
+
+        Nothing ->
+            sequence
 
 
 {-| Posts with their indexes from `from` (inclusive) to `to` (exclusive).

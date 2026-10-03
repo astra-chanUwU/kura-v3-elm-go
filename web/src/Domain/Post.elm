@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, decoder, detailDecoder, responseDecoder)
+module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, decoder, detailDecoder, responseDecoder, tagEditResponseDecoder)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -33,7 +33,36 @@ type alias PostDetail =
     , fileSize : Int
     , createdAt : String
     , tags : List String
+    , tagVersion : Int
+    , history : List TagRevision
     }
+
+
+type alias TagRevision =
+    { version : Int
+    , kind : String
+    , addedTags : List String
+    , removedTags : List String
+    , createdAt : String
+    }
+
+
+type alias TagEditTarget =
+    { id : String
+    , version : Int
+    }
+
+
+type alias TagEditResult =
+    { id : String
+    , version : Int
+    , tags : List String
+    , changed : Bool
+    }
+
+
+type alias TagEditResponse =
+    { posts : List TagEditResult }
 
 
 detailDecoder : Decoder PostDetail
@@ -61,6 +90,8 @@ detailDecoder =
                 , fileSize = 0
                 , createdAt = ""
                 , tags = []
+                , tagVersion = 0
+                , history = []
                 }
             )
             (Decode.field "id" Decode.string)
@@ -76,6 +107,13 @@ detailDecoder =
         (Decode.field "file_size" Decode.int)
         (Decode.field "created_at" Decode.string)
         (Decode.field "tags" (Decode.list Decode.string))
+        |> Decode.andThen
+            (\detail ->
+                Decode.map2
+                    (\tagVersion history -> { detail | tagVersion = tagVersion, history = history })
+                    (Decode.oneOf [ Decode.field "tag_version" Decode.int, Decode.succeed 0 ])
+                    (Decode.oneOf [ Decode.field "history" (Decode.list revisionDecoder), Decode.succeed [] ])
+            )
 
 
 decoder : Decoder PostSummary
@@ -95,3 +133,27 @@ responseDecoder =
     Decode.map2 SearchResponse
         (Decode.field "posts" (Decode.list decoder))
         (Decode.field "next_cursor" (Decode.nullable Decode.string))
+
+
+revisionDecoder : Decoder TagRevision
+revisionDecoder =
+    Decode.map5 TagRevision
+        (Decode.field "version" Decode.int)
+        (Decode.field "kind" Decode.string)
+        (Decode.field "added_tags" (Decode.list Decode.string))
+        (Decode.field "removed_tags" (Decode.list Decode.string))
+        (Decode.field "created_at" Decode.string)
+
+
+tagEditResponseDecoder : Decoder TagEditResponse
+tagEditResponseDecoder =
+    Decode.map (TagEditResponse) (Decode.field "posts" (Decode.list tagEditResultDecoder))
+
+
+tagEditResultDecoder : Decoder TagEditResult
+tagEditResultDecoder =
+    Decode.map4 TagEditResult
+        (Decode.field "id" Decode.string)
+        (Decode.field "version" Decode.int)
+        (Decode.field "tags" (Decode.list Decode.string))
+        (Decode.field "changed" Decode.bool)
