@@ -22,9 +22,11 @@ Usage:
   kura <command> [flags] [args]
   kura --help
   kura search --help
+  kura collection --help
 
 Commands:
   search    Search posts via GET /api/posts
+  collection List collections or browse collection posts
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
@@ -82,6 +84,53 @@ Examples:
   kura search --limit 20 --cursor tok123 cat
 `
 
+const collectionHelp = `kura collection - list collections and browse their posts
+
+Usage:
+  kura collection list [flags]
+  kura collection posts [flags] COLLECTION_ID
+
+Commands:
+  list     List collections via GET /api/collections
+  posts    List posts in a collection via GET /api/collections/{id}/posts
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per collection or post (JSON Lines)
+  -h, --help        Show this help
+
+Examples:
+  kura collection list
+  kura collection list --json
+  kura collection posts 7
+  kura collection posts --jsonl 7
+`
+
+const collectionListHelp = `kura collection list - list collections via the HTTP API
+
+Usage:
+  kura collection list [flags]
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per collection (JSON Lines)
+  -h, --help        Show this help
+`
+
+const collectionPostsHelp = `kura collection posts - list posts in a collection via the HTTP API
+
+Usage:
+  kura collection posts [flags] COLLECTION_ID
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per post (JSON Lines)
+  -h, --help        Show this help
+`
+
 type searchConfig struct {
 	apiURL    string
 	apiURLSet bool
@@ -108,6 +157,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return 0
 	case "search":
 		return runSearch(args[1:], stdout, stderr, getenv)
+	case "collection":
+		return runCollection(args[1:], stdout, stderr, getenv)
 	case "post":
 		// No detail endpoint exists in the current API (only GET /api/posts and
 		// GET /health). Do not invent one; explain and exit non-zero.
@@ -119,6 +170,187 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		fmt.Fprint(stderr, rootHelp)
 		return 1
 	}
+}
+
+type collectionConfig struct {
+	apiURL   string
+	jsonOut  bool
+	jsonlOut bool
+}
+
+func runCollection(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Fprint(stdout, collectionHelp)
+		return 0
+	}
+	subcommand := args[0]
+	subargs := args[1:]
+	if subcommand != "list" && subcommand != "posts" {
+		fmt.Fprintf(stderr, "error: unknown collection command %q\n", subcommand)
+		fmt.Fprint(stderr, collectionHelp)
+		return 1
+	}
+
+	cfg := collectionConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	collectionID, err := parseCollectionArgs(subargs, &cfg, subcommand == "posts")
+	if err != nil {
+		if err == errHelpRequested {
+			if subcommand == "list" {
+				fmt.Fprint(stdout, collectionListHelp)
+			} else {
+				fmt.Fprint(stdout, collectionPostsHelp)
+			}
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		if subcommand == "list" {
+			fmt.Fprint(stderr, collectionListHelp)
+		} else {
+			fmt.Fprint(stderr, collectionPostsHelp)
+		}
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if subcommand == "list" {
+		result, err := c.ListCollections(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return writeCollections(result, cfg, stdout, stderr)
+	}
+	result, err := c.CollectionPosts(ctx, collectionID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return writePosts(result, cfg, stdout, stderr)
+}
+
+func parseCollectionArgs(args []string, cfg *collectionConfig, requireID bool) (string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return "", errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+			continue
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+			continue
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if requireID {
+		if len(positional) != 1 {
+			return "", fmt.Errorf("collection posts requires exactly one COLLECTION_ID")
+		}
+		id := strings.TrimSpace(positional[0])
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || n <= 0 || id != strconv.FormatInt(n, 10) {
+			return "", fmt.Errorf("collection id must be a positive integer")
+		}
+		return id, nil
+	}
+	if len(positional) != 0 {
+		return "", fmt.Errorf("collection list does not accept positional arguments")
+	}
+	return "", nil
+}
+
+func writeCollections(result client.CollectionsResponse, cfg collectionConfig, stdout, _ io.Writer) int {
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		for _, collection := range result.Collections {
+			if err := enc.Encode(collection); err != nil {
+				return 1
+			}
+		}
+		return 0
+	}
+	for _, collection := range result.Collections {
+		fmt.Fprintf(stdout, "%s\t%s\t%d posts\n", collection.ID, collection.Name, len(collection.PostIDs))
+	}
+	return 0
+}
+
+func writePosts(result client.SearchResponse, cfg collectionConfig, stdout, stderr io.Writer) int {
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		for _, post := range result.Posts {
+			if err := enc.Encode(post); err != nil {
+				return 1
+			}
+		}
+	} else {
+		for _, post := range result.Posts {
+			fmt.Fprintf(stdout, "%s\t%s\t%dx%d\t%s\t%s\n", post.ID, post.MediaType, post.Width, post.Height, post.PreviewURL, post.OriginalURL)
+		}
+	}
+	if result.NextCursor != nil {
+		fmt.Fprintf(stderr, "next_cursor: %s\n", *result.NextCursor)
+	}
+	return 0
+}
+
+func encodeJSON(stdout io.Writer, value any) int {
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func runSearch(args []string, stdout, stderr io.Writer, getenv func(string) string) int {

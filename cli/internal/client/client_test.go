@@ -285,3 +285,57 @@ func TestSearch_IsWrapper(t *testing.T) {
 		t.Fatalf("Search wrapper should not send cursor/limit, got cursor=%q limit=%q", gotCursor, gotLimit)
 	}
 }
+
+func TestListCollections_Success(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"collections":[{"id":"7","name":"Favorites","post_ids":["11","10"]}]}`))
+	}))
+	defer srv.Close()
+
+	result, err := New(srv.URL).ListCollections(context.Background())
+	if err != nil {
+		t.Fatalf("ListCollections error: %v", err)
+	}
+	if gotPath != "/api/collections" {
+		t.Fatalf("path mismatch: got %q", gotPath)
+	}
+	if len(result.Collections) != 1 || result.Collections[0].Name != "Favorites" || len(result.Collections[0].PostIDs) != 2 {
+		t.Fatalf("unexpected collections: %#v", result.Collections)
+	}
+}
+
+func TestCollectionPosts_SuccessAndAPIError(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path == "/api/collections/7/posts" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"posts":[{"id":"11","media_type":"image/jpeg","width":10,"height":20}],"next_cursor":"next"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"collection or post not found"}`))
+	}))
+	defer srv.Close()
+
+	result, err := New(srv.URL).CollectionPosts(context.Background(), "7")
+	if err != nil {
+		t.Fatalf("CollectionPosts error: %v", err)
+	}
+	if gotPath != "/api/collections/7/posts" || len(result.Posts) != 1 || result.NextCursor == nil || *result.NextCursor != "next" {
+		t.Fatalf("unexpected request/result path=%q result=%#v", gotPath, result)
+	}
+	_, err = New(srv.URL).ListCollectionPosts(context.Background(), "8")
+	if err == nil || !strings.Contains(err.Error(), "collection or post not found") {
+		t.Fatalf("expected readable collection API error, got %v", err)
+	}
+}
+
+func TestCollectionPosts_EmptyID(t *testing.T) {
+	if _, err := New("http://example.test").CollectionPosts(context.Background(), " "); err == nil {
+		t.Fatal("expected empty collection id error")
+	}
+}

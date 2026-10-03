@@ -29,6 +29,19 @@ type SearchResponse struct {
 	NextCursor *string       `json:"next_cursor,omitempty"`
 }
 
+// Collection is the stable browser-facing representation from
+// GET /api/collections.
+type Collection struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	PostIDs []string `json:"post_ids"`
+}
+
+// CollectionsResponse is the envelope for GET /api/collections.
+type CollectionsResponse struct {
+	Collections []Collection `json:"collections"`
+}
+
 // Client talks to the Kura HTTP API. It uses only the public API surface
 // (GET /api/posts, GET /health) and does not import server implementation.
 type Client struct {
@@ -146,4 +159,85 @@ func (c *Client) SearchPage(ctx context.Context, query, cursor string, limit int
 		result.Posts = []PostSummary{}
 	}
 	return result, nil
+}
+
+// ListCollections executes GET /api/collections.
+func (c *Client) ListCollections(ctx context.Context) (CollectionsResponse, error) {
+	var result CollectionsResponse
+	if err := c.getJSON(ctx, "/api/collections", &result); err != nil {
+		return CollectionsResponse{}, err
+	}
+	if result.Collections == nil {
+		result.Collections = []Collection{}
+	}
+	return result, nil
+}
+
+// CollectionPosts executes GET /api/collections/{id}/posts. The collection
+// id is escaped as a path segment; the server remains responsible for
+// validating whether it identifies an existing collection.
+func (c *Client) CollectionPosts(ctx context.Context, collectionID string) (SearchResponse, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return SearchResponse{}, fmt.Errorf("collection id must not be empty")
+	}
+	var result SearchResponse
+	path := "/api/collections/" + url.PathEscape(collectionID) + "/posts"
+	if err := c.getJSON(ctx, path, &result); err != nil {
+		return SearchResponse{}, err
+	}
+	if result.Posts == nil {
+		result.Posts = []PostSummary{}
+	}
+	return result, nil
+}
+
+// ListCollectionPosts is an explicit alias for callers that prefer a list
+// verb in method names.
+func (c *Client) ListCollectionPosts(ctx context.Context, collectionID string) (SearchResponse, error) {
+	return c.CollectionPosts(ctx, collectionID)
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, target any) error {
+	base := c.BaseURL
+	if base == "" {
+		base = "http://localhost:8080"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid api url %q: %w", base, err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	u.RawQuery = ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiMsg struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &apiMsg) == nil && apiMsg.Error != "" {
+			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(body))}
+		}
+		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
 }
