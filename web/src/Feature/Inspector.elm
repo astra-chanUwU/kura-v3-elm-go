@@ -26,6 +26,7 @@ type alias Config msg =
     , onClear : msg
     , onClose : msg
     , onApiPending : String -> msg
+    , onFavorite : msg
     , onMediaError : String -> msg
     , tagAdd : String
     , tagRemove : String
@@ -34,6 +35,11 @@ type alias Config msg =
     , onTagAdd : String -> msg
     , onTagRemove : String -> msg
     , onSaveTags : msg
+    , scoreDraft : String
+    , reactionSaving : Bool
+    , reactionStatus : Maybe String
+    , onScoreDraft : String -> msg
+    , onSaveScore : msg
     }
 
 
@@ -57,6 +63,7 @@ view config =
                     [ identitySection config post
                     , selectionSection config
                     , detailSection config post
+                    , reactionSection config post
                     , Panel.section "Tags" (tagList config (detailTags config post))
                     , tagEditor config
                     , Panel.section "History" (historyList config)
@@ -157,6 +164,7 @@ selectionSection config =
             , activeId = Maybe.map .id config.active
             , onClear = config.onClear
             , onApiPending = config.onApiPending
+            , onFavorite = config.onFavorite
             }
          ]
             ++ (if config.selectedCount > 1 then
@@ -222,6 +230,58 @@ tagEditor config =
             Nothing ->
                 p [ class "panel-note" ] [ text "Separate multiple tags with commas." ]
         ]
+
+
+reactionSection : Config msg -> PostSummary -> Html msg
+reactionSection config post =
+    case config.detail of
+        Just detail ->
+            if detail.id == post.id then
+                Panel.section "Rating"
+                    [ button
+                        [ class "button"
+                        , type_ "button"
+                        , onClick config.onFavorite
+                        , disabled config.reactionSaving
+                        ]
+                        [ text
+                            (if detail.favorite then
+                                "★ Favorite"
+
+                             else
+                                "☆ Favorite"
+                            )
+                        ]
+                    , input
+                        [ class "query-input"
+                        , type_ "number"
+                        , attribute "min" "0"
+                        , value config.scoreDraft
+                        , onInput config.onScoreDraft
+                        , attribute "aria-label" "Score"
+                        , disabled config.reactionSaving
+                        ]
+                        []
+                    , button
+                        [ class "button"
+                        , type_ "button"
+                        , onClick config.onSaveScore
+                        , disabled config.reactionSaving
+                        ]
+                        [ text "Save score" ]
+                    , case config.reactionStatus of
+                        Just status ->
+                            p [ class "panel-note status-error" ] [ text status ]
+
+                        Nothing ->
+                            p [ class "panel-note" ] [ text ("Score " ++ String.fromInt detail.score) ]
+                    ]
+
+            else
+                Panel.section "Rating" [ p [ class "panel-note" ] [ text "Select a post to edit its rating." ] ]
+
+        Nothing ->
+            Panel.section "Rating" [ p [ class "panel-note" ] [ text "Loading rating…" ] ]
 
 
 historyList : Config msg -> List (Html msg)

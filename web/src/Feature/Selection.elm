@@ -10,13 +10,12 @@ type alias Config msg =
     , activeId : Maybe String
     , onClear : msg
     , onApiPending : String -> msg
+    , onFavorite : msg
     }
 
 
 {-| Actions apply to the selection when it is non-empty, otherwise to the
-active post. Mutations stay disabled until the tag, collection, and favorite
-APIs exist.
--}
+active post. -}
 view : Config msg -> Html msg
 view config =
     let
@@ -37,7 +36,13 @@ view config =
                 , div [ class "selection-buttons" ]
                     [ pending config "Tag" "T" "Tag editing"
                     , pending config "Add to collection" "B" "Collections"
-                    , pending config "Favorite" "F" "Favorites"
+                    , Ui.Button.view []
+                        { label = "Favorite"
+                        , key = Just "F"
+                        , onPress = Just config.onFavorite
+                        , pressed = Nothing
+                        , hint = Just "Toggle favorite"
+                        }
                     , Ui.Button.view []
                         { label = "Clear selection"
                         , key = Just "Ctrl D"

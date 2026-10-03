@@ -37,7 +37,10 @@ SELECT
     file_size,
     created_at::text,
     tags,
-    tag_version
+    tag_version,
+    favorite,
+    score,
+    reaction_version
 FROM posts
 WHERE deleted_at IS NULL
   AND id = $1::bigint
@@ -47,6 +50,16 @@ WHERE deleted_at IS NULL
 const GetPostRevisionsSQL = `
 SELECT version, kind, added_tags, removed_tags, created_at::text
 FROM post_tag_revisions
+WHERE post_id = $1::bigint
+ORDER BY version DESC
+LIMIT 50
+`
+
+// GetPostReactionRevisionsSQL returns the newest favorite/score history
+// entries for the Inspector.
+const GetPostReactionRevisionsSQL = `
+SELECT version, favorite, score, created_at::text
+FROM post_reaction_revisions
 WHERE post_id = $1::bigint
 ORDER BY version DESC
 LIMIT 50
@@ -68,4 +81,22 @@ WHERE id = $4::bigint AND deleted_at IS NULL
 const insertPostRevisionSQL = `
 INSERT INTO post_tag_revisions (post_id, version, kind, added_tags, removed_tags)
 VALUES ($1::bigint, $2, 'tag_edit', $3, $4)
+`
+
+const lockPostForReactionSQL = `
+SELECT favorite, score, reaction_version
+FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL
+FOR UPDATE
+`
+
+const updatePostReactionSQL = `
+UPDATE posts
+SET favorite = $1, score = $2, reaction_version = $3
+WHERE id = $4::bigint AND deleted_at IS NULL
+`
+
+const insertPostReactionRevisionSQL = `
+INSERT INTO post_reaction_revisions (post_id, version, favorite, score)
+VALUES ($1::bigint, $2, $3, $4)
 `

@@ -18,3 +18,10 @@ var ErrConflict = errors.New("post tag version conflict")
 
 // ErrInvalidTags indicates malformed tag-edit input.
 var ErrInvalidTags = errors.New("invalid tags")
+
+// ErrReactionConflict indicates that a favorite/score edit was based on an
+// older reaction version.
+var ErrReactionConflict = errors.New("post reaction version conflict")
+
+// ErrInvalidReactions indicates malformed favorite/score mutation input.
+var ErrInvalidReactions = errors.New("invalid reactions")

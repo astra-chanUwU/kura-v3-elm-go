@@ -1,6 +1,6 @@
 # Kura V3 frontend design — Library workspace
 
-Status: the Library workspace, grid virtualization, cursor pagination, and read-only Inspector detail loading are built in `web/` and Go. Remaining steps need mutation APIs.
+Status: the Library workspace, grid virtualization, cursor pagination, Inspector detail loading, tag edits, favorites, and scores are built in `web/` and Go. Collections remain for a later mutation slice.
 
 This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
@@ -205,7 +205,7 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `Feature.Filmstrip` | new | Horizontal window of ±30 items around active; same cell states as the grid. |
 | `Feature.Inspector` | new | Identity, dimensions, media type, source, tags, history; selection summary when `selected` > 1. |
 | `Feature.QueryEditor` | new | TopBar KuraQL field + FilterBar chips. |
-| `Feature.Selection` | change | Action bar: count, clear, tag, add to collection, favorite; tag editing is live, collection/favorite actions remain disabled with a reason. |
+| `Feature.Selection` | change | Action bar: count, clear, tag, add to collection, favorite; tag, favorite, and score editing are live, while collection actions remain disabled with a reason. |
 | `Feature.Navigator` | new | Saved searches, recent queries, collections. |
 | `Feature.TagEditor` | integrated | Compact Inspector add/remove editor for active or selected posts. |
 | `Feature.RevisionDiff` | later | Inspector history entries are currently rendered as a compact list; richer diffs remain open. |
@@ -245,7 +245,7 @@ Global commands are ignored while focus is in an editable field, except `Esc`. S
 | `Shift+N` | Toggle Navigator | Same | Same | Same |
 | `T` | Focus Inspector tag field **[API]** | Same | Same | Same |
 | `B` | Add targets to the target collection **[API]** | Same | Same | Same |
-| `F` | Toggle favorite on targets **[API]** | Same | Same | Same |
+| `F` | Toggle favorite on targets | Same | Same | Same |
 | `?` | Shortcut sheet | Same | Same | Same |
 
 `Esc` priority: 1) in a text field, revert the draft and blur; 2) close an open menu or drawer; 3) leave Loupe/Compare/Survey for Grid; 4) in Grid, nothing. `Esc` never clears the selection.
@@ -289,9 +289,9 @@ Marquee drag-selection and panel resizing are deferred.
 | 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then incremental loading near the end of the grid. The grid is already virtualized. | **[API]** + Elm | Done |
 | 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm | Done |
 | 9 | Empty query browses newest posts through the same cursor API; Navigator "All posts". | **[API]** | Done |
-| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Tag edits done; collections/favorites/scores open |
+| 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Tag/favorite/score done; collections open |
 
-The completed Library slices can be verified with the 15 seeded `demo` rows. Tag revision history and the `T` mutation are live; `B` and `F`, richer revision diffs, and saved-search server state remain open.
+The completed Library slices can be verified with the 15 seeded `demo` rows. Tag and reaction revision history plus the `T` and `F` mutations are live; `B`, richer revision diffs, and saved-search server state remain open.
 
 ---
 

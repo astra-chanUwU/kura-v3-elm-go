@@ -8,7 +8,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
-import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget)
+import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget)
 import Domain.Query as Query
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
@@ -117,6 +117,11 @@ type alias Model =
     , tagStatus : Maybe String
     , tagRequestId : Int
     , tagVersions : Dict String Int
+    , reactionVersions : Dict String Int
+    , reactionSaving : Bool
+    , reactionStatus : Maybe String
+    , reactionRequestId : Int
+    , scoreDraft : String
     }
 
 
@@ -182,6 +187,11 @@ init flagsValue url key =
             , tagStatus = Nothing
             , tagRequestId = 0
             , tagVersions = Dict.empty
+            , reactionVersions = Dict.empty
+            , reactionSaving = False
+            , reactionStatus = Nothing
+            , reactionRequestId = 0
+            , scoreDraft = "0"
             }
     in
     let
@@ -217,6 +227,7 @@ type Command
     | FocusQuery
     | ToggleFilterBar
     | ToggleInspector
+    | ToggleFavoriteAction
     | ToggleNavigator
     | ShowShortcuts
     | CloseShortcuts
@@ -234,6 +245,10 @@ type Msg
     | TagRemoveChanged String
     | SaveTags
     | TagsCompleted Int (Result Http.Error TagEditResponse)
+    | ToggleFavorite
+    | ScoreDraftChanged String
+    | SaveScore
+    | ReactionsCompleted Int (Result Http.Error ReactionResponse)
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -418,6 +433,24 @@ updateHelp msg model =
 
                         Err _ ->
                             model.tagVersions
+                , reactionVersions =
+                    case result of
+                        Ok detail ->
+                            Dict.insert postId detail.reactionVersion model.reactionVersions
+
+                        Err _ ->
+                            model.reactionVersions
+                , scoreDraft =
+                    if model.selection.active == Just postId then
+                        case result of
+                            Ok detail ->
+                                String.fromInt detail.score
+
+                            Err _ ->
+                                model.scoreDraft
+
+                    else
+                        model.scoreDraft
               }
             , Cmd.none
             )
@@ -479,6 +512,46 @@ updateHelp msg model =
 
                     Err error ->
                         ( { model | tagSaving = False, tagStatus = Just (tagErrorToString error) }, Cmd.none )
+
+        ToggleFavorite ->
+            saveFavorite model
+
+        ScoreDraftChanged value ->
+            ( { model | scoreDraft = value, reactionStatus = Nothing }, Cmd.none )
+
+        SaveScore ->
+            saveScore model
+
+        ReactionsCompleted requestId result ->
+            if requestId /= model.reactionRequestId then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok response ->
+                        let
+                            versions =
+                                List.foldl (\post versions_ -> Dict.insert post.id post.version versions_) model.reactionVersions response.posts
+
+                            refreshed =
+                                case model.selection.active of
+                                    Just postId ->
+                                        ( { model
+                                            | reactionVersions = versions
+                                            , reactionSaving = False
+                                            , reactionStatus = Just "Rating saved."
+                                            , details = Dict.insert postId DetailLoading model.details
+                                          }
+                                        , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                                        )
+
+                                    Nothing ->
+                                        ( { model | reactionVersions = versions, reactionSaving = False, reactionStatus = Just "Rating saved." }, Cmd.none )
+                        in
+                        refreshed
+
+                    Err error ->
+                        ( { model | reactionSaving = False, reactionStatus = Just (reactionErrorToString error) }, Cmd.none )
 
         Retry ->
             startSearch model model.query
@@ -783,6 +856,9 @@ runCommand command model =
 
             else
                 ( { model | inspectorDrawer = not model.inspectorDrawer, navigatorDrawer = False }, Cmd.none )
+
+        ToggleFavoriteAction ->
+            saveFavorite model
 
         ToggleNavigator ->
             if navigatorPresentation model == Docked then
@@ -1813,6 +1889,31 @@ tagErrorToString error =
             "The tag edit response was invalid."
 
 
+reactionErrorToString : Http.Error -> String
+reactionErrorToString error =
+    case error of
+        Http.BadStatus 409 ->
+            "Rating changed elsewhere. Reload the post and try again."
+
+        Http.BadStatus 404 ->
+            "One selected post no longer exists."
+
+        Http.BadStatus status ->
+            "Rating edit failed (HTTP " ++ String.fromInt status ++ ")."
+
+        Http.BadUrl url ->
+            "Invalid API URL: " ++ url
+
+        Http.Timeout ->
+            "The rating edit timed out."
+
+        Http.NetworkError ->
+            "The rating edit server could not be reached."
+
+        Http.BadBody _ ->
+            "The rating response was invalid."
+
+
 saveTags : Model -> ( Model, Cmd Msg )
 saveTags model =
     let
@@ -1863,7 +1964,89 @@ tagTarget model postId =
                                     Nothing
                         )
                     |> Maybe.withDefault 0
+
     }
+
+
+reactionTarget : Model -> String -> ReactionTarget
+reactionTarget model postId =
+    { id = postId
+    , version =
+        case Dict.get postId model.reactionVersions of
+            Just version ->
+                version
+
+            Nothing ->
+                Dict.get postId model.details
+                    |> Maybe.andThen
+                        (\state ->
+                            case state of
+                                DetailReady detail ->
+                                    Just detail.reactionVersion
+
+                                _ ->
+                                    Nothing
+                        )
+                    |> Maybe.withDefault 0
+    }
+
+
+saveFavorite : Model -> ( Model, Cmd Msg )
+saveFavorite model =
+    let
+        ids =
+            Selection.targets model.sequence model.selection
+
+        targets =
+            List.map (reactionTarget model) ids
+
+        favorite =
+            activeDetail model |> Maybe.map (\detail -> not detail.favorite)
+
+        requestId =
+            model.reactionRequestId + 1
+    in
+    case favorite of
+        Nothing ->
+            ( { model | reactionStatus = Just "Select a post and load its details before changing favorite." }, Cmd.none )
+
+        Just value ->
+            if List.isEmpty targets then
+                ( { model | reactionStatus = Just "Select a post before changing favorite." }, Cmd.none )
+
+            else
+                ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
+                , Api.Post.editReactions model.apiBase targets (Just value) Nothing (ReactionsCompleted requestId)
+                )
+
+
+saveScore : Model -> ( Model, Cmd Msg )
+saveScore model =
+    let
+        ids =
+            Selection.targets model.sequence model.selection
+
+        targets =
+            List.map (reactionTarget model) ids
+
+        requestId =
+            model.reactionRequestId + 1
+    in
+    case String.toInt (String.trim model.scoreDraft) of
+        Nothing ->
+            ( { model | reactionStatus = Just "Score must be a non-negative integer." }, Cmd.none )
+
+        Just score ->
+            if score < 0 then
+                ( { model | reactionStatus = Just "Score must be a non-negative integer." }, Cmd.none )
+
+            else if List.isEmpty targets then
+                ( { model | reactionStatus = Just "Select a post before changing score." }, Cmd.none )
+
+            else
+                ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
+                , Api.Post.editReactions model.apiBase targets Nothing (Just score) (ReactionsCompleted requestId)
+                )
 
 
 splitTagDraft : String -> List String
@@ -2012,7 +2195,7 @@ commandFor model event =
                         Just (Pending "Collections")
 
                     "f" ->
-                        Just (Pending "Favorites")
+                        Just ToggleFavoriteAction
 
                     _ ->
                         Nothing
@@ -2236,6 +2419,7 @@ inspectorView model =
             , onClear = KeyCommand ClearSelection
             , onClose = KeyCommand ToggleInspector
             , onApiPending = KeyCommand << Pending
+            , onFavorite = KeyCommand ToggleFavoriteAction
             , onMediaError = MediaFailed
             , tagAdd = model.tagAddDraft
             , tagRemove = model.tagRemoveDraft
@@ -2244,6 +2428,11 @@ inspectorView model =
             , onTagAdd = TagAddChanged
             , onTagRemove = TagRemoveChanged
             , onSaveTags = SaveTags
+            , scoreDraft = model.scoreDraft
+            , reactionSaving = model.reactionSaving
+            , reactionStatus = model.reactionStatus
+            , onScoreDraft = ScoreDraftChanged
+            , onSaveScore = SaveScore
             }
 
     else

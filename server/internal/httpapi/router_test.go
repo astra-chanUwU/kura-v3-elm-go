@@ -122,6 +122,18 @@ type fakeTagMutator struct {
 	got    posts.TagEditRequest
 }
 
+type fakeReactionMutator struct {
+	fakeSearcher
+	result posts.ReactionResponse
+	err    error
+	got    posts.ReactionRequest
+}
+
+func (f *fakeReactionMutator) EditReactions(_ context.Context, request posts.ReactionRequest) (posts.ReactionResponse, error) {
+	f.got = request
+	return f.result, f.err
+}
+
 func (f *fakeTagMutator) EditTags(_ context.Context, request posts.TagEditRequest) (posts.TagEditResponse, error) {
 	f.got = request
 	return f.result, f.err
@@ -153,6 +165,38 @@ func TestTagEditRouteValidationAndErrors(t *testing.T) {
 
 	fake.err = posts.ErrConflict
 	request := httptest.NewRequest(http.MethodPost, "/api/posts/tags", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"add":["x"]}`))
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d", response.Code)
+	}
+}
+
+func TestReactionRouteValidationAndErrors(t *testing.T) {
+	favorite := true
+	fake := &fakeReactionMutator{result: posts.ReactionResponse{Posts: []posts.ReactionResult{{ID: "2004", Version: 1, Favorite: true, Score: 2, Changed: true}}}}
+	r := NewRouter(fake)
+	req := httptest.NewRequest(http.MethodPost, "/api/posts/reactions", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"favorite":true,"score":2}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK || fake.got.Favorite == nil || *fake.got.Favorite != favorite || fake.got.Score == nil || *fake.got.Score != 2 {
+		t.Fatalf("unexpected reaction response: status=%d request=%#v", resp.Code, fake.got)
+	}
+	for _, body := range []string{
+		`{"posts":[],"favorite":true}`,
+		`{"posts":[{"id":"2004","version":0}]}`,
+		`{"posts":[{"id":"2004","version":0}],"score":-1}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/posts/reactions", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("body %s: got status %d", body, response.Code)
+		}
+	}
+	fake.err = posts.ErrReactionConflict
+	request := httptest.NewRequest(http.MethodPost, "/api/posts/reactions", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"favorite":false}`))
 	response := httptest.NewRecorder()
 	r.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {

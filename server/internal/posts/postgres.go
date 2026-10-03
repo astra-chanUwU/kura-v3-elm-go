@@ -112,6 +112,9 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 		&detail.CreatedAt,
 		&detail.Tags,
 		&detail.TagVersion,
+		&detail.Favorite,
+		&detail.Score,
+		&detail.ReactionVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PostDetail{}, ErrNotFound
@@ -133,6 +136,22 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 		detail.History = append(detail.History, revision)
 	}
 	if err := rows.Err(); err != nil {
+		return PostDetail{}, err
+	}
+	detail.ReactionHistory = make([]ReactionRevision, 0, 50)
+	reactionRows, err := s.pool.Query(ctx, GetPostReactionRevisionsSQL, id)
+	if err != nil {
+		return PostDetail{}, err
+	}
+	defer reactionRows.Close()
+	for reactionRows.Next() {
+		var revision ReactionRevision
+		if err := reactionRows.Scan(&revision.Version, &revision.Favorite, &revision.Score, &revision.CreatedAt); err != nil {
+			return PostDetail{}, err
+		}
+		detail.ReactionHistory = append(detail.ReactionHistory, revision)
+	}
+	if err := reactionRows.Err(); err != nil {
 		return PostDetail{}, err
 	}
 	return detail, nil
@@ -164,6 +183,37 @@ func (s *PostgresSearcher) EditTags(ctx context.Context, request TagEditRequest)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagEditResponse{}, err
+	}
+	return response, nil
+}
+
+// EditReactions atomically applies a bounded optimistic favorite/score edit
+// to every target. Row locks keep the version check and immutable revision
+// insert in one transaction.
+func (s *PostgresSearcher) EditReactions(ctx context.Context, request ReactionRequest) (ReactionResponse, error) {
+	if s == nil || s.pool == nil {
+		return ReactionResponse{}, ErrUnavailable
+	}
+	validated, err := ValidateReactionRequest(request)
+	if err != nil {
+		return ReactionResponse{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ReactionResponse{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	response := ReactionResponse{Posts: make([]ReactionResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		result, err := s.applyReaction(ctx, tx, target, validated.Favorite, validated.Score)
+		if err != nil {
+			return ReactionResponse{}, err
+		}
+		response.Posts = append(response.Posts, result)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ReactionResponse{}, err
 	}
 	return response, nil
 }

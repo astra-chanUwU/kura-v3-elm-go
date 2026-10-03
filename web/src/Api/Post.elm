@@ -1,6 +1,6 @@
-module Api.Post exposing (detail, editTags, search, mediaUrl)
+module Api.Post exposing (detail, editTags, editReactions, search, mediaUrl)
 
-import Domain.Post exposing (PostDetail, SearchResponse, TagEditResponse, TagEditTarget, detailDecoder, responseDecoder, tagEditResponseDecoder)
+import Domain.Post exposing (PostDetail, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget, detailDecoder, responseDecoder, tagEditResponseDecoder, reactionResponseDecoder)
 import Http
 import Json.Encode as Encode
 import String
@@ -39,8 +39,44 @@ editTags apiBase targets add remove toMsg =
         }
 
 
+editReactions : String -> List ReactionTarget -> Maybe Bool -> Maybe Int -> (Result Http.Error ReactionResponse -> msg) -> Cmd msg
+editReactions apiBase targets favorite score toMsg =
+    Http.post
+        { url = reactionsEndpoint apiBase
+        , body =
+            Http.jsonBody
+                (Encode.object
+                    ([ ( "posts", Encode.list encodeReactionTarget targets ) ]
+                        ++ (case favorite of
+                                Just value ->
+                                    [ ( "favorite", Encode.bool value ) ]
+
+                                Nothing ->
+                                    []
+                           )
+                        ++ (case score of
+                                Just value ->
+                                    [ ( "score", Encode.int value ) ]
+
+                                Nothing ->
+                                    []
+                           )
+                    )
+                )
+        , expect = Http.expectJson toMsg reactionResponseDecoder
+        }
+
+
 encodeTarget : TagEditTarget -> Encode.Value
 encodeTarget target =
+    Encode.object
+        [ ( "id", Encode.string target.id )
+        , ( "version", Encode.int target.version )
+        ]
+
+
+encodeReactionTarget : ReactionTarget -> Encode.Value
+encodeReactionTarget target =
     Encode.object
         [ ( "id", Encode.string target.id )
         , ( "version", Encode.int target.version )
@@ -85,6 +121,15 @@ tagsEndpoint apiBase =
 
     else
         Url.Builder.crossOrigin apiBase [ "api", "posts", "tags" ] []
+
+
+reactionsEndpoint : String -> String
+reactionsEndpoint apiBase =
+    if String.trim apiBase == "" then
+        Url.Builder.absolute [ "api", "posts", "reactions" ] []
+
+    else
+        Url.Builder.crossOrigin apiBase [ "api", "posts", "reactions" ] []
 
 
 mediaUrl : String -> String -> String

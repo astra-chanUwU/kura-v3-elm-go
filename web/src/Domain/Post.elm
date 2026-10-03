@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, decoder, detailDecoder, responseDecoder, tagEditResponseDecoder)
+module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, tagEditResponseDecoder, reactionResponseDecoder)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -34,7 +34,11 @@ type alias PostDetail =
     , createdAt : String
     , tags : List String
     , tagVersion : Int
+    , favorite : Bool
+    , score : Int
+    , reactionVersion : Int
     , history : List TagRevision
+    , reactionHistory : List ReactionRevision
     }
 
 
@@ -65,6 +69,33 @@ type alias TagEditResponse =
     { posts : List TagEditResult }
 
 
+type alias ReactionTarget =
+    { id : String
+    , version : Int
+    }
+
+
+type alias ReactionResult =
+    { id : String
+    , version : Int
+    , favorite : Bool
+    , score : Int
+    , changed : Bool
+    }
+
+
+type alias ReactionResponse =
+    { posts : List ReactionResult }
+
+
+type alias ReactionRevision =
+    { version : Int
+    , favorite : Bool
+    , score : Int
+    , createdAt : String
+    }
+
+
 detailDecoder : Decoder PostDetail
 detailDecoder =
     Decode.map5
@@ -91,7 +122,11 @@ detailDecoder =
                 , createdAt = ""
                 , tags = []
                 , tagVersion = 0
+                , favorite = False
+                , score = 0
+                , reactionVersion = 0
                 , history = []
+                , reactionHistory = []
                 }
             )
             (Decode.field "id" Decode.string)
@@ -109,10 +144,23 @@ detailDecoder =
         (Decode.field "tags" (Decode.list Decode.string))
         |> Decode.andThen
             (\detail ->
-                Decode.map2
-                    (\tagVersion history -> { detail | tagVersion = tagVersion, history = history })
+                Decode.map6
+                    (\tagVersion history favorite score reactionVersion reactionHistory ->
+                        { detail
+                            | tagVersion = tagVersion
+                            , history = history
+                            , favorite = favorite
+                            , score = score
+                            , reactionVersion = reactionVersion
+                            , reactionHistory = reactionHistory
+                        }
+                    )
                     (Decode.oneOf [ Decode.field "tag_version" Decode.int, Decode.succeed 0 ])
                     (Decode.oneOf [ Decode.field "history" (Decode.list revisionDecoder), Decode.succeed [] ])
+                    (Decode.oneOf [ Decode.field "favorite" Decode.bool, Decode.succeed False ])
+                    (Decode.oneOf [ Decode.field "score" Decode.int, Decode.succeed 0 ])
+                    (Decode.oneOf [ Decode.field "reaction_version" Decode.int, Decode.succeed 0 ])
+                    (Decode.oneOf [ Decode.field "reaction_history" (Decode.list reactionRevisionDecoder), Decode.succeed [] ])
             )
 
 
@@ -157,3 +205,27 @@ tagEditResultDecoder =
         (Decode.field "version" Decode.int)
         (Decode.field "tags" (Decode.list Decode.string))
         (Decode.field "changed" Decode.bool)
+
+
+reactionResponseDecoder : Decoder ReactionResponse
+reactionResponseDecoder =
+    Decode.map ReactionResponse (Decode.field "posts" (Decode.list reactionResultDecoder))
+
+
+reactionResultDecoder : Decoder ReactionResult
+reactionResultDecoder =
+    Decode.map5 ReactionResult
+        (Decode.field "id" Decode.string)
+        (Decode.field "version" Decode.int)
+        (Decode.field "favorite" Decode.bool)
+        (Decode.field "score" Decode.int)
+        (Decode.field "changed" Decode.bool)
+
+
+reactionRevisionDecoder : Decoder ReactionRevision
+reactionRevisionDecoder =
+    Decode.map4 ReactionRevision
+        (Decode.field "version" Decode.int)
+        (Decode.field "favorite" Decode.bool)
+        (Decode.field "score" Decode.int)
+        (Decode.field "created_at" Decode.string)
