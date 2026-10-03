@@ -100,3 +100,40 @@ const insertPostReactionRevisionSQL = `
 INSERT INTO post_reaction_revisions (post_id, version, favorite, score)
 VALUES ($1::bigint, $2, $3, $4)
 `
+
+const listCollectionsSQL = `
+SELECT c.id::text, c.name, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE cp.post_id IS NOT NULL), ARRAY[]::text[])
+FROM collections c
+LEFT JOIN collection_posts cp ON cp.collection_id = c.id
+LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+WHERE cp.post_id IS NULL OR p.id IS NOT NULL
+GROUP BY c.id, c.name
+ORDER BY c.created_at, c.id
+`
+
+const insertCollectionSQL = `
+INSERT INTO collections (name) VALUES ($1)
+RETURNING id::text, name
+`
+
+const collectionExistsSQL = `SELECT 1 FROM collections WHERE id = $1::bigint`
+
+const addCollectionPostSQL = `
+INSERT INTO collection_posts (collection_id, post_id, position)
+SELECT $1::bigint, p.id, COALESCE((SELECT MAX(position) + 1 FROM collection_posts WHERE collection_id = $1::bigint), 0) + row_number() OVER ()
+FROM posts p
+WHERE p.id = ANY($2::bigint[]) AND p.deleted_at IS NULL
+ON CONFLICT (collection_id, post_id) DO NOTHING
+`
+
+const collectionPostIDsSQL = `
+SELECT post_id::text FROM collection_posts cp
+JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+WHERE cp.collection_id = $1::bigint
+ORDER BY cp.position, cp.post_id
+`
+
+const deleteCollectionPostSQL = `
+DELETE FROM collection_posts cp USING posts p
+WHERE cp.collection_id = $1::bigint AND cp.post_id = $2::bigint AND p.id = cp.post_id AND p.deleted_at IS NULL
+`

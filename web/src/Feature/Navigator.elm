@@ -1,8 +1,9 @@
 module Feature.Navigator exposing (Config, view)
 
-import Html exposing (Html, aside, button, div, li, p, span, text, ul)
-import Html.Attributes exposing (attribute, class, classList, disabled, title, type_)
-import Html.Events exposing (onClick)
+import Domain.Collection exposing (Collection)
+import Html exposing (Html, aside, button, div, input, li, p, span, text, ul)
+import Html.Attributes exposing (attribute, class, classList, disabled, placeholder, title, type_, value)
+import Html.Events exposing (onClick, onInput)
 import Ui.Panel as Panel exposing (Presentation)
 
 
@@ -11,6 +12,13 @@ type alias Config msg =
     , current : String
     , saved : List String
     , recent : List String
+    , collections : List Collection
+    , activeCollection : Maybe String
+    , collectionDraft : String
+    , onCollectionDraft : String -> msg
+    , onCreateCollection : String -> msg
+    , onSelectCollection : String -> msg
+    , onMoveCollectionPost : String -> Int -> msg
     , onRun : String -> msg
     , onSave : msg
     , onRemove : String -> msg
@@ -23,6 +31,10 @@ view config =
     let
         canSave =
             String.trim config.current /= "" && not (List.member config.current config.saved)
+
+        active =
+            config.activeCollection
+                |> Maybe.andThen (\id -> List.filter (\c -> c.id == id) config.collections |> List.head)
     in
     aside [ class (Panel.presentationClass "navigator" config.presentation), attribute "aria-label" "Navigator" ]
         [ Panel.header "Library" config.presentation config.onClose
@@ -59,7 +71,60 @@ view config =
                     ul [ class "nav-list" ] (List.map (\query -> li [ class "nav-row" ] [ queryButton config query ]) config.recent)
                 ]
             , Panel.section "Collections"
-                [ p [ class "panel-note" ] [ text "Collections and pools arrive with the collections API." ] ]
+                [ input [ class "nav-input", type_ "text", placeholder "New collection", value config.collectionDraft, onInput config.onCollectionDraft ] []
+                , button [ class "button button-quiet nav-save", type_ "button", onClick (config.onCreateCollection config.collectionDraft), disabled (String.trim config.collectionDraft == "") ]
+                    [ text "Create collection" ]
+                , if List.isEmpty config.collections then
+                    p [ class "panel-note" ] [ text "Create a collection for selected posts." ]
+
+                  else
+                    ul [ class "nav-list" ]
+                        (List.map
+                            (\collection ->
+                                li [ class "nav-row" ]
+                                    [ button
+                                        [ class "nav-item"
+                                        , classList [ ( "is-current", Just collection.id == config.activeCollection ) ]
+                                        , type_ "button"
+                                        , onClick (config.onSelectCollection collection.id)
+                                        ]
+                                        [ span [] [ text (collection.name ++ " (" ++ String.fromInt (List.length collection.postIds) ++ ")") ] ]
+                                    ]
+                            )
+                            config.collections
+                        )
+                , case active of
+                    Nothing ->
+                        text ""
+
+                    Just collection ->
+                        if List.isEmpty collection.postIds then
+                            p [ class "panel-note" ] [ text "No posts in this collection." ]
+
+                        else
+                            div [ class "collection-order" ]
+                                [ p [ class "panel-label" ] [ text (collection.name ++ " order") ]
+                                , ul [ class "nav-list collection-order-list" ]
+                                    (List.indexedMap
+                                        (\idx postId ->
+                                            let
+                                                isFirst =
+                                                    idx == 0
+
+                                                isLast =
+                                                    idx == List.length collection.postIds - 1
+                                            in
+                                            li [ class "nav-row collection-order-row" ]
+                                                [ span [ class "collection-order-id", title postId ] [ text ("#" ++ postId) ]
+                                                , span [ class "collection-order-spacer" ] []
+                                                , button [ class "collection-move", type_ "button", disabled isFirst, onClick (config.onMoveCollectionPost postId -1), attribute "aria-label" ("Move #" ++ postId ++ " up") ] [ text "↑" ]
+                                                , button [ class "collection-move", type_ "button", disabled isLast, onClick (config.onMoveCollectionPost postId 1), attribute "aria-label" ("Move #" ++ postId ++ " down") ] [ text "↓" ]
+                                                ]
+                                        )
+                                        collection.postIds
+                                    )
+                                ]
+                ]
             ]
         ]
 

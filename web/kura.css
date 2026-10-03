@@ -584,3 +584,12 @@ button.chip:hover { border-color: var(--accent); }
   .statusbar .status-item:nth-child(3) { display: none; }
   .statusbar-help span { display: none; }
 }
+
+.collection-order { margin-top: 10px; }
+.collection-order-list { margin-top: 6px; }
+.collection-order-row { gap: 4px; padding: 2px 0; }
+.collection-order-id { flex: 1; min-width: 0; overflow: hidden; font-family: var(--mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.collection-order-spacer { flex: 1; }
+.collection-move { width: 22px; height: 22px; padding: 0; border: 1px solid var(--rule); border-radius: 3px; background: var(--paper-raised); color: var(--ink); font-size: 12px; line-height: 1; }
+.collection-move:disabled { opacity: .35; cursor: default; }
+.collection-move:hover:not(:disabled) { border-color: #bdbab2; background: var(--cell); }

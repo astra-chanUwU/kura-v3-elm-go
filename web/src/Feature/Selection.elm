@@ -11,6 +11,7 @@ type alias Config msg =
     , onClear : msg
     , onApiPending : String -> msg
     , onFavorite : msg
+    , onAddToCollection : msg
     }
 
 
@@ -35,7 +36,13 @@ view config =
                 [ p [ class "selection-target" ] [ text ("Actions apply to " ++ label) ]
                 , div [ class "selection-buttons" ]
                     [ pending config "Tag" "T" "Tag editing"
-                    , pending config "Add to collection" "B" "Collections"
+                    , Ui.Button.view []
+                        { label = "Add to collection"
+                        , key = Just "B"
+                        , onPress = Just config.onAddToCollection
+                        , pressed = Nothing
+                        , hint = Just "Add selected posts to the active collection"
+                        }
                     , Ui.Button.view []
                         { label = "Favorite"
                         , key = Just "F"

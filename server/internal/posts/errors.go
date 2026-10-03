@@ -25,3 +25,5 @@ var ErrReactionConflict = errors.New("post reaction version conflict")
 
 // ErrInvalidReactions indicates malformed favorite/score mutation input.
 var ErrInvalidReactions = errors.New("invalid reactions")
+
+var ErrInvalidCollections = errors.New("invalid collections")

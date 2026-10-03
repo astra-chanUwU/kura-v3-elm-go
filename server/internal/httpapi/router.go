@@ -32,6 +32,11 @@ func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r.Get("/api/posts/{id}", postDetail(searchers...))
 	r.Post("/api/posts/tags", editTags(searchers...))
 	r.Post("/api/posts/reactions", editReactions(searchers...))
+	r.Get("/api/collections", listCollections(searchers...))
+	r.Post("/api/collections", createCollection(searchers...))
+	r.Post("/api/collections/{id}/posts", addCollectionPosts(searchers...))
+	r.Delete("/api/collections/{id}/posts/{postID}", removeCollectionPost(searchers...))
+	r.Post("/api/collections/{id}/order", reorderCollection(searchers...))
 	r.Handle("/media/*", http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot()))))
 	return r
 }
@@ -51,13 +56,156 @@ func localDevCORS(next http.Handler) http.Handler {
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func collectionMutator(searchers ...posts.Searcher) (posts.CollectionMutator, bool) {
+	if len(searchers) == 0 || searchers[0] == nil {
+		return nil, false
+	}
+	mutator, ok := searchers[0].(posts.CollectionMutator)
+	return mutator, ok
+}
+
+func listCollections(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := collectionMutator(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		result, err := reader.ListCollections(r.Context())
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Collections []posts.Collection `json:"collections"`
+		}{Collections: result})
+	}
+}
+
+func createCollection(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mutator, ok := collectionMutator(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		var request posts.CreateCollectionRequest
+		if err := decodeJSONBody(w, r, &request, "collection"); err != nil {
+			return
+		}
+		validated, err := posts.ValidateCreateCollection(request)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := mutator.CreateCollection(r.Context(), validated)
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, result)
+	}
+}
+
+func addCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mutator, ok := collectionMutator(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		var request posts.AddCollectionPostsRequest
+		if err := decodeJSONBody(w, r, &request, "collection posts"); err != nil {
+			return
+		}
+		validated, err := posts.ValidateAddCollectionPosts(request)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := mutator.AddCollectionPosts(r.Context(), chi.URLParam(r, "id"), validated)
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func removeCollectionPost(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mutator, ok := collectionMutator(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		if err := mutator.RemoveCollectionPost(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "postID")); err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func reorderCollection(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mutator, ok := collectionMutator(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		var request posts.ReorderCollectionRequest
+		if err := decodeJSONBody(w, r, &request, "collection order"); err != nil {
+			return
+		}
+		validated, err := posts.ValidateReorderCollection(request)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := mutator.ReorderCollection(r.Context(), chi.URLParam(r, "id"), validated)
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any, label string) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid "+label+" JSON")
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSONError(w, http.StatusBadRequest, "invalid "+label+" JSON")
+		return errors.New("trailing JSON")
+	}
+	return nil
+}
+
+func writeCollectionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, posts.ErrInvalidCollections):
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, posts.ErrNotFound):
+		writeJSONError(w, http.StatusNotFound, "collection or post not found")
+	case errors.Is(err, posts.ErrUnavailable):
+		writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "collection operation failed")
+	}
 }
 
 func editTags(searchers ...posts.Searcher) http.HandlerFunc {

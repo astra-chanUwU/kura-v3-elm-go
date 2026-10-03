@@ -27,6 +27,7 @@ type alias Config msg =
     , onClose : msg
     , onApiPending : String -> msg
     , onFavorite : msg
+    , onAddToCollection : msg
     , onMediaError : String -> msg
     , tagAdd : String
     , tagRemove : String
@@ -165,6 +166,7 @@ selectionSection config =
             , onClear = config.onClear
             , onApiPending = config.onApiPending
             , onFavorite = config.onFavorite
+            , onAddToCollection = config.onAddToCollection
             }
          ]
             ++ (if config.selectedCount > 1 then

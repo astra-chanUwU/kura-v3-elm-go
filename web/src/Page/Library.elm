@@ -1,6 +1,7 @@
 module Page.Library exposing (Model, Msg, init, onUrlChange, onUrlRequest, subscriptions, update, view)
 
 import Api.Post
+import Api.Collection
 import App.Keyboard as Keyboard exposing (KeyEvent, Modifiers, Target(..))
 import App.Prefs as Prefs exposing (Prefs)
 import App.Route as Route exposing (Route, View(..))
@@ -9,6 +10,7 @@ import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
 import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget)
+import Domain.Collection exposing (Collection)
 import Domain.Query as Query
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
@@ -122,6 +124,10 @@ type alias Model =
     , reactionStatus : Maybe String
     , reactionRequestId : Int
     , scoreDraft : String
+    , collections : List Collection
+    , activeCollection : Maybe String
+    , collectionDraft : String
+    , collectionStatus : Maybe String
     }
 
 
@@ -192,13 +198,17 @@ init flagsValue url key =
             , reactionStatus = Nothing
             , reactionRequestId = 0
             , scoreDraft = "0"
+            , collections = []
+            , activeCollection = Nothing
+            , collectionDraft = ""
+            , collectionStatus = Nothing
             }
     in
     let
         ( searching, searchCmd ) =
             startSearch { model | pendingRoute = Just route } route.query
     in
-    ( searching, Cmd.batch [ searchCmd, measureGrid 0 ] )
+    ( searching, Cmd.batch [ searchCmd, measureGrid 0, Api.Collection.list flags.apiBase CollectionsCompleted ] )
 
 
 
@@ -249,6 +259,15 @@ type Msg
     | ScoreDraftChanged String
     | SaveScore
     | ReactionsCompleted Int (Result Http.Error ReactionResponse)
+    | CollectionsCompleted (Result Http.Error (List Collection))
+    | CollectionDraftChanged String
+    | CreateCollection String
+    | CollectionCreated (Result Http.Error Collection)
+    | SelectCollection String
+    | AddToCollection
+    | CollectionAdded (Result Http.Error Collection)
+    | MoveCollectionPost String Int
+    | CollectionReordered (Result Http.Error Collection)
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -552,6 +571,126 @@ updateHelp msg model =
 
                     Err error ->
                         ( { model | reactionSaving = False, reactionStatus = Just (reactionErrorToString error) }, Cmd.none )
+
+        CollectionsCompleted result ->
+            case result of
+                Ok collections ->
+                    ( { model
+                        | collections = collections
+                        , activeCollection =
+                            case model.activeCollection of
+                                Just id ->
+                                    if List.any (\collection -> collection.id == id) collections then
+                                        Just id
+
+                                    else
+                                        List.head collections |> Maybe.map .id
+
+                                Nothing ->
+                                    List.head collections |> Maybe.map .id
+                      }
+                    , Cmd.none
+                    )
+
+                Err error ->
+                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+
+        CollectionDraftChanged value ->
+            ( { model | collectionDraft = value, collectionStatus = Nothing }, Cmd.none )
+
+        CreateCollection name ->
+            if String.trim name == "" then
+                ( model, Cmd.none )
+
+            else
+                ( { model | collectionStatus = Just "Creating collection…" }
+                , Api.Collection.create model.apiBase name CollectionCreated
+                )
+
+        CollectionCreated result ->
+            case result of
+                Ok collection ->
+                    ( { model
+                        | collections = model.collections ++ [ collection ]
+                        , activeCollection = Just collection.id
+                        , collectionDraft = ""
+                        , collectionStatus = Just "Collection created."
+                      }
+                    , Cmd.none
+                    )
+
+                Err error ->
+                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+
+        SelectCollection id ->
+            ( { model | activeCollection = Just id, collectionStatus = Nothing }, Cmd.none )
+
+        AddToCollection ->
+            case model.activeCollection of
+                Just collectionId ->
+                    let
+                        postIds = Selection.targets model.sequence model.selection
+                    in
+                    if List.isEmpty postIds then
+                        ( { model | collectionStatus = Just "Select a post first." }, Cmd.none )
+
+                    else
+                        ( { model | collectionStatus = Just "Adding posts…" }
+                        , Api.Collection.addPosts model.apiBase collectionId postIds CollectionAdded
+                        )
+
+                Nothing ->
+                    ( { model | collectionStatus = Just "Create or select a collection first." }, Cmd.none )
+
+        CollectionAdded result ->
+            case result of
+                Ok updated ->
+                    ( { model
+                        | collections = List.map (\collection -> if collection.id == updated.id then updated else collection) model.collections
+                        , collectionStatus = Just "Posts added to collection."
+                      }
+                    , Cmd.none
+                    )
+
+                Err error ->
+                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+
+        MoveCollectionPost postId delta ->
+            case model.activeCollection of
+                Nothing ->
+                    ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                Just collectionId ->
+                    case List.filter (\c -> c.id == collectionId) model.collections |> List.head of
+                        Nothing ->
+                            ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                        Just collection ->
+                            let
+                                next =
+                                    moveInList postId delta collection.postIds
+                            in
+                            case next of
+                                Nothing ->
+                                    ( model, Cmd.none )
+
+                                Just reordered ->
+                                    ( { model | collectionStatus = Just "Reordering…" }
+                                    , Api.Collection.reorder model.apiBase collectionId reordered CollectionReordered
+                                    )
+
+        CollectionReordered result ->
+            case result of
+                Ok updated ->
+                    ( { model
+                        | collections = List.map (\c -> if c.id == updated.id then updated else c) model.collections
+                        , collectionStatus = Just "Order saved."
+                      }
+                    , Cmd.none
+                    )
+
+                Err error ->
+                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
         Retry ->
             startSearch model model.query
@@ -1112,6 +1251,34 @@ currentRoute model =
 
         _ ->
             { query = model.query, post = Nothing, view = GridView }
+
+
+moveInList : String -> Int -> List String -> Maybe (List String)
+moveInList postId delta ids =
+    case indexIn postId ids of
+        Nothing ->
+            Nothing
+
+        Just idx ->
+            let
+                target =
+                    idx + delta
+            in
+            if target < 0 || target >= List.length ids then
+                Nothing
+
+            else
+                let
+                    without =
+                        List.filter ((/=) postId) ids
+
+                    before =
+                        List.take target without
+
+                    after =
+                        List.drop target without
+                in
+                Just (before ++ [ postId ] ++ after)
 
 
 remember : String -> List String -> List String
@@ -2392,6 +2559,13 @@ navigatorView model =
             , current = model.query
             , saved = model.prefs.savedSearches
             , recent = model.recent
+            , collections = model.collections
+            , activeCollection = model.activeCollection
+            , collectionDraft = model.collectionDraft
+            , onCollectionDraft = CollectionDraftChanged
+            , onCreateCollection = CreateCollection
+            , onSelectCollection = SelectCollection
+            , onMoveCollectionPost = MoveCollectionPost
             , onRun = RunQuery
             , onSave = SaveSearch
             , onRemove = RemoveSavedSearch
@@ -2420,6 +2594,7 @@ inspectorView model =
             , onClose = KeyCommand ToggleInspector
             , onApiPending = KeyCommand << Pending
             , onFavorite = KeyCommand ToggleFavoriteAction
+            , onAddToCollection = AddToCollection
             , onMediaError = MediaFailed
             , tagAdd = model.tagAddDraft
             , tagRemove = model.tagRemoveDraft
