@@ -68,7 +68,7 @@ WHERE deleted_at IS NULL
 
 // GetPostRevisionsSQL returns the newest Inspector history entries.
 const GetPostRevisionsSQL = `
-SELECT version, kind, added_tags, removed_tags, created_at::text
+SELECT version, kind, added_tags, removed_tags, target_tags, created_at::text
 FROM post_tag_revisions
 WHERE post_id = $1::bigint
 ORDER BY version DESC
@@ -99,8 +99,26 @@ WHERE id = $4::bigint AND deleted_at IS NULL
 `
 
 const insertPostRevisionSQL = `
-INSERT INTO post_tag_revisions (post_id, version, kind, added_tags, removed_tags)
-VALUES ($1::bigint, $2, 'tag_edit', $3, $4)
+INSERT INTO post_tag_revisions (post_id, version, kind, added_tags, removed_tags, target_tags)
+VALUES ($1::bigint, $2, 'tag_edit', $3, $4, $5)
+`
+
+const lockPostForTagRevertSQL = `
+SELECT tags, search_text, tag_version
+FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL
+FOR UPDATE
+`
+
+const targetTagsForRevisionSQL = `
+SELECT target_tags IS NOT NULL, target_tags
+FROM post_tag_revisions
+WHERE post_id = $1::bigint AND version = $2
+`
+
+const insertPostRevertRevisionSQL = `
+INSERT INTO post_tag_revisions (post_id, version, kind, added_tags, removed_tags, target_tags)
+VALUES ($1::bigint, $2, 'tag_revert', $3, $4, $5)
 `
 
 const lockPostForReactionSQL = `

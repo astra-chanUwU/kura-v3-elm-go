@@ -258,6 +258,7 @@ type Msg
     | TagAddChanged String
     | TagRemoveChanged String
     | SaveTags
+    | RevertTags Int
     | TagsCompleted Int (Result Http.Error TagEditResponse)
     | ToggleFavorite
     | ScoreDraftChanged String
@@ -509,6 +510,9 @@ updateHelp msg model =
 
         SaveTags ->
             saveTags model
+
+        RevertTags targetVersion ->
+            revertTags model targetVersion
 
         TagsCompleted requestId result ->
             if requestId /= model.tagRequestId then
@@ -2227,6 +2231,25 @@ saveTags model =
         )
 
 
+revertTags : Model -> Int -> ( Model, Cmd Msg )
+revertTags model targetVersion =
+    case model.selection.active of
+        Nothing ->
+            ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
+
+        Just postId ->
+            let
+                requestId =
+                    model.tagRequestId + 1
+
+                target =
+                    tagTarget model postId
+            in
+            ( { model | tagSaving = True, tagStatus = Nothing, tagRequestId = requestId }
+            , Api.Post.revertTags model.apiBase [ target ] targetVersion (TagsCompleted requestId)
+            )
+
+
 tagTarget : Model -> String -> TagEditTarget
 tagTarget model postId =
     { id = postId
@@ -2728,6 +2751,7 @@ inspectorView model =
             , reactionStatus = model.reactionStatus
             , onScoreDraft = ScoreDraftChanged
             , onSaveScore = SaveScore
+            , onRevert = RevertTags
             }
 
     else

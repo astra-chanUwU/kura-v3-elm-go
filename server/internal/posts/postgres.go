@@ -150,7 +150,7 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 	defer rows.Close()
 	for rows.Next() {
 		var revision Revision
-		if err := rows.Scan(&revision.Version, &revision.Kind, &revision.AddedTags, &revision.RemovedTags, &revision.CreatedAt); err != nil {
+		if err := rows.Scan(&revision.Version, &revision.Kind, &revision.AddedTags, &revision.RemovedTags, &revision.TargetTags, &revision.CreatedAt); err != nil {
 			return PostDetail{}, err
 		}
 		detail.History = append(detail.History, revision)
@@ -203,6 +203,36 @@ func (s *PostgresSearcher) EditTags(ctx context.Context, request TagEditRequest)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagEditResponse{}, err
+	}
+	return response, nil
+}
+
+// RevertTags restores a previously recorded tag state for every target in one
+// transaction. Each row is locked before its expected current version and
+// target revision are checked, so a stale batch cannot partially apply.
+func (s *PostgresSearcher) RevertTags(ctx context.Context, request TagRevertRequest) (TagRevertResponse, error) {
+	if s == nil || s.pool == nil {
+		return TagRevertResponse{}, ErrUnavailable
+	}
+	validated, err := ValidateTagRevert(request)
+	if err != nil {
+		return TagRevertResponse{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return TagRevertResponse{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	response := TagRevertResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		result, err := s.applyTagRevert(ctx, tx, target, validated.TargetVersion)
+		if err != nil {
+			return TagRevertResponse{}, err
+		}
+		response.Posts = append(response.Posts, result)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TagRevertResponse{}, err
 	}
 	return response, nil
 }

@@ -19,6 +19,10 @@ var ErrConflict = errors.New("post tag version conflict")
 // ErrInvalidTags indicates malformed tag-edit input.
 var ErrInvalidTags = errors.New("invalid tags")
 
+// ErrRevisionNotFound indicates that a requested immutable tag state is not
+// available (old revisions may predate complete target-state storage).
+var ErrRevisionNotFound = errors.New("tag revision not found")
+
 // ErrReactionConflict indicates that a favorite/score edit was based on an
 // older reaction version.
 var ErrReactionConflict = errors.New("post reaction version conflict")

@@ -63,8 +63,10 @@ Tag edits use `POST /api/posts/tags` with selected post ids, their expected
 tag versions, and add/remove lists. The server locks all targets in one
 transaction, rejects stale versions with `409`, updates the generated search
 text, increments each changed post's version, and records an immutable tag
-revision. The detail response includes the current version and the latest 50
-tag revisions.
+revision. `POST /api/posts/tags/revert` restores a stored target state under
+the same optimistic version check and records a new `tag_revert` revision;
+history is never rewritten. The detail response includes the current version
+and the latest 50 tag revisions.
 
 ## Server shape
 

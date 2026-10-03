@@ -41,6 +41,7 @@ type alias Config msg =
     , reactionStatus : Maybe String
     , onScoreDraft : String -> msg
     , onSaveScore : msg
+    , onRevert : Int -> msg
     }
 
 
@@ -294,23 +295,34 @@ historyList config =
                 [ p [ class "panel-note" ] [ text "No tag revisions yet." ] ]
 
             else
-                [ ul [ class "tag-list" ] (List.map historyItem detail.history) ]
+                [ ul [ class "tag-list" ] (List.map (historyItem config) detail.history) ]
 
         Nothing ->
             [ p [ class "panel-note" ] [ text "Select a post to load history." ] ]
 
 
-historyItem : TagRevision -> Html msg
-historyItem revision =
+historyItem : Config msg -> TagRevision -> Html msg
+historyItem config revision =
     li []
-        [ text
-            ("v"
-                ++ String.fromInt revision.version
-                ++ " +"
-                ++ String.join ", " revision.addedTags
-                ++ " -"
-                ++ String.join ", " revision.removedTags
-            )
+        [ div []
+            [ text
+                ("v"
+                    ++ String.fromInt revision.version
+                    ++ " ("
+                    ++ revision.kind
+                    ++ ") +"
+                    ++ String.join ", " revision.addedTags
+                    ++ " -"
+                    ++ String.join ", " revision.removedTags
+                )
+            , button
+                [ class "button"
+                , type_ "button"
+                , onClick (config.onRevert revision.version)
+                , disabled config.tagSaving
+                ]
+                [ text "Revert" ]
+            ]
         ]
 
 

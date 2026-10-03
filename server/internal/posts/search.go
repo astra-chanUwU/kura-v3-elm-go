@@ -39,6 +39,7 @@ type Revision struct {
 	Kind        string   `json:"kind"`
 	AddedTags   []string `json:"added_tags"`
 	RemovedTags []string `json:"removed_tags"`
+	TargetTags  []string `json:"target_tags,omitempty"`
 	CreatedAt   string   `json:"created_at"`
 }
 
@@ -71,6 +72,15 @@ type TagEditResult struct {
 }
 
 type TagEditResponse struct {
+	Posts []TagEditResult `json:"posts"`
+}
+
+type TagRevertRequest struct {
+	Posts         []TagTarget `json:"posts"`
+	TargetVersion int         `json:"target_version"`
+}
+
+type TagRevertResponse struct {
 	Posts []TagEditResult `json:"posts"`
 }
 
@@ -130,6 +140,11 @@ type PostDetailer interface {
 // TagMutator is the storage boundary for atomic optimistic tag edits.
 type TagMutator interface {
 	EditTags(ctx context.Context, request TagEditRequest) (TagEditResponse, error)
+}
+
+// TagReverter restores an immutable tag revision atomically.
+type TagReverter interface {
+	RevertTags(ctx context.Context, request TagRevertRequest) (TagRevertResponse, error)
 }
 
 // ReactionMutator is the storage boundary for atomic optimistic favorite and

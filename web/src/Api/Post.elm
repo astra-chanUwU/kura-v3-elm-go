@@ -1,4 +1,4 @@
-module Api.Post exposing (detail, editTags, editReactions, search, mediaUrl)
+module Api.Post exposing (detail, editTags, revertTags, editReactions, search, mediaUrl)
 
 import Domain.Post exposing (PostDetail, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget, detailDecoder, responseDecoder, tagEditResponseDecoder, reactionResponseDecoder)
 import Http
@@ -33,6 +33,21 @@ editTags apiBase targets add remove toMsg =
                     [ ( "posts", Encode.list encodeTarget targets )
                     , ( "add", Encode.list Encode.string add )
                     , ( "remove", Encode.list Encode.string remove )
+                    ]
+                )
+        , expect = Http.expectJson toMsg tagEditResponseDecoder
+        }
+
+
+revertTags : String -> List TagEditTarget -> Int -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
+revertTags apiBase targets targetVersion toMsg =
+    Http.post
+        { url = tagsRevertEndpoint apiBase
+        , body =
+            Http.jsonBody
+                (Encode.object
+                    [ ( "posts", Encode.list encodeTarget targets )
+                    , ( "target_version", Encode.int targetVersion )
                     ]
                 )
         , expect = Http.expectJson toMsg tagEditResponseDecoder
@@ -121,6 +136,15 @@ tagsEndpoint apiBase =
 
     else
         Url.Builder.crossOrigin apiBase [ "api", "posts", "tags" ] []
+
+
+tagsRevertEndpoint : String -> String
+tagsRevertEndpoint apiBase =
+    if String.trim apiBase == "" then
+        Url.Builder.absolute [ "api", "posts", "tags", "revert" ] []
+
+    else
+        Url.Builder.crossOrigin apiBase [ "api", "posts", "tags", "revert" ] []
 
 
 reactionsEndpoint : String -> String

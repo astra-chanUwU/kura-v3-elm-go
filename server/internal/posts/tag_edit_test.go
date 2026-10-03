@@ -43,3 +43,25 @@ func TestUpdateSearchTextReplacesTagTermsAndPreservesTerms(t *testing.T) {
 		t.Fatalf("phrase tag was not replaced: %q", got)
 	}
 }
+
+func TestValidateTagRevert(t *testing.T) {
+	validated, err := ValidateTagRevert(TagRevertRequest{
+		Posts:         []TagTarget{{ID: "2004", Version: 2}},
+		TargetVersion: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.Posts[0].ID != "2004" {
+		t.Fatalf("id was not normalized: %#v", validated)
+	}
+	for _, request := range []TagRevertRequest{
+		{Posts: []TagTarget{{ID: "2004"}}, TargetVersion: 0},
+		{Posts: []TagTarget{{ID: "nope"}}, TargetVersion: 1},
+		{Posts: []TagTarget{{ID: "2004"}, {ID: "2004"}}, TargetVersion: 1},
+	} {
+		if _, err := ValidateTagRevert(request); !errors.Is(err, ErrInvalidTags) {
+			t.Errorf("request %#v: expected ErrInvalidTags, got %v", request, err)
+		}
+	}
+}

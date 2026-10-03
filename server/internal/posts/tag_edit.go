@@ -131,12 +131,66 @@ func (s *PostgresSearcher) applyTagEdit(ctx context.Context, tx pgx.Tx, target T
 	if _, err := tx.Exec(ctx, updatePostTagsSQL, nextTags, updatedSearch, nextVersion, target.ID); err != nil {
 		return TagEditResult{}, err
 	}
-	if _, err := tx.Exec(ctx, insertPostRevisionSQL, target.ID, nextVersion, added, removed); err != nil {
+	if _, err := tx.Exec(ctx, insertPostRevisionSQL, target.ID, nextVersion, added, removed, nextTags); err != nil {
 		return TagEditResult{}, err
 	}
 	result.Version = nextVersion
 	result.Changed = true
 	return result, nil
+}
+
+func (s *PostgresSearcher) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int) (TagEditResult, error) {
+	var currentTags []string
+	var searchText string
+	var currentVersion int
+	if err := tx.QueryRow(ctx, lockPostForTagRevertSQL, target.ID).Scan(&currentTags, &searchText, &currentVersion); errors.Is(err, pgx.ErrNoRows) {
+		return TagEditResult{}, ErrNotFound
+	} else if err != nil {
+		return TagEditResult{}, err
+	}
+	if currentVersion != target.Version {
+		return TagEditResult{}, ErrConflict
+	}
+	var restored []string
+	var hasTarget bool
+	if err := tx.QueryRow(ctx, targetTagsForRevisionSQL, target.ID, targetVersion).Scan(&hasTarget, &restored); errors.Is(err, pgx.ErrNoRows) {
+		return TagEditResult{}, ErrRevisionNotFound
+	} else if err != nil {
+		return TagEditResult{}, err
+	}
+	if !hasTarget {
+		return TagEditResult{}, ErrRevisionNotFound
+	}
+	added, removed := tagDelta(currentTags, restored)
+	nextVersion := currentVersion + 1
+	updatedSearch := updateSearchText(searchText, removed, added)
+	if _, err := tx.Exec(ctx, updatePostTagsSQL, restored, updatedSearch, nextVersion, target.ID); err != nil {
+		return TagEditResult{}, err
+	}
+	if _, err := tx.Exec(ctx, insertPostRevertRevisionSQL, target.ID, nextVersion, added, removed, restored); err != nil {
+		return TagEditResult{}, err
+	}
+	return TagEditResult{ID: target.ID, Version: nextVersion, Tags: restored, Changed: len(added) > 0 || len(removed) > 0}, nil
+}
+
+func tagDelta(current, target []string) (added, removed []string) {
+	currentSet := make(map[string]struct{}, len(current))
+	for _, tag := range current {
+		currentSet[tag] = struct{}{}
+	}
+	targetSet := make(map[string]struct{}, len(target))
+	for _, tag := range target {
+		targetSet[tag] = struct{}{}
+		if _, ok := currentSet[tag]; !ok {
+			added = append(added, tag)
+		}
+	}
+	for _, tag := range current {
+		if _, ok := targetSet[tag]; !ok {
+			removed = append(removed, tag)
+		}
+	}
+	return added, removed
 }
 
 // updateSearchText preserves existing terms while replacing tag terms. Tags

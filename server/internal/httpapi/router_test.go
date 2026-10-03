@@ -136,6 +136,18 @@ type fakeTagMutator struct {
 	got    posts.TagEditRequest
 }
 
+type fakeTagReverter struct {
+	fakeSearcher
+	result posts.TagRevertResponse
+	err    error
+	got    posts.TagRevertRequest
+}
+
+func (f *fakeTagReverter) RevertTags(_ context.Context, request posts.TagRevertRequest) (posts.TagRevertResponse, error) {
+	f.got = request
+	return f.result, f.err
+}
+
 type fakeReactionMutator struct {
 	fakeSearcher
 	result posts.ReactionResponse
@@ -180,6 +192,35 @@ func TestTagEditRouteValidationAndErrors(t *testing.T) {
 	fake.err = posts.ErrConflict
 	request := httptest.NewRequest(http.MethodPost, "/api/posts/tags", bytes.NewBufferString(`{"posts":[{"id":"2004","version":0}],"add":["x"]}`))
 	response := httptest.NewRecorder()
+	r.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d", response.Code)
+	}
+}
+
+func TestTagRevertRouteValidationAndErrors(t *testing.T) {
+	fake := &fakeTagReverter{result: posts.TagRevertResponse{Posts: []posts.TagEditResult{{ID: "2004", Version: 3, Tags: []string{"night"}, Changed: true}}}}
+	r := NewRouter(fake)
+	request := httptest.NewRequest(http.MethodPost, "/api/posts/tags/revert", bytes.NewBufferString(`{"posts":[{"id":"2004","version":2}],"target_version":1}`))
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || fake.got.TargetVersion != 1 || len(fake.got.Posts) != 1 {
+		t.Fatalf("unexpected revert response: status=%d request=%#v", response.Code, fake.got)
+	}
+	for _, body := range []string{
+		`{"posts":[],"target_version":1}`,
+		`{"posts":[{"id":"2004","version":0}],"target_version":0}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/posts/tags/revert", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("body %s: got status %d", body, response.Code)
+		}
+	}
+	fake.err = posts.ErrConflict
+	request = httptest.NewRequest(http.MethodPost, "/api/posts/tags/revert", bytes.NewBufferString(`{"posts":[{"id":"2004","version":2}],"target_version":1}`))
+	response = httptest.NewRecorder()
 	r.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d", response.Code)

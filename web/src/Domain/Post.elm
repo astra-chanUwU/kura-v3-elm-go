@@ -47,6 +47,7 @@ type alias TagRevision =
     , kind : String
     , addedTags : List String
     , removedTags : List String
+    , targetTags : List String
     , createdAt : String
     }
 
@@ -185,11 +186,12 @@ responseDecoder =
 
 revisionDecoder : Decoder TagRevision
 revisionDecoder =
-    Decode.map5 TagRevision
+    Decode.map6 TagRevision
         (Decode.field "version" Decode.int)
         (Decode.field "kind" Decode.string)
         (Decode.field "added_tags" (Decode.list Decode.string))
         (Decode.field "removed_tags" (Decode.list Decode.string))
+        (Decode.oneOf [ Decode.field "target_tags" (Decode.list Decode.string), Decode.succeed [] ])
         (Decode.field "created_at" Decode.string)
 
 
