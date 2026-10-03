@@ -34,6 +34,45 @@ func (s *PostgresSearcher) ListCollections(ctx context.Context) ([]Collection, e
 	return collections, nil
 }
 
+// SearchCollectionPosts returns at most limit visible members in collection
+// order. Collection browsing deliberately has no cursor: collections are
+// bounded and this endpoint is a single MediaGrid load.
+func (s *PostgresSearcher) SearchCollectionPosts(ctx context.Context, collectionID string, limit int) (SearchPage, error) {
+	if s == nil || s.pool == nil {
+		return SearchPage{}, ErrUnavailable
+	}
+	if limit < 1 || limit > 60 {
+		return SearchPage{}, ErrInvalidQuery
+	}
+	id, err := collectionIDValue(collectionID)
+	if err != nil {
+		return SearchPage{}, err
+	}
+	var exists int
+	if err := s.pool.QueryRow(ctx, collectionExistsSQL, id).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
+		return SearchPage{}, ErrNotFound
+	} else if err != nil {
+		return SearchPage{}, err
+	}
+	rows, err := s.pool.Query(ctx, searchCollectionPostsSQL, id, limit)
+	if err != nil {
+		return SearchPage{}, err
+	}
+	defer rows.Close()
+	page := SearchPage{Posts: make([]PostSummary, 0, limit)}
+	for rows.Next() {
+		var post PostSummary
+		if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags); err != nil {
+			return SearchPage{}, err
+		}
+		page.Posts = append(page.Posts, post)
+	}
+	if err := rows.Err(); err != nil {
+		return SearchPage{}, err
+	}
+	return page, nil
+}
+
 func (s *PostgresSearcher) CreateCollection(ctx context.Context, request CreateCollectionRequest) (Collection, error) {
 	if s == nil || s.pool == nil {
 		return Collection{}, ErrUnavailable

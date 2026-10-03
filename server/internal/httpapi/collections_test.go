@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +17,19 @@ type fakeCollections struct {
 	added       posts.AddCollectionPostsRequest
 	reordered   posts.ReorderCollectionRequest
 	removed     bool
+}
+
+type fakeCollectionPosts struct {
+	fakeCollections
+	result posts.SearchPage
+	err    error
+	id     string
+	limit  int
+}
+
+func (f *fakeCollectionPosts) SearchCollectionPosts(_ context.Context, id string, limit int) (posts.SearchPage, error) {
+	f.id, f.limit = id, limit
+	return f.result, f.err
 }
 
 func (f *fakeCollections) SearchPosts(context.Context, string, *posts.Cursor, int) (posts.SearchPage, error) {
@@ -84,6 +98,31 @@ func TestCollectionRoutes(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid create status=%d", response.Code)
+	}
+}
+
+func TestCollectionPostsRoute(t *testing.T) {
+	fake := &fakeCollectionPosts{result: posts.SearchPage{Posts: []posts.PostSummary{{ID: "11"}, {ID: "10"}}}}
+	router := NewRouter(fake)
+	response := requestPath(t, router, "/api/collections/7/posts?limit=2")
+	if response.Code != http.StatusOK || fake.id != "7" || fake.limit != 2 {
+		t.Fatalf("browse: status=%d id=%q limit=%d", response.Code, fake.id, fake.limit)
+	}
+	var got posts.SearchPage
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Posts) != 2 || got.Posts[0].ID != "11" || got.NextCursor != nil {
+		t.Fatalf("unexpected collection page: %#v", got)
+	}
+	for _, path := range []string{"/api/collections/7/posts?limit=0", "/api/collections/7/posts?limit=61"} {
+		if response := requestPath(t, router, path); response.Code != http.StatusBadRequest {
+			t.Errorf("%s: status=%d", path, response.Code)
+		}
+	}
+	fake.err = posts.ErrNotFound
+	if response := requestPath(t, router, "/api/collections/7/posts"); response.Code != http.StatusNotFound {
+		t.Fatalf("missing collection status=%d", response.Code)
 	}
 }
 

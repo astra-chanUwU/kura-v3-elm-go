@@ -10,7 +10,7 @@ Kura is an imageboard and media-management application. This repository is the s
 - **Redis, realtime transports, Rust services, queues, and deployment infrastructure** are deliberately deferred until a concrete product requirement needs them.
 - **The `kura` CLI** uses the same HTTP API as Elm. It currently supports `kura search` with human, JSON, and JSONL output.
 
-The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing, favorites, scores, and ordered collections are live.
+The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing, favorites, scores, ordered collections, and collection browsing are live.
 
 ## Repository layout
 

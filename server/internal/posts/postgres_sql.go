@@ -133,6 +133,22 @@ WHERE cp.collection_id = $1::bigint
 ORDER BY cp.position, cp.post_id
 `
 
+const searchCollectionPostsSQL = `
+SELECT
+    p.id::text,
+    p.preview_url,
+    p.original_url,
+    p.media_type,
+    p.width,
+    p.height,
+    p.tags
+FROM collection_posts cp
+JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+WHERE cp.collection_id = $1::bigint
+ORDER BY cp.position, cp.post_id
+LIMIT $2
+`
+
 const deleteCollectionPostSQL = `
 DELETE FROM collection_posts cp USING posts p
 WHERE cp.collection_id = $1::bigint AND cp.post_id = $2::bigint AND p.id = cp.post_id AND p.deleted_at IS NULL

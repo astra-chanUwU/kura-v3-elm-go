@@ -1,6 +1,6 @@
 # Kura V3 frontend design — Library workspace
 
-Status: the Library workspace, grid virtualization, cursor pagination, Inspector detail loading, tag edits, favorites, scores, and ordered collections are built in `web/` and Go.
+Status: the Library workspace, grid virtualization, cursor pagination, Inspector detail loading, tag edits, favorites, scores, ordered collections, and collection browsing are built in `web/` and Go.
 
 This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
@@ -206,7 +206,7 @@ Fits the existing `App`, `Domain`, `Api`, `Page`, `Feature`, `Ui` folders. Plain
 | `Feature.Inspector` | new | Identity, dimensions, media type, source, tags, history; selection summary when `selected` > 1. |
 | `Feature.QueryEditor` | new | TopBar KuraQL field + FilterBar chips. |
 | `Feature.Selection` | change | Action bar: count, clear, tag, add to collection, favorite; tag, favorite, and score editing are live, while collection actions remain disabled with a reason. |
-| `Feature.Navigator` | new | Saved searches, recent queries, collection creation, membership, and compact ordering controls. |
+| `Feature.Navigator` | new | Saved searches, recent queries, collection creation, membership, browsing, and compact ordering controls. |
 | `Feature.TagEditor` | integrated | Compact Inspector add/remove editor for active or selected posts. |
 | `Feature.RevisionDiff` | later | Inspector history entries are currently rendered as a compact list; richer diffs remain open. |
 | `Ui.Layout` | new | Region shells, drawer/sheet wrappers, breakpoints. |

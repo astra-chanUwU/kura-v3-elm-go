@@ -1,6 +1,6 @@
 # Kura V3 frontend design handoff — Opus 5.5
 
-Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, and ordered collections are implemented. Richer revision diffs remain in the implementation sequence.
+Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, ordered collections, and collection browsing are implemented. Richer revision diffs remain in the implementation sequence.
 
 ## Goal
 

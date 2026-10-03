@@ -1,5 +1,6 @@
-module Domain.Collection exposing (Collection, CreateResponse, decoder, responseDecoder)
+module Domain.Collection exposing (Collection, CreateResponse, PostsResponse, decoder, responseDecoder)
 
+import Domain.Post exposing (SearchResponse)
 import Json.Decode as Decode exposing (Decoder)
 
 
@@ -12,6 +13,10 @@ type alias Collection =
 
 type alias CreateResponse =
     Collection
+
+
+type alias PostsResponse =
+    SearchResponse
 
 
 decoder : Decoder Collection

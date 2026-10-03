@@ -32,6 +32,13 @@ type CollectionReader interface {
 	ListCollections(context.Context) ([]Collection, error)
 }
 
+// CollectionPostSearcher returns visible collection members in their saved
+// collection order. The limit is bounded by the HTTP layer to keep this
+// browse slice a single, predictable page.
+type CollectionPostSearcher interface {
+	SearchCollectionPosts(context.Context, string, int) (SearchPage, error)
+}
+
 type CollectionMutator interface {
 	CollectionReader
 	CreateCollection(context.Context, CreateCollectionRequest) (Collection, error)

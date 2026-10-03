@@ -1,14 +1,24 @@
-module Api.Collection exposing (addPosts, create, list, removePost, reorder)
+module Api.Collection exposing (addPosts, create, list, posts, removePost, reorder)
 
-import Domain.Collection exposing (Collection, decoder, responseDecoder)
+import Domain.Collection exposing (Collection, PostsResponse, decoder, responseDecoder)
+import Domain.Post
 import Http
 import Json.Encode as Encode
+import String
 import Url.Builder
 
 
 list : String -> (Result Http.Error (List Collection) -> msg) -> Cmd msg
 list apiBase toMsg =
     Http.get { url = endpoint apiBase [ "api", "collections" ], expect = Http.expectJson toMsg responseDecoder }
+
+
+posts : String -> String -> Int -> (Result Http.Error PostsResponse -> msg) -> Cmd msg
+posts apiBase collectionId limit toMsg =
+    Http.get
+        { url = endpointWithLimit apiBase [ "api", "collections", collectionId, "posts" ] limit
+        , expect = Http.expectJson toMsg Domain.Post.responseDecoder
+        }
 
 
 create : String -> String -> (Result Http.Error Collection -> msg) -> Cmd msg
@@ -58,3 +68,12 @@ endpoint apiBase path =
 
     else
         Url.Builder.crossOrigin apiBase path []
+
+
+endpointWithLimit : String -> List String -> Int -> String
+endpointWithLimit apiBase path limit =
+    if String.trim apiBase == "" then
+        Url.Builder.absolute path [ Url.Builder.int "limit" limit ]
+
+    else
+        Url.Builder.crossOrigin apiBase path [ Url.Builder.int "limit" limit ]

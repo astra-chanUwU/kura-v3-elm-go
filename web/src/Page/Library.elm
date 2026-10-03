@@ -126,6 +126,7 @@ type alias Model =
     , scoreDraft : String
     , collections : List Collection
     , activeCollection : Maybe String
+    , collectionBrowse : Maybe String
     , collectionDraft : String
     , collectionStatus : Maybe String
     , collectionRemovals : Set String
@@ -201,6 +202,7 @@ init flagsValue url key =
             , scoreDraft = "0"
             , collections = []
             , activeCollection = Nothing
+            , collectionBrowse = Nothing
             , collectionDraft = ""
             , collectionStatus = Nothing
             , collectionRemovals = Set.empty
@@ -266,6 +268,9 @@ type Msg
     | CreateCollection String
     | CollectionCreated (Result Http.Error Collection)
     | SelectCollection String
+    | OpenCollection String
+    | OpenAllPosts
+    | CollectionPostsCompleted Int String (Result Http.Error SearchResponse)
     | AddToCollection
     | CollectionAdded (Result Http.Error Collection)
     | MoveCollectionPost String Int
@@ -408,6 +413,24 @@ updateHelp msg model =
 
         RunQuery query ->
             runQuery query model
+
+        OpenAllPosts ->
+            runQuery "" model
+
+        OpenCollection collectionId ->
+            openCollection model collectionId
+
+        CollectionPostsCompleted requestId collectionId result ->
+            if requestId /= model.requestId then
+                ( model, Cmd.none )
+
+            else
+                case result of
+                    Ok response ->
+                        collectionResultsArrived collectionId response model
+
+                    Err error ->
+                        ( { model | search = Failed (httpErrorToString error), collectionBrowse = Just collectionId }, Cmd.none )
 
         TagClicked tag exclude ->
             runQuery
@@ -1088,8 +1111,24 @@ startSearch model query =
         requestId =
             model.requestId + 1
     in
-    ( { model | query = query, draftQuery = query, search = Searching, requestId = requestId, nextCursor = Nothing }
+    ( { model | query = query, draftQuery = query, search = Searching, requestId = requestId, nextCursor = Nothing, collectionBrowse = Nothing }
     , Api.Post.search model.apiBase query Nothing 60 (SearchCompleted requestId InitialRequest)
+    )
+
+
+openCollection : Model -> String -> ( Model, Cmd Msg )
+openCollection model collectionId =
+    let
+        requestId =
+            model.requestId + 1
+    in
+    ( { model
+        | requestId = requestId
+        , search = Searching
+        , nextCursor = Nothing
+        , collectionBrowse = Just collectionId
+      }
+    , Api.Collection.posts model.apiBase collectionId 60 (CollectionPostsCompleted requestId collectionId)
     )
 
 
@@ -1108,6 +1147,7 @@ clearResults model =
         , returnPoint = Nothing
         , viewport = setScroll 0 model.viewport
         , pendingRoute = Nothing
+        , collectionBrowse = Nothing
     }
 
 
@@ -1133,6 +1173,7 @@ resultsArrived response model =
             { model
                 | sequence = sequence
                 , nextCursor = response.nextCursor
+                , collectionBrowse = Nothing
                 , selection = selection
                 , mode = mode
                 , search = Ready
@@ -1170,6 +1211,33 @@ resultsArrived response model =
     ( routed, Cmd.batch [ scrollGridLater top, routeCmd ] )
 
 
+collectionResultsArrived : String -> SearchResponse -> Model -> ( Model, Cmd Msg )
+collectionResultsArrived collectionId response model =
+    let
+        sequence =
+            Sequence.fromList response.posts
+
+        selection =
+            Selection.prune sequence model.selection
+
+        mode =
+            validMode sequence selection model.mode
+
+        updated =
+            { model
+                | sequence = sequence
+                , nextCursor = Nothing
+                , selection = selection
+                , mode = mode
+                , search = Ready
+                , collectionBrowse = Just collectionId
+                , pendingRoute = Nothing
+                , viewport = setScroll 0 model.viewport
+            }
+    in
+    ( updated, scrollGridLater 0 )
+
+
 moreResultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
 moreResultsArrived response model =
     let
@@ -1185,6 +1253,7 @@ moreResultsArrived response model =
     ( { model
         | sequence = sequence
         , nextCursor = response.nextCursor
+        , collectionBrowse = Nothing
         , selection = selection
         , mode = mode
         , search = Ready
@@ -2612,6 +2681,8 @@ navigatorView model =
             , onCollectionDraft = CollectionDraftChanged
             , onCreateCollection = CreateCollection
             , onSelectCollection = SelectCollection
+            , onOpenCollection = OpenCollection
+            , onAllPosts = OpenAllPosts
             , onMoveCollectionPost = MoveCollectionPost
             , onRemoveCollectionPost = RemoveCollectionPost
             , removingPosts = model.collectionRemovals

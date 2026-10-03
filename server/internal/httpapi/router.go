@@ -34,6 +34,7 @@ func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r.Post("/api/posts/reactions", editReactions(searchers...))
 	r.Get("/api/collections", listCollections(searchers...))
 	r.Post("/api/collections", createCollection(searchers...))
+	r.Get("/api/collections/{id}/posts", searchCollectionPosts(searchers...))
 	r.Post("/api/collections/{id}/posts", addCollectionPosts(searchers...))
 	r.Delete("/api/collections/{id}/posts/{postID}", removeCollectionPost(searchers...))
 	r.Post("/api/collections/{id}/order", reorderCollection(searchers...))
@@ -71,6 +72,35 @@ func collectionMutator(searchers ...posts.Searcher) (posts.CollectionMutator, bo
 	}
 	mutator, ok := searchers[0].(posts.CollectionMutator)
 	return mutator, ok
+}
+
+func collectionPostSearcher(searchers ...posts.Searcher) (posts.CollectionPostSearcher, bool) {
+	if len(searchers) == 0 || searchers[0] == nil {
+		return nil, false
+	}
+	reader, ok := searchers[0].(posts.CollectionPostSearcher)
+	return reader, ok
+}
+
+func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := collectionPostSearcher(searchers...)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		limit, err := parseLimit(r.URL.Query().Get("limit"), r.URL.Query().Has("limit"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "limit must be an integer from 1 to 60")
+			return
+		}
+		result, err := reader.SearchCollectionPosts(r.Context(), chi.URLParam(r, "id"), limit)
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func listCollections(searchers ...posts.Searcher) http.HandlerFunc {
@@ -197,7 +227,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any, label st
 
 func writeCollectionError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, posts.ErrInvalidCollections):
+	case errors.Is(err, posts.ErrInvalidCollections), errors.Is(err, posts.ErrInvalidQuery):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, posts.ErrNotFound):
 		writeJSONError(w, http.StatusNotFound, "collection or post not found")

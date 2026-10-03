@@ -19,6 +19,8 @@ type alias Config msg =
     , onCollectionDraft : String -> msg
     , onCreateCollection : String -> msg
     , onSelectCollection : String -> msg
+    , onOpenCollection : String -> msg
+    , onAllPosts : msg
     , onMoveCollectionPost : String -> Int -> msg
     , onRemoveCollectionPost : String -> msg
     , removingPosts : Set String
@@ -77,6 +79,8 @@ view config =
                 [ input [ class "nav-input", type_ "text", placeholder "New collection", value config.collectionDraft, onInput config.onCollectionDraft ] []
                 , button [ class "button button-quiet nav-save", type_ "button", onClick (config.onCreateCollection config.collectionDraft), disabled (String.trim config.collectionDraft == "") ]
                     [ text "Create collection" ]
+                , button [ class "button button-quiet nav-save", type_ "button", onClick config.onAllPosts ]
+                    [ text "All posts" ]
                 , if List.isEmpty config.collections then
                     p [ class "panel-note" ] [ text "Create a collection for selected posts." ]
 
@@ -85,13 +89,20 @@ view config =
                         (List.map
                             (\collection ->
                                 li [ class "nav-row" ]
-                                    [ button
+                                        [ button
                                         [ class "nav-item"
                                         , classList [ ( "is-current", Just collection.id == config.activeCollection ) ]
                                         , type_ "button"
                                         , onClick (config.onSelectCollection collection.id)
                                         ]
                                         [ span [] [ text (collection.name ++ " (" ++ String.fromInt (List.length collection.postIds) ++ ")") ] ]
+                                    , button
+                                        [ class "button button-quiet nav-save"
+                                        , type_ "button"
+                                        , onClick (config.onOpenCollection collection.id)
+                                        , attribute "aria-label" ("Open collection " ++ collection.name)
+                                        ]
+                                        [ text "Open" ]
                                     ]
                             )
                             config.collections
