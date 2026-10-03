@@ -43,13 +43,33 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 	if limit < 1 || limit > 60 {
 		return SearchPage{}, ErrInvalidQuery
 	}
+	compiled, err := ParseQuery(query)
+	if err != nil {
+		return SearchPage{}, err
+	}
 
 	var cursorID any
 	if cursor != nil {
 		cursorID = cursor.ID
 	}
 	page := SearchPage{Posts: make([]PostSummary, 0, limit)}
-	rows, err := s.pool.Query(ctx, SearchPostsSQL, query, cursorID, limit+1)
+	var favorite any
+	if compiled.Favorite != nil {
+		favorite = *compiled.Favorite
+	}
+	var scoreOperator, scoreValue any
+	if compiled.Score != nil {
+		scoreOperator, scoreValue = compiled.Score.Operator, compiled.Score.Value
+	}
+	var widthOperator, widthValue any
+	if compiled.Width != nil {
+		widthOperator, widthValue = compiled.Width.Operator, compiled.Width.Value
+	}
+	var heightOperator, heightValue any
+	if compiled.Height != nil {
+		heightOperator, heightValue = compiled.Height.Operator, compiled.Height.Value
+	}
+	rows, err := s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, cursorID, limit+1)
 	if err != nil {
 		return SearchPage{}, err
 	}

@@ -84,6 +84,12 @@ func collectionPostSearcher(searchers ...posts.Searcher) (posts.CollectionPostSe
 
 func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		collectionID := strings.TrimSpace(chi.URLParam(r, "id"))
+		parsedID, parseErr := strconv.ParseInt(collectionID, 10, 64)
+		if parseErr != nil || parsedID <= 0 || collectionID != strconv.FormatInt(parsedID, 10) {
+			writeJSONError(w, http.StatusBadRequest, "invalid collection id")
+			return
+		}
 		reader, ok := collectionPostSearcher(searchers...)
 		if !ok {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
@@ -94,7 +100,7 @@ func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "limit must be an integer from 1 to 60")
 			return
 		}
-		result, err := reader.SearchCollectionPosts(r.Context(), chi.URLParam(r, "id"), limit)
+		result, err := reader.SearchCollectionPosts(r.Context(), collectionID, limit)
 		if err != nil {
 			writeCollectionError(w, err)
 			return
@@ -362,6 +368,10 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 
 		if len([]rune(query)) > maxSearchQueryLength {
 			writeJSONError(w, http.StatusBadRequest, "search query is too long (maximum 256 characters)")
+			return
+		}
+		if _, parseErr := posts.ParseQuery(query); parseErr != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid search query")
 			return
 		}
 		if len(searchers) == 0 || searchers[0] == nil {

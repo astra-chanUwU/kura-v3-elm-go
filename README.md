@@ -10,7 +10,7 @@ Kura is an imageboard and media-management application. This repository is the s
 - **Redis, realtime transports, Rust services, queues, and deployment infrastructure** are deliberately deferred until a concrete product requirement needs them.
 - **The `kura` CLI** uses the same HTTP API as Elm. It currently supports `kura search` with human, JSON, and JSONL output.
 
-The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing, favorites, scores, ordered collections, and collection browsing are live.
+The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing, favorites, scores, ordered collections, collection browsing, and a bounded KuraQL filter subset are live.
 
 ## Repository layout
 
@@ -49,4 +49,4 @@ The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KU
 
 ## Next milestone
 
-The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. The next product work can add the fuller lexer, parser, AST, validation, and query-planning layers before the frontend identity pass.
+The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. The server now validates a bounded KuraQL subset for ordinary terms, exclusions, favorite, score, width, and height filters. The next query work can add richer AST composition and sort-aware cursors before the frontend identity pass.

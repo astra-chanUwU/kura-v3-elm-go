@@ -94,6 +94,20 @@ func TestSearchPostsDefaultsAndEmptyQuery(t *testing.T) {
 	}
 }
 
+func TestSearchPostsRejectsInvalidKuraQuery(t *testing.T) {
+	fake := &fakeSearcher{}
+	r := NewRouter(fake)
+	for _, raw := range []string{"?q=order%3Ascore", "?q=score%3A%3E%3D", "?q=favorite%3Amaybe"} {
+		resp := request(t, r, raw)
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("%s: got status %d", raw, resp.Code)
+		}
+	}
+	if fake.called {
+		t.Fatal("invalid query reached searcher")
+	}
+}
+
 func TestSearchPostsUnavailableWithoutSearcher(t *testing.T) {
 	if resp := request(t, NewRouter(), ""); resp.Code != http.StatusServiceUnavailable {
 		t.Fatalf("empty query without searcher: got status %d", resp.Code)

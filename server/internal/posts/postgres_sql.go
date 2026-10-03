@@ -1,9 +1,10 @@
 package posts
 
 // SearchPostsSQL is the handwritten query contract for the PostgreSQL
-// adapter. $1 is the normalized query (empty means newest browse), $2 is the
-// optional keyset id, and $3 is limit+1 so the adapter can determine whether
-// another page exists.
+// adapter. $1 is websearch text; $2 is the optional favorite value; each
+// operator/value pair is optional for score, width, and height; $9 is the
+// optional keyset id; and $10 is limit+1 so the adapter can detect another
+// page. Operators are validated by ParseQuery before they reach this query.
 const SearchPostsSQL = `
 SELECT
     id::text,
@@ -16,9 +17,28 @@ SELECT
 FROM posts
 WHERE deleted_at IS NULL
   AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
-  AND ($2::bigint IS NULL OR id < $2::bigint)
+  AND ($2::boolean IS NULL OR favorite = $2::boolean)
+  AND ($3::text IS NULL OR
+       ($3::text = '>' AND score > $4::integer) OR
+       ($3::text = '>=' AND score >= $4::integer) OR
+       ($3::text = '<' AND score < $4::integer) OR
+       ($3::text = '<=' AND score <= $4::integer) OR
+       ($3::text = '=' AND score = $4::integer))
+  AND ($5::text IS NULL OR
+       ($5::text = '>' AND width > $6::integer) OR
+       ($5::text = '>=' AND width >= $6::integer) OR
+       ($5::text = '<' AND width < $6::integer) OR
+       ($5::text = '<=' AND width <= $6::integer) OR
+       ($5::text = '=' AND width = $6::integer))
+  AND ($7::text IS NULL OR
+       ($7::text = '>' AND height > $8::integer) OR
+       ($7::text = '>=' AND height >= $8::integer) OR
+       ($7::text = '<' AND height < $8::integer) OR
+       ($7::text = '<=' AND height <= $8::integer) OR
+       ($7::text = '=' AND height = $8::integer))
+  AND ($9::bigint IS NULL OR id < $9::bigint)
 ORDER BY id DESC
-LIMIT $3
+LIMIT $10
 `
 
 // GetPostDetailSQL fetches the complete visible Inspector shape. The ID is

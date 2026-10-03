@@ -52,7 +52,7 @@ binds the search string to the handwritten query and maps selected columns to
 newest visible rows through the same keyset cursor, while an unconfigured
 adapter returns `503` and storage failures return `500`. Overlong queries,
 invalid limits, and malformed or query-mismatched cursors return `400`.
-PostgreSQL's web search parser accepts ordinary multiword input.
+PostgreSQL's web search parser accepts ordinary multiword input. The Go search boundary also validates a bounded KuraQL subset: ordinary and unary-excluded terms plus `favorite`, `score`, `width`, and `height` comparisons. Field predicates are compiled into fixed parameterized SQL slots; score ordering and sort-aware cursors remain separate work.
 
 The Inspector loads read-only metadata on demand from `GET /api/posts/{id}`.
 The detail response extends `PostSummary` with source, artist, hash, file size,

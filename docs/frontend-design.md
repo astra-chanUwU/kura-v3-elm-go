@@ -291,7 +291,7 @@ Marquee drag-selection and panel resizing are deferred.
 | 9 | Empty query browses newest posts through the same cursor API; Navigator "All posts". | **[API]** | Done |
 | 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Tag/favorite/score/collections done |
 
-The completed Library slices can be verified with the 15 seeded `demo` rows. Tag and reaction revision history, collection membership/order, plus the `T`, `B`, and `F` mutations are live; richer revision diffs and saved-search server state remain open.
+The completed Library slices can be verified with the 15 seeded `demo` rows. Tag and reaction revision history, collection membership/order/browsing, the bounded KuraQL filters, plus the `T`, `B`, and `F` mutations are live; richer revision diffs and saved-search server state remain open.
 
 ---
 
