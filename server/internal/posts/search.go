@@ -28,7 +28,7 @@ type PostDetail struct {
 }
 
 // SearchPage is the response body for GET /api/posts. NextCursor is null
-// when there is no next page; an empty query always returns a nil cursor.
+// when there is no next page. Empty queries browse newest posts.
 type SearchPage struct {
 	Posts      []PostSummary `json:"posts"`
 	NextCursor *string       `json:"next_cursor"`

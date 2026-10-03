@@ -72,11 +72,6 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "limit must be an integer from 1 to 60")
 			return
 		}
-		if query == "" && r.URL.Query().Has("cursor") {
-			writeJSONError(w, http.StatusBadRequest, "cursor cannot be used with an empty query")
-			return
-		}
-
 		var cursor *posts.Cursor
 		if rawCursor := r.URL.Query().Get("cursor"); rawCursor != "" {
 			decoded, decodeErr := posts.DecodeCursor(rawCursor, query)
@@ -92,10 +87,6 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 
 		if len([]rune(query)) > maxSearchQueryLength {
 			writeJSONError(w, http.StatusBadRequest, "search query is too long (maximum 256 characters)")
-			return
-		}
-		if strings.TrimSpace(query) == "" {
-			writeJSON(w, http.StatusOK, posts.SearchPage{Posts: []posts.PostSummary{}, NextCursor: nil})
 			return
 		}
 		if len(searchers) == 0 || searchers[0] == nil {

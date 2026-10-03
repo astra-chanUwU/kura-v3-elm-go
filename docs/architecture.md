@@ -48,11 +48,11 @@ GET /api/posts?q=cat
 
 The HTTP layer depends on a `posts.Searcher` interface. The PostgreSQL adapter
 binds the search string to the handwritten query and maps selected columns to
-`PostSummary`; it does not expose database rows directly. Empty queries short
-circuit to `{ "posts": [], "next_cursor": null }`, while an unconfigured adapter
-returns `503` and storage failures return `500`. Overlong queries, invalid
-limits, and malformed or query-mismatched cursors return `400`. PostgreSQL's web
-search parser accepts ordinary multiword input.
+`PostSummary`; it does not expose database rows directly. Empty queries browse
+newest visible rows through the same keyset cursor, while an unconfigured
+adapter returns `503` and storage failures return `500`. Overlong queries,
+invalid limits, and malformed or query-mismatched cursors return `400`.
+PostgreSQL's web search parser accepts ordinary multiword input.
 
 The Inspector loads read-only metadata on demand from `GET /api/posts/{id}`.
 The detail response extends `PostSummary` with source, artist, hash, file size,

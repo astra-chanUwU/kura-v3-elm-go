@@ -41,8 +41,8 @@ Usage:
   kura search [flags] [QUERY]
 
 Search posts using GET /api/posts?q=QUERY. QUERY is optional; when omitted
-or empty the server returns an empty browse result without contacting the
-database. Multi-word queries may be quoted or passed as separate words:
+or empty the server browses newest visible posts. Multi-word queries may be
+quoted or passed as separate words:
 
   kura search cat
   kura search "cat feline"

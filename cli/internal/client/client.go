@@ -70,7 +70,7 @@ func (e *APIError) Error() string {
 
 // Search executes GET /api/posts?q=query with URL encoding and a request
 // timeout. An empty or whitespace-only query is sent as q= (server returns
-// empty posts without DB contact). It is a first-page wrapper around
+// the newest visible posts). It is a first-page wrapper around
 // SearchPage with no cursor and no limit.
 func (c *Client) Search(ctx context.Context, query string) (SearchResponse, error) {
 	return c.SearchPage(ctx, query, "", 0)

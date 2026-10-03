@@ -45,7 +45,7 @@ func TestSearch_EmptyBrowse(t *testing.T) {
 			t.Fatalf("expected empty q, got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"posts":[]}`))
+		_, _ = w.Write([]byte(`{"posts":[{"id":"post-newest","preview_url":"/media/newest.jpg","original_url":"/media/newest-original.jpg","media_type":"image/jpeg","width":640,"height":480}],"next_cursor":"browse-next"}`))
 	}))
 	defer srv.Close()
 
@@ -54,11 +54,11 @@ func TestSearch_EmptyBrowse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search error: %v", err)
 	}
-	if len(res.Posts) != 0 {
-		t.Fatalf("expected empty posts, got %d", len(res.Posts))
+	if len(res.Posts) != 1 || res.Posts[0].ID != "post-newest" {
+		t.Fatalf("expected newest browse post, got %#v", res.Posts)
 	}
-	if res.NextCursor != nil {
-		t.Fatalf("expected nil cursor, got %v", *res.NextCursor)
+	if res.NextCursor == nil || *res.NextCursor != "browse-next" {
+		t.Fatalf("expected browse cursor, got %v", res.NextCursor)
 	}
 }
 

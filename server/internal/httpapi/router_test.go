@@ -16,12 +16,13 @@ type fakeSearcher struct {
 	query  string
 	cursor *posts.Cursor
 	limit  int
+	result posts.SearchPage
 }
 
 func (f *fakeSearcher) SearchPosts(_ context.Context, query string, cursor *posts.Cursor, limit int) (posts.SearchPage, error) {
 	f.called = true
 	f.query, f.cursor, f.limit = query, cursor, limit
-	return posts.SearchPage{Posts: []posts.PostSummary{}, NextCursor: nil}, nil
+	return f.result, nil
 }
 
 func TestSearchPostsValidation(t *testing.T) {
@@ -39,11 +40,15 @@ func TestSearchPostsValidation(t *testing.T) {
 			t.Errorf("%s: got status %d", raw, resp.Code)
 		}
 	}
-	if resp := request(t, r, "?cursor=eyJ2IjoxLCJxIjoiZDU1YjE5M2E0MTE0YzY5ZmE2ZjE5NTAwYzM5ZjQ4ZGNlZjU0MGY1NmM2MmQ1NjI3N2E4MmUzN2I5NzU2M2Y3IiwiaSI6MX0"); resp.Code != http.StatusBadRequest {
-		t.Fatalf("empty query cursor: got status %d", resp.Code)
-	}
 	if resp := request(t, r, "?q=cat&cursor=bad"); resp.Code != http.StatusBadRequest {
 		t.Fatalf("mismatched cursor: got status %d", resp.Code)
+	}
+	catCursor, err := posts.EncodeCursor("cat", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp := request(t, r, "?q=dog&cursor="+catCursor); resp.Code != http.StatusBadRequest {
+		t.Fatalf("query-mismatched cursor: got status %d", resp.Code)
 	}
 	if fake.called {
 		t.Fatal("invalid requests reached searcher")
@@ -58,16 +63,39 @@ func TestSearchPostsDefaultsAndEmptyQuery(t *testing.T) {
 		t.Fatalf("unexpected first page: status=%d called=%v query=%q limit=%d cursor=%v", resp.Code, fake.called, fake.query, fake.limit, fake.cursor)
 	}
 	fake.called = false
+	next, err := posts.EncodeCursor("", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.result = posts.SearchPage{
+		Posts:      []posts.PostSummary{{ID: "42"}},
+		NextCursor: &next,
+	}
 	resp = request(t, r, "")
-	if resp.Code != http.StatusOK || fake.called {
-		t.Fatalf("empty query should return empty page: status=%d called=%v", resp.Code, fake.called)
+	if resp.Code != http.StatusOK || !fake.called || fake.query != "" || fake.limit != 60 || fake.cursor != nil {
+		t.Fatalf("empty query should reach searcher: status=%d called=%v query=%q limit=%d cursor=%v", resp.Code, fake.called, fake.query, fake.limit, fake.cursor)
 	}
 	var body posts.SearchPage
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Posts) != 0 || body.NextCursor != nil {
+	if len(body.Posts) != 1 || body.Posts[0].ID != "42" || body.NextCursor == nil || *body.NextCursor != next {
 		t.Fatalf("unexpected empty page: %#v", body)
+	}
+	validEmptyCursor, err := posts.EncodeCursor("", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.called = false
+	resp = request(t, r, "?cursor="+validEmptyCursor)
+	if resp.Code != http.StatusOK || !fake.called || fake.cursor == nil || fake.cursor.ID != 42 {
+		t.Fatalf("valid empty-query cursor rejected: status=%d called=%v cursor=%v", resp.Code, fake.called, fake.cursor)
+	}
+}
+
+func TestSearchPostsUnavailableWithoutSearcher(t *testing.T) {
+	if resp := request(t, NewRouter(), ""); resp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("empty query without searcher: got status %d", resp.Code)
 	}
 }
 

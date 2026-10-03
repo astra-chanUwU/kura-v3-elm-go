@@ -17,7 +17,7 @@ func fakeServer(t *testing.T) *httptest.Server {
 		switch q {
 		case "":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"posts":[]}`)
+			fmt.Fprint(w, `{"posts":[{"id":"post-newest","preview_url":"/media/newest.jpg","original_url":"/media/newest-original.jpg","media_type":"image/jpeg","width":640,"height":480}],"next_cursor":"browse-next"}`)
 		case "cat":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"posts":[{"id":"post-123","preview_url":"/media/post-123/preview.jpg","original_url":"/media/post-123/original.jpg","media_type":"image/jpeg","width":640,"height":480}],"next_cursor":"tok123"}`)
@@ -91,7 +91,7 @@ func TestSearch_JSONLOutput(t *testing.T) {
 	}
 }
 
-func TestSearch_EmptyBrowse_NoOutput(t *testing.T) {
+func TestSearch_EmptyBrowse(t *testing.T) {
 	srv := fakeServer(t)
 	defer srv.Close()
 
@@ -99,24 +99,30 @@ func TestSearch_EmptyBrowse_NoOutput(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d stderr %q", code, errOut)
 	}
-	if out != "" {
-		t.Fatalf("expected empty stdout for browse, got %q", out)
+	if !strings.Contains(out, "post-newest") {
+		t.Fatalf("expected newest browse row, got %q", out)
+	}
+	if !strings.Contains(errOut, "browse-next") {
+		t.Fatalf("expected browse cursor hint, got %q", errOut)
 	}
 	// empty --json should produce envelope
 	code, out, _ = runWithEnv([]string{"search", "--json"}, map[string]string{"KURA_API_URL": srv.URL})
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(out, `"posts"`) {
+	if !strings.Contains(out, `"posts"`) || !strings.Contains(out, "post-newest") || !strings.Contains(out, "browse-next") {
 		t.Fatalf("expected json posts, got %q", out)
 	}
-	// --jsonl empty should produce no stdout
-	code, out, _ = runWithEnv([]string{"search", "--jsonl"}, map[string]string{"KURA_API_URL": srv.URL})
+	// --jsonl browse should produce one row and the cursor hint
+	code, out, errOut = runWithEnv([]string{"search", "--jsonl"}, map[string]string{"KURA_API_URL": srv.URL})
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if out != "" {
-		t.Fatalf("expected empty jsonl, got %q", out)
+	if !strings.Contains(out, "post-newest") {
+		t.Fatalf("expected browse jsonl row, got %q", out)
+	}
+	if !strings.Contains(errOut, "browse-next") {
+		t.Fatalf("expected browse cursor hint, got %q", errOut)
 	}
 }
 

@@ -286,12 +286,12 @@ Marquee drag-selection and panel resizing are deferred.
 | 4 | Loupe as a Stage mode, Filmstrip, return point and scroll/focus restoration; URL `post`/`view`. | Elm only | Done |
 | 5 | Compare and Survey. | Elm only | Done |
 | 6 | Inspector using `PostSummary` fields (id, dims, media type, URLs; tags when present); FilterBar chips; keep stale results while searching; prune selection across re-queries. | Elm only | Done |
-| 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then incremental loading near the end of the grid. The grid is already virtualized. | **[API]** + Elm | Open |
-| 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm | Open |
-| 9 | Empty query browses newest posts (today it returns `[]`); Navigator "All posts". | **[API]** | Open |
+| 7 | Cursor pagination: `GET /api/posts?q=&cursor=&limit=` returning `next_cursor` (envelope change only, `PostSummary` unchanged); then incremental loading near the end of the grid. The grid is already virtualized. | **[API]** + Elm | Done |
+| 8 | Return `tags` in `PostSummary` (Elm already decodes it optionally); `GET /api/posts/{id}` detail with source, artist, hash, file size, created time, tags, revisions. Needs tag/source/hash schema. | **[API]** + Elm | Done |
+| 9 | Empty query browses newest posts through the same cursor API; Navigator "All posts". | **[API]** | Done |
 | 10 | Revision-backed mutations: tag edits, collections/pools, favorite/score; wire Selection actions, `T`, `B`, `F`. Saved searches start in `localStorage`, move server-side later. | **[API]** + Elm | Open |
 
-Steps 1–6 need no backend change and can be verified with the 15 seeded `demo` rows. Until steps 8 and 10 land, the Inspector shows placeholders for source/artist/hash/history, and `T`, `B`, `F` and their buttons report that the API is missing.
+The completed Library slices can be verified with the 15 seeded `demo` rows. Revision history and the `T`, `B`, `F` mutation actions remain for step 10.
 
 ---
 

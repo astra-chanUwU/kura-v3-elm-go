@@ -43,9 +43,9 @@ The repository includes twelve small demo fixtures under `web/static/media/demo`
 
 The Go server serves `/media/...` from `MEDIA_ROOT`. When `MEDIA_ROOT` is unset, the documented `make server-run` command uses `../web/static/media` relative to the `server` module. Set `MEDIA_ROOT` to point at another local fixture directory when needed. The route uses Go's `http.FileServer` rooted at that directory and is intended for local demo media only; it does not provide production media storage.
 
-The health endpoint is `GET http://localhost:8080/health` and returns a small JSON status response. Search uses `GET /api/posts?q=cat` and returns post summaries from visible rows. Empty or whitespace-only queries return `{ "posts": [] }` without contacting PostgreSQL. Queries longer than 256 characters return `400`; an unconfigured database returns `503` and other storage failures return `500`. Search uses PostgreSQL's forgiving web search parser, which accepts ordinary multiword queries.
+The health endpoint is `GET http://localhost:8080/health` and returns a small JSON status response. Search uses `GET /api/posts?q=cat` and returns post summaries from visible rows. Empty or whitespace-only queries browse the newest visible rows using the same cursor pagination. Queries longer than 256 characters return `400`; an unconfigured database returns `503` and other storage failures return `500`. Search uses PostgreSQL's forgiving web search parser, which accepts ordinary multiword queries.
 
-The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KURA_API_URL`, `--limit`, and `--cursor`. Pagination flags are reported as unsupported until the API adds cursor pagination.
+The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KURA_API_URL`, `--limit`, and `--cursor` for both filtered search and newest browse.
 
 ## Next milestone
 

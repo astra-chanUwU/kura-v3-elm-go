@@ -1,8 +1,9 @@
 package posts
 
 // SearchPostsSQL is the handwritten query contract for the PostgreSQL
-// adapter. $1 is the normalized query, $2 is the optional keyset id, and $3
-// is limit+1 so the adapter can determine whether another page exists.
+// adapter. $1 is the normalized query (empty means newest browse), $2 is the
+// optional keyset id, and $3 is limit+1 so the adapter can determine whether
+// another page exists.
 const SearchPostsSQL = `
 SELECT
     id::text,
@@ -14,7 +15,7 @@ SELECT
     tags
 FROM posts
 WHERE deleted_at IS NULL
-  AND search_document @@ websearch_to_tsquery('simple', $1)
+  AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
   AND ($2::bigint IS NULL OR id < $2::bigint)
 ORDER BY id DESC
 LIMIT $3

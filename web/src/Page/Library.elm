@@ -172,15 +172,11 @@ init flagsValue url key =
             , urlSeq = 0
             }
     in
-    if String.trim route.query == "" then
-        ( model, measureGrid 0 )
-
-    else
-        let
-            ( searching, searchCmd ) =
-                startSearch { model | pendingRoute = Just route } route.query
-        in
-        ( searching, Cmd.batch [ searchCmd, measureGrid 0 ] )
+    let
+        ( searching, searchCmd ) =
+            startSearch { model | pendingRoute = Just route } route.query
+    in
+    ( searching, Cmd.batch [ searchCmd, measureGrid 0 ] )
 
 
 
@@ -333,20 +329,16 @@ updateHelp msg model =
                     { model | ownQuery = Nothing }
             in
             if route.query /= model.query || own then
-                if String.trim route.query == "" then
-                    ( clearResults cleared, Cmd.none )
+                startSearch
+                    { cleared
+                        | pendingRoute =
+                            if own then
+                                Nothing
 
-                else
-                    startSearch
-                        { cleared
-                            | pendingRoute =
-                                if own then
-                                    Nothing
-
-                                else
-                                    Just route
-                        }
-                        route.query
+                            else
+                                Just route
+                    }
+                    route.query
 
             else if route == currentRoute model then
                 ( cleared, Cmd.none )
@@ -408,11 +400,7 @@ updateHelp msg model =
             )
 
         Retry ->
-            if String.trim model.query == "" then
-                ( model, Cmd.none )
-
-            else
-                startSearch model model.query
+            startSearch model model.query
 
         KeyCommand command ->
             runCommand command { model | hint = Nothing }
