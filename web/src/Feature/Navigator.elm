@@ -4,6 +4,7 @@ import Domain.Collection exposing (Collection)
 import Html exposing (Html, aside, button, div, input, li, p, span, text, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, placeholder, title, type_, value)
 import Html.Events exposing (onClick, onInput)
+import Set exposing (Set)
 import Ui.Panel as Panel exposing (Presentation)
 
 
@@ -19,6 +20,8 @@ type alias Config msg =
     , onCreateCollection : String -> msg
     , onSelectCollection : String -> msg
     , onMoveCollectionPost : String -> Int -> msg
+    , onRemoveCollectionPost : String -> msg
+    , removingPosts : Set String
     , onRun : String -> msg
     , onSave : msg
     , onRemove : String -> msg
@@ -119,6 +122,7 @@ view config =
                                                 , span [ class "collection-order-spacer" ] []
                                                 , button [ class "collection-move", type_ "button", disabled isFirst, onClick (config.onMoveCollectionPost postId -1), attribute "aria-label" ("Move #" ++ postId ++ " up") ] [ text "↑" ]
                                                 , button [ class "collection-move", type_ "button", disabled isLast, onClick (config.onMoveCollectionPost postId 1), attribute "aria-label" ("Move #" ++ postId ++ " down") ] [ text "↓" ]
+                                                , button [ class "collection-remove", type_ "button", disabled (Set.member postId config.removingPosts), onClick (config.onRemoveCollectionPost postId), attribute "aria-label" ("Remove #" ++ postId ++ " from collection") ] [ text "×" ]
                                                 ]
                                         )
                                         collection.postIds

@@ -128,6 +128,7 @@ type alias Model =
     , activeCollection : Maybe String
     , collectionDraft : String
     , collectionStatus : Maybe String
+    , collectionRemovals : Set String
     }
 
 
@@ -202,6 +203,7 @@ init flagsValue url key =
             , activeCollection = Nothing
             , collectionDraft = ""
             , collectionStatus = Nothing
+            , collectionRemovals = Set.empty
             }
     in
     let
@@ -268,6 +270,8 @@ type Msg
     | CollectionAdded (Result Http.Error Collection)
     | MoveCollectionPost String Int
     | CollectionReordered (Result Http.Error Collection)
+    | RemoveCollectionPost String
+    | CollectionPostRemoved String (Result Http.Error ())
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -691,6 +695,49 @@ updateHelp msg model =
 
                 Err error ->
                     ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+
+        RemoveCollectionPost postId ->
+            case model.activeCollection of
+                Nothing ->
+                    ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                Just collectionId ->
+                    if Set.member postId model.collectionRemovals then
+                        ( model, Cmd.none )
+
+                    else
+                        case List.filter (\c -> c.id == collectionId) model.collections |> List.head of
+                            Nothing ->
+                                ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                            Just collection ->
+                                if not (List.member postId collection.postIds) then
+                                    ( model, Cmd.none )
+
+                                else
+                                    ( { model | collectionStatus = Just "Removing…", collectionRemovals = Set.insert postId model.collectionRemovals }
+                                    , Api.Collection.removePost model.apiBase collectionId postId (CollectionPostRemoved postId)
+                                    )
+
+        CollectionPostRemoved postId result ->
+            case result of
+                Ok () ->
+                    let
+                        updatedCollections =
+                            List.map
+                                (\collection ->
+                                    if Just collection.id == model.activeCollection then
+                                        { collection | postIds = List.filter ((/=) postId) collection.postIds }
+
+                                    else
+                                        collection
+                                )
+                                model.collections
+                    in
+                    ( { model | collections = updatedCollections, collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just "Removed from collection." }, Cmd.none )
+
+                Err error ->
+                    ( { model | collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
         Retry ->
             startSearch model model.query
@@ -2566,6 +2613,8 @@ navigatorView model =
             , onCreateCollection = CreateCollection
             , onSelectCollection = SelectCollection
             , onMoveCollectionPost = MoveCollectionPost
+            , onRemoveCollectionPost = RemoveCollectionPost
+            , removingPosts = model.collectionRemovals
             , onRun = RunQuery
             , onSave = SaveSearch
             , onRemove = RemoveSavedSearch
