@@ -23,10 +23,12 @@ Usage:
   kura --help
   kura search --help
   kura collection --help
+  kura post --help
 
 Commands:
   search    Search posts via GET /api/posts
   collection List collections or browse collection posts
+  post      Show post detail and mutate tags, favorites, and scores
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
@@ -131,6 +133,171 @@ Flags:
   -h, --help        Show this help
 `
 
+const postHelp = `kura post - post detail and mutations via the HTTP API
+
+Usage:
+  kura post <command> [flags] [args]
+  kura post --help
+  kura post show --help
+  kura post tag --help
+  kura post favorite --help
+  kura post score --help
+  kura post reaction --help
+
+Commands:
+  show      Show post detail with revision history via GET /api/posts/{id}
+  tag       Edit or revert tags (subcommands: edit, revert)
+  favorite  Set favorite via POST /api/posts/reactions
+  score     Set score via POST /api/posts/reactions
+  reaction  Set favorite and/or score via POST /api/posts/reactions
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output JSON Lines
+  -h, --help        Show this help
+
+Examples:
+  kura post show 2004
+  kura post show --json 2004
+  kura post tag edit --version 2 --add night 2004
+  kura post tag revert --version 3 --target-version 1 2004
+  kura post favorite --version 1 --favorite=true 2004
+  kura post score --version 1 --score 5 2004
+  kura post reaction --version 1 --favorite=true --score 5 2004
+`
+
+const postShowHelp = `kura post show - show post detail via the HTTP API
+
+Usage:
+  kura post show [flags] POST_ID
+
+Shows post detail including tags, source, artist, hash, file size, dimensions,
+favorite, score, versions, and revision history from GET /api/posts/{id}.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object (JSON Lines, compact)
+  -h, --help        Show this help
+`
+
+const postTagHelp = `kura post tag - edit or revert tags via the HTTP API
+
+Usage:
+  kura post tag edit [flags] POST_ID
+  kura post tag revert [flags] POST_ID
+
+Commands:
+  edit    Edit tags via POST /api/posts/tags
+  revert  Revert tags via POST /api/posts/tags/revert
+
+Flags for edit:
+  --api-url URL       Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N         Expected current tag_version (required)
+  --add TAG           Tag to add (repeatable, or comma-separated)
+  --remove TAG        Tag to remove (repeatable, or comma-separated)
+  --json              Output the raw JSON response (pretty-printed)
+  --jsonl             Output one JSON object per result (JSON Lines)
+  -h, --help          Show this help
+
+Flags for revert:
+  --api-url URL       Base API URL
+  --version N         Expected current tag_version (required)
+  --target-version N  Historical version to restore (required)
+  --json              Output the raw JSON response
+  --jsonl             Output JSON Lines
+  -h, --help          Show this help
+
+Examples:
+  kura post tag edit --version 0 --add night --remove demo 2004
+  kura post tag revert --version 2 --target-version 1 2004
+`
+
+const postTagEditHelp = `kura post tag edit - edit tags via the HTTP API
+
+Usage:
+  kura post tag edit [flags] POST_ID
+
+Edits tags via POST /api/posts/tags with optimistic version checking.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Expected current tag_version (required)
+  --add TAG         Tag to add (repeatable)
+  --remove TAG      Tag to remove (repeatable)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postTagRevertHelp = `kura post tag revert - revert tags via the HTTP API
+
+Usage:
+  kura post tag revert [flags] POST_ID
+
+Reverts tags to a historical revision via POST /api/posts/tags/revert with
+optimistic version checking.
+
+Flags:
+  --api-url URL       Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N         Expected current tag_version (required)
+  --target-version N  Historical version to restore (required)
+  --json              Output the raw JSON response (pretty-printed)
+  --jsonl             Output one JSON object per result (JSON Lines)
+  -h, --help          Show this help
+`
+
+const postFavoriteHelp = `kura post favorite - set favorite via the HTTP API
+
+Usage:
+  kura post favorite [flags] POST_ID
+
+Sets favorite via POST /api/posts/reactions with optimistic version checking.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Expected current reaction_version (required)
+  --favorite BOOL   Favorite value true or false (required)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postScoreHelp = `kura post score - set score via the HTTP API
+
+Usage:
+  kura post score [flags] POST_ID
+
+Sets score via POST /api/posts/reactions with optimistic version checking.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Expected current reaction_version (required)
+  --score N         Score value 0..2147483647 (required)
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postReactionHelp = `kura post reaction - set favorite and/or score via the HTTP API
+
+Usage:
+  kura post reaction [flags] POST_ID
+
+Sets favorite and/or score via POST /api/posts/reactions with optimistic version
+checking. At least one of --favorite or --score is required.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Expected current reaction_version (required)
+  --favorite BOOL   Favorite value true or false
+  --score N         Score value 0..2147483647
+  --json            Output the raw JSON response (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
 type searchConfig struct {
 	apiURL    string
 	apiURLSet bool
@@ -160,11 +327,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	case "collection":
 		return runCollection(args[1:], stdout, stderr, getenv)
 	case "post":
-		// No detail endpoint exists in the current API (only GET /api/posts and
-		// GET /health). Do not invent one; explain and exit non-zero.
-		fmt.Fprintln(stderr, "error: post detail endpoint is not available in the current API")
-		fmt.Fprintln(stderr, "only 'kura search' is supported; the server exposes GET /api/posts and GET /health")
-		return 1
+		return runPost(args[1:], stdout, stderr, getenv)
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q\n", args[0])
 		fmt.Fprint(stderr, rootHelp)
@@ -352,6 +515,817 @@ func encodeJSON(stdout io.Writer, value any) int {
 	}
 	return 0
 }
+
+type postShowConfig struct {
+	apiURL   string
+	jsonOut  bool
+	jsonlOut bool
+}
+
+type postTagEditConfig struct {
+	apiURL       string
+	jsonOut      bool
+	jsonlOut     bool
+	versionSet   bool
+	version      string
+	addTags      []string
+	removeTags   []string
+}
+
+type postTagRevertConfig struct {
+	apiURL        string
+	jsonOut       bool
+	jsonlOut      bool
+	versionSet    bool
+	version       string
+	targetSet     bool
+	targetVersion string
+}
+
+type postReactionConfig struct {
+	apiURL       string
+	jsonOut      bool
+	jsonlOut     bool
+	versionSet   bool
+	version      string
+	favoriteSet  bool
+	favoriteVal  string
+	scoreSet     bool
+	scoreVal     string
+}
+
+func runPost(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+		fmt.Fprint(stdout, postHelp)
+		return 0
+	}
+	cmd := args[0]
+	rest := args[1:]
+	switch cmd {
+	case "show":
+		return runPostShow(rest, stdout, stderr, getenv)
+	case "tag":
+		if len(rest) == 0 || rest[0] == "-h" || rest[0] == "--help" || rest[0] == "help" {
+			fmt.Fprint(stdout, postTagHelp)
+			return 0
+		}
+		sub := rest[0]
+		subrest := rest[1:]
+		switch sub {
+		case "edit":
+			return runPostTagEdit(subrest, stdout, stderr, getenv)
+		case "revert":
+			return runPostTagRevert(subrest, stdout, stderr, getenv)
+		case "-h", "--help", "help":
+			fmt.Fprint(stdout, postTagHelp)
+			return 0
+		default:
+			fmt.Fprintf(stderr, "error: unknown post tag command %q\n", sub)
+			fmt.Fprint(stderr, postTagHelp)
+			return 1
+		}
+	case "tag-edit", "tag_edit":
+		return runPostTagEdit(rest, stdout, stderr, getenv)
+	case "tag-revert", "tag_revert":
+		return runPostTagRevert(rest, stdout, stderr, getenv)
+	case "favorite":
+		return runPostFavorite(rest, stdout, stderr, getenv)
+	case "score":
+		return runPostScore(rest, stdout, stderr, getenv)
+	case "reaction":
+		return runPostReaction(rest, stdout, stderr, getenv)
+	case "get":
+		// Preserve previous behavior for legacy test: "post get" was documented as unavailable.
+		fmt.Fprintln(stderr, "error: post detail endpoint is not available in the current API")
+		fmt.Fprintln(stderr, "only 'kura search' is supported; the server exposes GET /api/posts and GET /health")
+		return 1
+	default:
+		fmt.Fprintf(stderr, "error: unknown post command %q\n", cmd)
+		fmt.Fprint(stderr, postHelp)
+		return 1
+	}
+}
+
+func runPostShow(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postShowConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostShowArgs(args, &cfg)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postShowHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postShowHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	detail, err := c.GetPostDetail(ctx, postID)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if cfg.jsonOut {
+		return encodeJSON(stdout, detail)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(detail); err != nil {
+			fmt.Fprintf(stderr, "error: encode jsonl: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	return writePostDetailHuman(detail, stdout)
+}
+
+func parsePostShowArgs(args []string, cfg *postShowConfig) (string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return "", errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+			continue
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+			continue
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if len(positional) != 1 {
+		return "", fmt.Errorf("post show requires exactly one POST_ID")
+	}
+	id := strings.TrimSpace(positional[0])
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 || id != strconv.FormatInt(n, 10) {
+		return "", fmt.Errorf("post id must be a positive integer")
+	}
+	return id, nil
+}
+
+func writePostDetailHuman(d client.PostDetail, stdout io.Writer) int {
+	fmt.Fprintf(stdout, "ID: %s\n", d.ID)
+	fmt.Fprintf(stdout, "Preview: %s\n", d.PreviewURL)
+	fmt.Fprintf(stdout, "Original: %s\n", d.OriginalURL)
+	fmt.Fprintf(stdout, "Media Type: %s\n", d.MediaType)
+	fmt.Fprintf(stdout, "Dimensions: %dx%d\n", d.Width, d.Height)
+	fmt.Fprintf(stdout, "Source: %s\n", d.Source)
+	fmt.Fprintf(stdout, "Artist: %s\n", d.Artist)
+	fmt.Fprintf(stdout, "Hash: %s\n", d.Hash)
+	fmt.Fprintf(stdout, "File Size: %d\n", d.FileSize)
+	fmt.Fprintf(stdout, "Created At: %s\n", d.CreatedAt)
+	fmt.Fprintf(stdout, "Tags: %s\n", strings.Join(d.Tags, ", "))
+	fmt.Fprintf(stdout, "Tag Version: %d\n", d.TagVersion)
+	fmt.Fprintf(stdout, "Favorite: %v\n", d.Favorite)
+	fmt.Fprintf(stdout, "Score: %d\n", d.Score)
+	fmt.Fprintf(stdout, "Reaction Version: %d\n", d.ReactionVersion)
+	if len(d.History) == 0 {
+		fmt.Fprintln(stdout, "History: (none)")
+	} else {
+		fmt.Fprintln(stdout, "History:")
+		for _, rev := range d.History {
+			fmt.Fprintf(stdout, "  v%d %s", rev.Version, rev.Kind)
+			if len(rev.AddedTags) > 0 {
+				fmt.Fprintf(stdout, " +%s", strings.Join(rev.AddedTags, ","))
+			}
+			if len(rev.RemovedTags) > 0 {
+				fmt.Fprintf(stdout, " -%s", strings.Join(rev.RemovedTags, ","))
+			}
+			if len(rev.TargetTags) > 0 {
+				fmt.Fprintf(stdout, " target:[%s]", strings.Join(rev.TargetTags, ","))
+			}
+			fmt.Fprintf(stdout, " %s\n", rev.CreatedAt)
+		}
+	}
+	if len(d.ReactionHistory) == 0 {
+		fmt.Fprintln(stdout, "Reaction History: (none)")
+	} else {
+		fmt.Fprintln(stdout, "Reaction History:")
+		for _, rev := range d.ReactionHistory {
+			fmt.Fprintf(stdout, "  v%d favorite:%v score:%d %s\n", rev.Version, rev.Favorite, rev.Score, rev.CreatedAt)
+		}
+	}
+	return 0
+}
+
+func runPostTagEdit(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postTagEditConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostTagEditArgs(args, &cfg)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postTagEditHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postTagEditHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	if !cfg.versionSet {
+		fmt.Fprintln(stderr, "error: flag --version is required")
+		fmt.Fprint(stderr, postTagEditHelp)
+		return 1
+	}
+	versionStr := strings.TrimSpace(cfg.version)
+	version, err := strconv.Atoi(versionStr)
+	if err != nil || version < 0 || versionStr != strconv.Itoa(version) {
+		fmt.Fprintf(stderr, "error: invalid --version %q: must be a non-negative integer\n", cfg.version)
+		return 1
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	add := cfg.addTags
+	if add == nil {
+		add = []string{}
+	}
+	remove := cfg.removeTags
+	if remove == nil {
+		remove = []string{}
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req := client.TagEditRequest{
+		Posts:  []client.TagTarget{{ID: postID, Version: version}},
+		Add:    add,
+		Remove: remove,
+	}
+	result, err := c.EditTags(ctx, req)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		for _, r := range result.Posts {
+			if err := enc.Encode(r); err != nil {
+				fmt.Fprintf(stderr, "error: encode jsonl: %v\n", err)
+				return 1
+			}
+		}
+		return 0
+	}
+	for _, r := range result.Posts {
+		fmt.Fprintf(stdout, "%s\tversion:%d\tchanged:%v\ttags:%s\n", r.ID, r.Version, r.Changed, strings.Join(r.Tags, ","))
+	}
+	return 0
+}
+
+func parsePostTagEditArgs(args []string, cfg *postTagEditConfig) (string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return "", errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+			continue
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+			continue
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+			continue
+		case arg == "--version":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --version requires a value")
+			}
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--version="):
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(strings.TrimPrefix(arg, "--version="))
+			i++
+			continue
+		case arg == "--add":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --add requires a value")
+			}
+			cfg.addTags = append(cfg.addTags, strings.TrimSpace(args[i+1]))
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--add="):
+			cfg.addTags = append(cfg.addTags, strings.TrimSpace(strings.TrimPrefix(arg, "--add=")))
+			i++
+			continue
+		case arg == "--remove":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --remove requires a value")
+			}
+			cfg.removeTags = append(cfg.removeTags, strings.TrimSpace(args[i+1]))
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--remove="):
+			cfg.removeTags = append(cfg.removeTags, strings.TrimSpace(strings.TrimPrefix(arg, "--remove=")))
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if len(positional) != 1 {
+		return "", fmt.Errorf("post tag edit requires exactly one POST_ID")
+	}
+	id := strings.TrimSpace(positional[0])
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 || id != strconv.FormatInt(n, 10) {
+		return "", fmt.Errorf("post id must be a positive integer")
+	}
+	return id, nil
+}
+
+func runPostTagRevert(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postTagRevertConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostTagRevertArgs(args, &cfg)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postTagRevertHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postTagRevertHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	if !cfg.versionSet {
+		fmt.Fprintln(stderr, "error: flag --version is required")
+		fmt.Fprint(stderr, postTagRevertHelp)
+		return 1
+	}
+	if !cfg.targetSet {
+		fmt.Fprintln(stderr, "error: flag --target-version is required")
+		fmt.Fprint(stderr, postTagRevertHelp)
+		return 1
+	}
+	versionStr := strings.TrimSpace(cfg.version)
+	version, err := strconv.Atoi(versionStr)
+	if err != nil || version < 0 || versionStr != strconv.Itoa(version) {
+		fmt.Fprintf(stderr, "error: invalid --version %q: must be a non-negative integer\n", cfg.version)
+		return 1
+	}
+	targetStr := strings.TrimSpace(cfg.targetVersion)
+	target, err := strconv.Atoi(targetStr)
+	if err != nil || target <= 0 || targetStr != strconv.Itoa(target) {
+		fmt.Fprintf(stderr, "error: invalid --target-version %q: must be a positive integer\n", cfg.targetVersion)
+		return 1
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req := client.TagRevertRequest{
+		Posts:         []client.TagTarget{{ID: postID, Version: version}},
+		TargetVersion: target,
+	}
+	result, err := c.RevertTags(ctx, req)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		for _, r := range result.Posts {
+			if err := enc.Encode(r); err != nil {
+				fmt.Fprintf(stderr, "error: encode jsonl: %v\n", err)
+				return 1
+			}
+		}
+		return 0
+	}
+	for _, r := range result.Posts {
+		fmt.Fprintf(stdout, "%s\tversion:%d\tchanged:%v\ttags:%s\n", r.ID, r.Version, r.Changed, strings.Join(r.Tags, ","))
+	}
+	return 0
+}
+
+func parsePostTagRevertArgs(args []string, cfg *postTagRevertConfig) (string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return "", errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+			continue
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+			continue
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+			continue
+		case arg == "--version":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --version requires a value")
+			}
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--version="):
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(strings.TrimPrefix(arg, "--version="))
+			i++
+			continue
+		case arg == "--target-version":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --target-version requires a value")
+			}
+			cfg.targetSet = true
+			cfg.targetVersion = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--target-version="):
+			cfg.targetSet = true
+			cfg.targetVersion = strings.TrimSpace(strings.TrimPrefix(arg, "--target-version="))
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if len(positional) != 1 {
+		return "", fmt.Errorf("post tag revert requires exactly one POST_ID")
+	}
+	id := strings.TrimSpace(positional[0])
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 || id != strconv.FormatInt(n, 10) {
+		return "", fmt.Errorf("post id must be a positive integer")
+	}
+	return id, nil
+}
+
+func runPostFavorite(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postReactionConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostReactionArgs(args, &cfg, true, false)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postFavoriteHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postFavoriteHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	return executeReaction(cfg, postID, stdout, stderr, true, false)
+}
+
+func runPostScore(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postReactionConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostReactionArgs(args, &cfg, false, true)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postScoreHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postScoreHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	return executeReaction(cfg, postID, stdout, stderr, false, true)
+}
+
+func runPostReaction(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+	cfg := postReactionConfig{apiURL: defaultAPIURL}
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	postID, err := parsePostReactionArgs(args, &cfg, false, false)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, postReactionHelp)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, postReactionHelp)
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	return executeReaction(cfg, postID, stdout, stderr, false, false)
+}
+
+func parsePostReactionArgs(args []string, cfg *postReactionConfig, requireFavorite, requireScore bool) (string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return "", errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+			continue
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+			continue
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+			continue
+		case arg == "--version":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --version requires a value")
+			}
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--version="):
+			cfg.versionSet = true
+			cfg.version = strings.TrimSpace(strings.TrimPrefix(arg, "--version="))
+			i++
+			continue
+		case arg == "--favorite":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --favorite requires a value")
+			}
+			cfg.favoriteSet = true
+			cfg.favoriteVal = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--favorite="):
+			cfg.favoriteSet = true
+			cfg.favoriteVal = strings.TrimSpace(strings.TrimPrefix(arg, "--favorite="))
+			i++
+			continue
+		case arg == "--score":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("flag --score requires a value")
+			}
+			cfg.scoreSet = true
+			cfg.scoreVal = strings.TrimSpace(args[i+1])
+			i += 2
+			continue
+		case strings.HasPrefix(arg, "--score="):
+			cfg.scoreSet = true
+			cfg.scoreVal = strings.TrimSpace(strings.TrimPrefix(arg, "--score="))
+			i++
+			continue
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if len(positional) != 1 {
+		if requireFavorite {
+			return "", fmt.Errorf("post favorite requires exactly one POST_ID")
+		}
+		if requireScore {
+			return "", fmt.Errorf("post score requires exactly one POST_ID")
+		}
+		return "", fmt.Errorf("post reaction requires exactly one POST_ID")
+	}
+	id := strings.TrimSpace(positional[0])
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n <= 0 || id != strconv.FormatInt(n, 10) {
+		return "", fmt.Errorf("post id must be a positive integer")
+	}
+	return id, nil
+}
+
+func executeReaction(cfg postReactionConfig, postID string, stdout, stderr io.Writer, requireFavorite, requireScore bool) int {
+	if !cfg.versionSet {
+		fmt.Fprintln(stderr, "error: flag --version is required")
+		return 1
+	}
+	versionStr := strings.TrimSpace(cfg.version)
+	version, err := strconv.Atoi(versionStr)
+	if err != nil || version < 0 || versionStr != strconv.Itoa(version) {
+		fmt.Fprintf(stderr, "error: invalid --version %q: must be a non-negative integer\n", cfg.version)
+		return 1
+	}
+	if requireFavorite && !cfg.favoriteSet {
+		fmt.Fprintln(stderr, "error: flag --favorite is required")
+		return 1
+	}
+	if requireScore && !cfg.scoreSet {
+		fmt.Fprintln(stderr, "error: flag --score is required")
+		return 1
+	}
+	if !cfg.favoriteSet && !cfg.scoreSet {
+		fmt.Fprintln(stderr, "error: at least one of --favorite or --score is required")
+		return 1
+	}
+	var favPtr *bool
+	if cfg.favoriteSet {
+		val := strings.ToLower(strings.TrimSpace(cfg.favoriteVal))
+		var fav bool
+		switch val {
+		case "true", "1", "t", "yes":
+			fav = true
+		case "false", "0", "f", "no":
+			fav = false
+		default:
+			fmt.Fprintf(stderr, "error: invalid --favorite %q: must be true or false\n", cfg.favoriteVal)
+			return 1
+		}
+		favPtr = &fav
+	}
+	var scorePtr *int
+	if cfg.scoreSet {
+		val := strings.TrimSpace(cfg.scoreVal)
+		score, err := strconv.Atoi(val)
+		if err != nil || score < 0 || val != strconv.Itoa(score) {
+			fmt.Fprintf(stderr, "error: invalid --score %q: must be a non-negative integer\n", cfg.scoreVal)
+			return 1
+		}
+		scorePtr = &score
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req := client.ReactionRequest{
+		Posts:    []client.ReactionTarget{{ID: postID, Version: version}},
+		Favorite: favPtr,
+		Score:    scorePtr,
+	}
+	result, err := c.EditReactions(ctx, req)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		enc := json.NewEncoder(stdout)
+		enc.SetEscapeHTML(false)
+		for _, r := range result.Posts {
+			if err := enc.Encode(r); err != nil {
+				fmt.Fprintf(stderr, "error: encode jsonl: %v\n", err)
+				return 1
+			}
+		}
+		return 0
+	}
+	for _, r := range result.Posts {
+		fmt.Fprintf(stdout, "%s\tversion:%d\tchanged:%v\tfavorite:%v\tscore:%d\n", r.ID, r.Version, r.Changed, r.Favorite, r.Score)
+	}
+	return 0
+}
+
 
 func runSearch(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	cfg := searchConfig{}

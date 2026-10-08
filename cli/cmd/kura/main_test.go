@@ -439,3 +439,156 @@ func TestSearch_MultiWordQuery(t *testing.T) {
 		t.Fatalf("multiword mismatch: got %q", gotQ)
 	}
 }
+
+func postDetailServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/posts/2004", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"2004","preview_url":"/preview","original_url":"/original","media_type":"image/jpeg","width":679,"height":437,"source":"demo/kson.jpeg","artist":"Kura Demo","hash":"sha256:test","file_size":165554,"created_at":"2026-01-02 00:00:04+00","tags":["demo","kson"],"tag_version":2,"favorite":true,"score":3,"reaction_version":1,"history":[{"version":2,"kind":"tag_edit","added_tags":["night"],"removed_tags":["demo"],"target_tags":["kson","night"],"created_at":"2026-01-02 00:00:06+00"},{"version":1,"kind":"tag_edit","added_tags":["demo"],"removed_tags":[],"target_tags":["demo","kson"],"created_at":"2026-01-02 00:00:05+00"}],"reaction_history":[{"version":1,"favorite":true,"score":3,"created_at":"2026-01-03 00:00:00+00"}]}`)
+	})
+	mux.HandleFunc("/api/posts/404", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"post not found"}`)
+	})
+	mux.HandleFunc("/api/posts/tags", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected tags method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"posts":[{"id":"2004","version":3,"tags":["kson","night"],"changed":true}]}`)
+	})
+	mux.HandleFunc("/api/posts/tags/revert", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected revert method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"posts":[{"id":"2004","version":4,"tags":["demo","kson"],"changed":true}]}`)
+	})
+	mux.HandleFunc("/api/posts/reactions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected reactions method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"posts":[{"id":"2004","version":2,"favorite":true,"score":5,"changed":true}]}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestPostShow_HumanJSONJSONL(t *testing.T) {
+	srv := postDetailServer(t)
+	defer srv.Close()
+
+	code, out, _ := runWithEnv([]string{"post", "show", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 {
+		t.Fatalf("show human exit %d", code)
+	}
+	if !strings.Contains(out, "ID: 2004") || !strings.Contains(out, "Source:") || !strings.Contains(out, "Tag Version: 2") || !strings.Contains(out, "History:") || !strings.Contains(out, "Reaction History:") {
+		t.Fatalf("human detail missing fields: %q", out)
+	}
+	if !strings.Contains(out, "night") || !strings.Contains(out, "tag_edit") {
+		t.Fatalf("human history missing: %q", out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "show", "--json", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"id": "2004"`) || !strings.Contains(out, `"history"`) || !strings.Contains(out, `"reaction_history"`) {
+		t.Fatalf("json detail missing code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "show", "--jsonl", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 {
+		t.Fatalf("jsonl exit %d", code)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"id":"2004"`) || !strings.Contains(lines[0], `"history"`) {
+		t.Fatalf("jsonl detail unexpected: %q", out)
+	}
+}
+
+func TestPostShow_ErrorsAndValidation(t *testing.T) {
+	srv := postDetailServer(t)
+	defer srv.Close()
+
+	code, _, errOut := runWithEnv([]string{"post", "show", "404"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code == 0 || !strings.Contains(errOut, "post not found") {
+		t.Fatalf("expected not found code=%d err=%q", code, errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"post", "show", "not-an-id"}, nil)
+	if code == 0 || !strings.Contains(errOut, "positive integer") {
+		t.Fatalf("expected id validation err=%q", errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"post", "show", "--json", "--jsonl", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code == 0 || !strings.Contains(errOut, "mutually exclusive") {
+		t.Fatalf("expected json flag validation err=%q", errOut)
+	}
+	code, out, _ := runWithEnv([]string{"post", "show", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "kura post show") {
+		t.Fatalf("show help missing: %q", out)
+	}
+}
+
+func TestPostTagEdit_FavoriteScore_Reaction(t *testing.T) {
+	srv := postDetailServer(t)
+	defer srv.Close()
+
+	code, out, _ := runWithEnv([]string{"post", "tag", "edit", "--version", "2", "--add", "night", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, "2004") || !strings.Contains(out, "version:3") {
+		t.Fatalf("tag edit human failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "tag", "edit", "--version=2", "--json", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"version"`) {
+		t.Fatalf("tag edit json failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "tag", "edit", "--version", "2", "--jsonl", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"id":"2004"`) {
+		t.Fatalf("tag edit jsonl failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "tag", "revert", "--version", "3", "--target-version", "1", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, "version:4") {
+		t.Fatalf("tag revert failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "favorite", "--version", "1", "--favorite", "true", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, "favorite:true") {
+		t.Fatalf("favorite failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "score", "--version", "1", "--score", "5", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, "score:5") {
+		t.Fatalf("score failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "reaction", "--version", "1", "--favorite", "true", "--score", "5", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, "favorite:true") || !strings.Contains(out, "score:5") {
+		t.Fatalf("reaction failed code=%d out=%q", code, out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "reaction", "--json", "--version", "1", "--favorite=true", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || !strings.Contains(out, `"favorite"`) {
+		t.Fatalf("reaction json failed code=%d out=%q", code, out)
+	}
+}
+
+func TestPostHelpAndValidation(t *testing.T) {
+	code, out, _ := runWithEnv([]string{"post", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "kura post") || !strings.Contains(out, "show") {
+		t.Fatalf("post help missing: %q", out)
+	}
+	code, out, _ = runWithEnv([]string{"post", "tag", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "edit") || !strings.Contains(out, "revert") {
+		t.Fatalf("post tag help missing: %q", out)
+	}
+	code, _, errOut := runWithEnv([]string{"post", "tag", "edit", "2004"}, nil)
+	if code == 0 || !strings.Contains(errOut, "--version") {
+		t.Fatalf("expected version required err=%q", errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"post", "favorite", "--version", "1", "2004"}, nil)
+	if code == 0 || !strings.Contains(errOut, "--favorite") {
+		t.Fatalf("expected favorite required err=%q", errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"post", "score", "--version", "1", "2004"}, nil)
+	if code == 0 || !strings.Contains(errOut, "--score") {
+		t.Fatalf("expected score required err=%q", errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"post", "unknown"}, nil)
+	if code == 0 || !strings.Contains(errOut, "unknown post command") {
+		t.Fatalf("expected unknown command err=%q", errOut)
+	}
+}

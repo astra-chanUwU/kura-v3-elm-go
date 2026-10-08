@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -337,5 +338,133 @@ func TestCollectionPosts_SuccessAndAPIError(t *testing.T) {
 func TestCollectionPosts_EmptyID(t *testing.T) {
 	if _, err := New("http://example.test").CollectionPosts(context.Background(), " "); err == nil {
 		t.Fatal("expected empty collection id error")
+	}
+}
+
+func TestGetPostDetail_Success(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"2004","preview_url":"/preview","original_url":"/original","media_type":"image/jpeg","width":679,"height":437,"source":"demo/kson.jpeg","artist":"Kura Demo","hash":"sha256:test","file_size":165554,"created_at":"2026-01-02 00:00:04+00","tags":["demo"],"tag_version":2,"favorite":true,"score":3,"reaction_version":1,"history":[{"version":2,"kind":"tag_edit","added_tags":["night"],"removed_tags":["demo"],"target_tags":["kson","night"],"created_at":"2026-01-02 00:00:06+00"}],"reaction_history":[{"version":1,"favorite":true,"score":3,"created_at":"2026-01-03 00:00:00+00"}]}`))
+	}))
+	defer srv.Close()
+
+	detail, err := New(srv.URL).GetPostDetail(context.Background(), "2004")
+	if err != nil {
+		t.Fatalf("GetPostDetail error: %v", err)
+	}
+	if gotPath != "/api/posts/2004" || detail.ID != "2004" || detail.Source != "demo/kson.jpeg" || len(detail.History) != 1 || len(detail.ReactionHistory) != 1 {
+		t.Fatalf("unexpected detail path=%q detail=%#v", gotPath, detail)
+	}
+}
+
+func TestGetPostDetail_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"post not found"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL).GetPostDetail(context.Background(), "404")
+	if err == nil || !strings.Contains(err.Error(), "post not found") {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestGetPostDetail_EmptyID(t *testing.T) {
+	if _, err := New("http://example.test").GetPostDetail(context.Background(), " "); err == nil {
+		t.Fatal("expected empty id error")
+	}
+}
+
+func TestEditTags_SuccessAndConflict(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[{"id":"2004","version":3,"tags":["kson"],"changed":true}]}`))
+	}))
+	defer srv.Close()
+	res, err := New(srv.URL).EditTags(context.Background(), TagEditRequest{
+		Posts: []TagTarget{{ID: "2004", Version: 2}},
+		Add:   []string{"night"},
+	})
+	if err != nil {
+		t.Fatalf("EditTags error: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/posts/tags" || !strings.Contains(gotBody, "night") {
+		t.Fatalf("unexpected edit request method=%q path=%q body=%q", gotMethod, gotPath, gotBody)
+	}
+	if len(res.Posts) != 1 || res.Posts[0].Version != 3 {
+		t.Fatalf("unexpected edit result: %#v", res)
+	}
+	// Conflict
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"post tag version is stale"}`))
+	}))
+	defer srv2.Close()
+	_, err = New(srv2.URL).EditTags(context.Background(), TagEditRequest{Posts: []TagTarget{{ID: "2004", Version: 0}}, Add: []string{"x"}})
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected conflict, got %v", err)
+	}
+}
+
+func TestRevertTags_Success(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[{"id":"2004","version":4,"tags":["demo"],"changed":true}]}`))
+	}))
+	defer srv.Close()
+	res, err := New(srv.URL).RevertTags(context.Background(), TagRevertRequest{
+		Posts:         []TagTarget{{ID: "2004", Version: 3}},
+		TargetVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("RevertTags error: %v", err)
+	}
+	if gotPath != "/api/posts/tags/revert" || len(res.Posts) != 1 || res.Posts[0].Version != 4 {
+		t.Fatalf("unexpected revert path=%q result=%#v", gotPath, res)
+	}
+}
+
+func TestEditReactions_Success(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"posts":[{"id":"2004","version":2,"favorite":true,"score":5,"changed":true}]}`))
+	}))
+	defer srv.Close()
+	fav := true
+	score := 5
+	res, err := New(srv.URL).EditReactions(context.Background(), ReactionRequest{
+		Posts:    []ReactionTarget{{ID: "2004", Version: 1}},
+		Favorite: &fav,
+		Score:    &score,
+	})
+	if err != nil {
+		t.Fatalf("EditReactions error: %v", err)
+	}
+	if gotPath != "/api/posts/reactions" || len(res.Posts) != 1 || !res.Posts[0].Favorite || res.Posts[0].Score != 5 {
+		t.Fatalf("unexpected reaction path=%q result=%#v", gotPath, res)
+	}
+}
+
+func TestEditReactions_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"post not found"}`))
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL).EditReactions(context.Background(), ReactionRequest{Posts: []ReactionTarget{{ID: "404", Version: 0}}, Favorite: func() *bool { b := true; return &b }()})
+	if err == nil || !strings.Contains(err.Error(), "post not found") {
+		t.Fatalf("expected not found, got %v", err)
 	}
 }

@@ -14,12 +14,13 @@ import (
 
 // PostSummary is the stable browser-facing representation from GET /api/posts.
 type PostSummary struct {
-	ID          string `json:"id"`
-	PreviewURL  string `json:"preview_url"`
-	OriginalURL string `json:"original_url"`
-	MediaType   string `json:"media_type"`
-	Width       int    `json:"width"`
-	Height      int    `json:"height"`
+	ID          string   `json:"id"`
+	PreviewURL  string   `json:"preview_url"`
+	OriginalURL string   `json:"original_url"`
+	MediaType   string   `json:"media_type"`
+	Width       int      `json:"width"`
+	Height      int      `json:"height"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // SearchResponse is the envelope for GET /api/posts.
@@ -40,6 +41,105 @@ type Collection struct {
 // CollectionsResponse is the envelope for GET /api/collections.
 type CollectionsResponse struct {
 	Collections []Collection `json:"collections"`
+}
+
+// PostDetail is the stable read-only representation from GET /api/posts/{id}.
+// It extends PostSummary with Inspector metadata and revision histories.
+type PostDetail struct {
+	PostSummary
+	Source          string             `json:"source"`
+	Artist          string             `json:"artist"`
+	Hash            string             `json:"hash"`
+	FileSize        int64              `json:"file_size"`
+	CreatedAt       string             `json:"created_at"`
+	TagVersion      int                `json:"tag_version"`
+	Favorite        bool               `json:"favorite"`
+	Score           int                `json:"score"`
+	ReactionVersion int                `json:"reaction_version"`
+	History         []Revision         `json:"history"`
+	ReactionHistory []ReactionRevision `json:"reaction_history"`
+}
+
+// Revision is an immutable tag-edit entry.
+type Revision struct {
+	Version     int      `json:"version"`
+	Kind        string   `json:"kind"`
+	AddedTags   []string `json:"added_tags"`
+	RemovedTags []string `json:"removed_tags"`
+	TargetTags  []string `json:"target_tags,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+}
+
+// ReactionRevision is an immutable favorite/score entry.
+type ReactionRevision struct {
+	Version   int    `json:"version"`
+	Favorite  bool   `json:"favorite"`
+	Score     int    `json:"score"`
+	CreatedAt string `json:"created_at"`
+}
+
+// TagTarget identifies a post with its expected tag version.
+type TagTarget struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// TagEditRequest is the payload for POST /api/posts/tags.
+type TagEditRequest struct {
+	Posts  []TagTarget `json:"posts"`
+	Add    []string    `json:"add"`
+	Remove []string    `json:"remove"`
+}
+
+// TagEditResult is one post result from a tag mutation.
+type TagEditResult struct {
+	ID      string   `json:"id"`
+	Version int      `json:"version"`
+	Tags    []string `json:"tags"`
+	Changed bool     `json:"changed"`
+}
+
+// TagEditResponse is the envelope for tag mutations.
+type TagEditResponse struct {
+	Posts []TagEditResult `json:"posts"`
+}
+
+// TagRevertRequest is the payload for POST /api/posts/tags/revert.
+type TagRevertRequest struct {
+	Posts         []TagTarget `json:"posts"`
+	TargetVersion int         `json:"target_version"`
+}
+
+// TagRevertResponse is the envelope for tag reverts.
+type TagRevertResponse struct {
+	Posts []TagEditResult `json:"posts"`
+}
+
+// ReactionTarget identifies a post with its expected reaction version.
+type ReactionTarget struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// ReactionRequest is the payload for POST /api/posts/reactions.
+type ReactionRequest struct {
+	Posts    []ReactionTarget `json:"posts"`
+	Favorite *bool            `json:"favorite,omitempty"`
+	Score    *int             `json:"score,omitempty"`
+}
+
+// ReactionResult is one post result from a reaction mutation.
+type ReactionResult struct {
+	ID       string `json:"id"`
+	Version  int    `json:"version"`
+	Favorite bool   `json:"favorite"`
+	Score    int    `json:"score"`
+	Changed  bool   `json:"changed"`
+}
+
+// ReactionResponse is the envelope for reaction mutations.
+type ReactionResponse struct {
+	Posts []ReactionResult `json:"posts"`
 }
 
 // Client talks to the Kura HTTP API. It uses only the public API surface
@@ -198,6 +298,65 @@ func (c *Client) ListCollectionPosts(ctx context.Context, collectionID string) (
 	return c.CollectionPosts(ctx, collectionID)
 }
 
+// GetPostDetail executes GET /api/posts/{id}.
+func (c *Client) GetPostDetail(ctx context.Context, id string) (PostDetail, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return PostDetail{}, fmt.Errorf("post id must not be empty")
+	}
+	var result PostDetail
+	path := "/api/posts/" + url.PathEscape(id)
+	if err := c.getJSON(ctx, path, &result); err != nil {
+		return PostDetail{}, err
+	}
+	if result.History == nil {
+		result.History = []Revision{}
+	}
+	if result.ReactionHistory == nil {
+		result.ReactionHistory = []ReactionRevision{}
+	}
+	if result.Tags == nil {
+		result.Tags = []string{}
+	}
+	return result, nil
+}
+
+// EditTags executes POST /api/posts/tags.
+func (c *Client) EditTags(ctx context.Context, req TagEditRequest) (TagEditResponse, error) {
+	var result TagEditResponse
+	if err := c.postJSON(ctx, "/api/posts/tags", req, &result); err != nil {
+		return TagEditResponse{}, err
+	}
+	if result.Posts == nil {
+		result.Posts = []TagEditResult{}
+	}
+	return result, nil
+}
+
+// RevertTags executes POST /api/posts/tags/revert.
+func (c *Client) RevertTags(ctx context.Context, req TagRevertRequest) (TagRevertResponse, error) {
+	var result TagRevertResponse
+	if err := c.postJSON(ctx, "/api/posts/tags/revert", req, &result); err != nil {
+		return TagRevertResponse{}, err
+	}
+	if result.Posts == nil {
+		result.Posts = []TagEditResult{}
+	}
+	return result, nil
+}
+
+// EditReactions executes POST /api/posts/reactions.
+func (c *Client) EditReactions(ctx context.Context, req ReactionRequest) (ReactionResponse, error) {
+	var result ReactionResponse
+	if err := c.postJSON(ctx, "/api/posts/reactions", req, &result); err != nil {
+		return ReactionResponse{}, err
+	}
+	if result.Posts == nil {
+		result.Posts = []ReactionResult{}
+	}
+	return result, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 	base := c.BaseURL
 	if base == "" {
@@ -237,6 +396,55 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, request any, target any) error {
+	base := c.BaseURL
+	if base == "" {
+		base = "http://localhost:8080"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid api url %q: %w", base, err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	u.RawQuery = ""
+	bodyBytes, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiMsg struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(respBody, &apiMsg) == nil && apiMsg.Error != "" {
+			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(respBody))}
+		}
+		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
+	}
+	if err := json.Unmarshal(respBody, target); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
