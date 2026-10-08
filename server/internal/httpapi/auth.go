@@ -2,18 +2,17 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"net/http"
 	"strings"
+
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
 )
 
-// Actor identifies the capability owner for an authenticated request. Until
-// user sessions exist, the configured deployment token maps to the explicit
-// system actor and local development maps to the local actor.
-type Actor struct {
-	ID string
-}
+// Actor identifies the capability owner for an authenticated request. It
+// aliases auth.Actor so the deployment bearer token still maps to the
+// explicit system actor and local development maps to the local actor, while
+// session-backed user identity resolves through the same type.
+type Actor = auth.Actor
 
 type actorContextKey struct{}
 
@@ -27,13 +26,7 @@ func actorFromRequest(r *http.Request) (Actor, bool) {
 }
 
 func actorContext(expected, provided string) (Actor, bool) {
-	if expected == "" {
-		return Actor{ID: "local"}, true
-	}
-	if sameToken(provided, expected) {
-		return Actor{ID: "system"}, true
-	}
-	return Actor{}, false
+	return auth.ResolveDeploymentActor(expected, provided)
 }
 
 // requireWriteCapability protects mutating API routes when KURA_API_TOKEN is
@@ -65,15 +58,9 @@ func requireWriteCapability(expected string) func(http.Handler) http.Handler {
 }
 
 func sameToken(provided, expected string) bool {
-	providedHash := sha256.Sum256([]byte(provided))
-	expectedHash := sha256.Sum256([]byte(expected))
-	return subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) == 1
+	return auth.SameToken(provided, expected)
 }
 
 func bearerToken(header string) string {
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return ""
-	}
-	return parts[1]
+	return auth.BearerToken(header)
 }
