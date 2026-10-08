@@ -32,5 +32,8 @@ var ErrInvalidReactions = errors.New("invalid reactions")
 
 var ErrInvalidCollections = errors.New("invalid collections")
 
+// ErrInvalidSavedSearch indicates malformed owner-scoped saved-search input.
+var ErrInvalidSavedSearch = errors.New("invalid saved search")
+
 // ErrInvalidUpload indicates an unsupported, malformed, or oversized upload.
 var ErrInvalidUpload = errors.New("invalid upload")
