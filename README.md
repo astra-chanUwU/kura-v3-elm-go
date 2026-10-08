@@ -45,6 +45,12 @@ The Go server serves `/media/...` from `MEDIA_ROOT`. When `MEDIA_ROOT` is unset,
 
 The health endpoint is `GET http://localhost:8080/health` and returns a small JSON status response. Search uses `GET /api/posts?q=cat` and returns post summaries from visible rows. Empty or whitespace-only queries browse the newest visible rows using the same cursor pagination. Queries longer than 256 characters return `400`; an unconfigured database returns `503` and other storage failures return `500`. Search uses PostgreSQL's forgiving web search parser, which accepts ordinary multiword queries.
 
+Set `KURA_API_TOKEN` on the server to require a bearer token for all API
+mutations (`POST` and `DELETE`). Reads, health, and media remain public for
+the local browser workflow. The CLI reads the same variable and sends
+`Authorization: Bearer ...` on mutation requests automatically; leaving it
+unset preserves the open local-development mode.
+
 The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KURA_API_URL`, `--limit`, and `--cursor` for both filtered search and newest browse.
 
 ## Next milestone

@@ -32,6 +32,7 @@ Commands:
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
+  KURA_API_TOKEN  Bearer token for write capabilities (optional)
 
 Notes:
   The CLI uses only the public HTTP API (same as the Elm app). No database

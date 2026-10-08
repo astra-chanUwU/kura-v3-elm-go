@@ -74,6 +74,15 @@ database transaction. This is a local filesystem boundary; authentication,
 object storage, derivative processing, moderation, and durable jobs remain
 separate product slices.
 
+The first capability boundary is an optional bearer token. When
+`KURA_API_TOKEN` is set, the HTTP layer compares `Authorization: Bearer ...`
+with a constant-time comparison and requires it for every API mutation. Read
+endpoints, health, media, and CORS preflight remain public. The CLI forwards
+the same token on mutation requests from its `KURA_API_TOKEN` environment
+variable. This is an explicit single-capability deployment boundary; durable
+users, sessions, roles, and per-resource authorization remain a later identity
+slice.
+
 Tag edits use `POST /api/posts/tags` with selected post ids, their expected
 tag versions, and add/remove lists. The server locks all targets in one
 transaction, rejects stale versions with `409`, updates the generated search

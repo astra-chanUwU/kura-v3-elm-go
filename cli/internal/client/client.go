@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -163,6 +164,7 @@ type ReactionResponse struct {
 // (GET /api/posts, GET /health) and does not import server implementation.
 type Client struct {
 	BaseURL    string
+	APIToken   string
 	HTTPClient *http.Client
 }
 
@@ -174,10 +176,20 @@ func New(baseURL string) *Client {
 		baseURL = "http://localhost:8080"
 	}
 	return &Client{
-		BaseURL: baseURL,
+		BaseURL:  baseURL,
+		APIToken: strings.TrimSpace(os.Getenv("KURA_API_TOKEN")),
 		HTTPClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+	}
+}
+
+func (c *Client) authorize(req *http.Request) {
+	if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+		return
+	}
+	if token := strings.TrimSpace(c.APIToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 }
 
@@ -240,6 +252,7 @@ func (c *Client) SearchPage(ctx context.Context, query, cursor string, limit int
 		return SearchResponse{}, err
 	}
 	req.Header.Set("Accept", "application/json")
+	c.authorize(req)
 
 	client := c.HTTPClient
 	if client == nil {
@@ -450,6 +463,7 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	c.authorize(req)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -499,6 +513,7 @@ func (c *Client) postJSON(ctx context.Context, path string, request any, target 
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -543,6 +558,7 @@ func (c *Client) deleteNoContent(ctx context.Context, path string) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
+	c.authorize(req)
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}

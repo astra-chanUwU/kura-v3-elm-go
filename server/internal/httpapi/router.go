@@ -25,8 +25,15 @@ const (
 // served from MEDIA_ROOT when configured, or ../web/static/media when the
 // server is started with the documented `go -C server run` command.
 func NewRouter(searchers ...posts.Searcher) http.Handler {
+	return NewRouterWithToken(strings.TrimSpace(os.Getenv("KURA_API_TOKEN")), searchers...)
+}
+
+// NewRouterWithToken builds the API with an optional write capability token.
+// An empty token preserves the local development mode used by the Elm app.
+func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handler {
 	r := chi.NewRouter()
 	r.Use(localDevCORS)
+	r.Use(requireWriteCapability(strings.TrimSpace(apiToken)))
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
 	r.Get("/api/posts/{id}", postDetail(searchers...))
@@ -60,7 +67,7 @@ func localDevCORS(next http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

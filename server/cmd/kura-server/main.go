@@ -33,7 +33,7 @@ func main() {
 	}
 
 	log.Printf("kura-server listening on %s", addr)
-	if err := http.ListenAndServe(addr, httpapi.NewRouter(searcher)); err != nil {
+	if err := http.ListenAndServe(addr, httpapi.NewRouterWithToken(os.Getenv("KURA_API_TOKEN"), searcher)); err != nil {
 		log.Fatal(err)
 	}
 }
