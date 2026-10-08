@@ -72,3 +72,13 @@ func TestCapabilityModeDoesNotAffectHealth(t *testing.T) {
 		t.Fatalf("health status=%d", response.Code)
 	}
 }
+
+func TestCapabilityOnlyProtectsAPIWrites(t *testing.T) {
+	router := NewRouterWithToken("secret")
+	request := httptest.NewRequest(http.MethodPost, "/unrelated", bytes.NewBufferString("body"))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unrelated write was intercepted status=%d body=%s", response.Code, response.Body.String())
+	}
+}

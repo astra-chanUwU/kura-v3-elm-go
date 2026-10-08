@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -15,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 )
 
 const maxUploadBytes int64 = 25 << 20
@@ -88,24 +89,30 @@ func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadReque
 
 	digest := hex.EncodeToString(hasher.Sum(nil))
 	storedName := digest + "." + extension
-	storedPath := filepath.Join(uploadDir, storedName)
-	createdFile := false
-	keepFile := false
+	store := s.store
+	if store == nil {
+		store = media.NewLocalStore(root)
+	}
+	objectFile, err := os.Open(tempPath)
+	if err != nil {
+		return PostDetail{}, err
+	}
+	object, err := store.Put(ctx, filepath.ToSlash(filepath.Join("uploads", storedName)), mediaType, objectFile)
+	objectCloseErr := objectFile.Close()
+	if err == nil {
+		err = objectCloseErr
+	}
+	if err != nil {
+		return PostDetail{}, err
+	}
+	keepObject := false
 	defer func() {
-		if createdFile && !keepFile {
-			_ = os.Remove(storedPath)
+		if object.Created && !keepObject {
+			_ = store.Delete(context.Background(), object.Key)
 		}
 	}()
-	if _, statErr := os.Stat(storedPath); errors.Is(statErr, os.ErrNotExist) {
-		if err := os.Rename(tempPath, storedPath); err != nil {
-			return PostDetail{}, err
-		}
-		createdFile = true
-	} else if statErr != nil {
-		return PostDetail{}, statErr
-	}
 
-	mediaURL := "/media/uploads/" + storedName
+	mediaURL := object.URL
 	searchText := strings.Join(append(append([]string{}, tags...), source, artist), " ")
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -119,7 +126,7 @@ func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadReque
 	if err := tx.Commit(ctx); err != nil {
 		return PostDetail{}, err
 	}
-	keepFile = true
+	keepObject = true
 	return s.GetPostDetail(ctx, id)
 }
 

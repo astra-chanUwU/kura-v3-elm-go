@@ -1,6 +1,6 @@
 # Kura V3 frontend design handoff — Opus 5.5
 
-Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, ordered collections, collection browsing, bounded KuraQL, and local image uploads are implemented. Authentication, object storage, moderation, durable jobs, and richer server-side saved-search state remain in the implementation sequence.
+Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, ordered collections, collection browsing, bounded KuraQL, and local image uploads are implemented. Uploads now use a tested `media.Store` provider boundary with an idempotent local filesystem implementation and transaction cleanup. Authentication, moderation, durable jobs, and richer server-side saved-search state remain in the implementation sequence.
 
 The original design-handoff constraints below describe the pre-implementation
 handoff. The current roadmap above is now being delivered in bounded slices.

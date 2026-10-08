@@ -66,13 +66,17 @@ creation time, and tags; deleted rows return `404` and an unconfigured detail
 adapter returns `503`.
 
 Uploads use `POST /api/uploads` with a multipart `file` plus optional repeated
-or comma-separated `tags`, `source`, and `artist` fields. The current local
-adapter bounds input to 25 MiB, accepts JPEG, PNG, and GIF images, extracts
-dimensions with Go's image decoders, writes a content-addressed original below
-`MEDIA_ROOT/uploads`, and creates the corresponding searchable post in one
-database transaction. This is a local filesystem boundary; authentication,
-object storage, derivative processing, moderation, and durable jobs remain
-separate product slices.
+or comma-separated `tags`, `source`, and `artist` fields. The adapter bounds
+input to 25 MiB, accepts JPEG, PNG, and GIF images, and extracts dimensions
+with Go's image decoders. Durable bytes are written through
+`server/internal/media.Store`, which returns a provider-relative key, public
+URL, content type, size, and whether the request created the object. The
+default `media.LocalStore` writes an idempotent content-addressed original
+below `MEDIA_ROOT/uploads` using an atomic temp-file handoff; it is the local
+provider, not the long-term storage contract. A failed database transaction
+deletes an object created by that request, while an existing content-addressed
+object is preserved. Remote object storage, derivative processing,
+moderation, and durable jobs remain separate product slices.
 
 The first capability boundary is an optional bearer token. When
 `KURA_API_TOKEN` is set, the HTTP layer compares `Authorization: Bearer ...`

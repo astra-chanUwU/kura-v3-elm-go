@@ -6,25 +6,33 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 )
 
 // PostgresSearcher executes the browser-facing post summary query against
 // PostgreSQL. It keeps the pool behind the Searcher interface used by HTTP.
 type PostgresSearcher struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	store media.Store
 }
 
 // NewPostgresSearcher creates a searcher for databaseURL. The pool connects on
 // demand, so a server can still start and serve /health while PostgreSQL is
 // unavailable.
 func NewPostgresSearcher(ctx context.Context, databaseURL string) (*PostgresSearcher, error) {
+	return NewPostgresSearcherWithStore(ctx, databaseURL, media.NewLocalStore(uploadMediaRoot()))
+}
+
+// NewPostgresSearcherWithStore creates a searcher with an explicit media
+// provider. The default constructor keeps local filesystem uploads working.
+func NewPostgresSearcherWithStore(ctx context.Context, databaseURL string, store media.Store) (*PostgresSearcher, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, err
 	}
-	return &PostgresSearcher{pool: pool}, nil
+	return &PostgresSearcher{pool: pool, store: store}, nil
 }
 
 // Close releases PostgreSQL connections owned by the searcher.
