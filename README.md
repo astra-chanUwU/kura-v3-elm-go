@@ -49,4 +49,4 @@ The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KU
 
 ## Next milestone
 
-The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. The server now validates a bounded KuraQL subset for ordinary terms, exclusions, favorite, score, width, and height filters. The next query work can add richer AST composition and sort-aware cursors before the frontend identity pass.
+The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. KuraQL now has a typed parser boundary, tag-aware predicates, richer field filters, `order:score`, and sort-aware query-bound cursors. The next product work is browser acceptance followed by upload, storage, identity, and moderation slices.

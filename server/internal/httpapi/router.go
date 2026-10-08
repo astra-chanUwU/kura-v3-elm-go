@@ -422,6 +422,10 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 
 		result, err := searchers[0].SearchPosts(r.Context(), query, cursor, limit)
 		if err != nil {
+			if errors.Is(err, posts.ErrInvalidCursor) {
+				writeJSONError(w, http.StatusBadRequest, "invalid search cursor")
+				return
+			}
 			if errors.Is(err, posts.ErrInvalidQuery) {
 				writeJSONError(w, http.StatusBadRequest, "invalid search query")
 				return

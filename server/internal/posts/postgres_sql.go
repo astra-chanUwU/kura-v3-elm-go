@@ -1,10 +1,10 @@
 package posts
 
-// SearchPostsSQL is the handwritten query contract for the PostgreSQL
-// adapter. $1 is websearch text; $2 is the optional favorite value; each
-// operator/value pair is optional for score, width, and height; $9 is the
-// optional keyset id; and $10 is limit+1 so the adapter can detect another
-// page. Operators are validated by ParseQuery before they reach this query.
+// SearchPostsSQL is the newest-ordered query contract. $1 is websearch text;
+// $2 is favorite; $3/$4 score; $5/$6 width; $7/$8 height; $9/$10 file_size;
+// $11/$12 id; $13 media_type; $14 source; $15 artist; $16 included tags;
+// $17 excluded tags; $18 keyset id; $19 limit+1. Operators are validated by
+// ParseQuery before they reach SQL.
 const SearchPostsSQL = `
 SELECT
     id::text,
@@ -13,7 +13,8 @@ SELECT
     media_type,
     width,
     height,
-    tags
+    tags,
+    score
 FROM posts
 WHERE deleted_at IS NULL
   AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
@@ -36,9 +37,83 @@ WHERE deleted_at IS NULL
        ($7::text = '<' AND height < $8::integer) OR
        ($7::text = '<=' AND height <= $8::integer) OR
        ($7::text = '=' AND height = $8::integer))
-  AND ($9::bigint IS NULL OR id < $9::bigint)
+  AND ($9::text IS NULL OR
+       ($9::text = '>' AND file_size > $10::bigint) OR
+       ($9::text = '>=' AND file_size >= $10::bigint) OR
+       ($9::text = '<' AND file_size < $10::bigint) OR
+       ($9::text = '<=' AND file_size <= $10::bigint) OR
+       ($9::text = '=' AND file_size = $10::bigint))
+  AND ($11::text IS NULL OR
+       ($11::text = '>' AND id > $12::bigint) OR
+       ($11::text = '>=' AND id >= $12::bigint) OR
+       ($11::text = '<' AND id < $12::bigint) OR
+       ($11::text = '<=' AND id <= $12::bigint) OR
+       ($11::text = '=' AND id = $12::bigint))
+  AND ($13::text IS NULL OR media_type = $13::text)
+  AND ($14::text IS NULL OR source = $14::text)
+  AND ($15::text IS NULL OR artist = $15::text)
+  AND ($16::text[] IS NULL OR tags @> $16::text[])
+  AND ($17::text[] IS NULL OR NOT (tags && $17::text[]))
+  AND ($18::bigint IS NULL OR id < $18::bigint)
 ORDER BY id DESC
-LIMIT $10
+LIMIT $19
+`
+
+// SearchPostsScoreSQL is the score-ordered query contract. Parameters $1..$17
+// mirror SearchPostsSQL; $18 is the cursor score, $19 is the cursor id, and
+// $20 is limit+1. Ordering is deterministic score DESC then id DESC.
+const SearchPostsScoreSQL = `
+SELECT
+    id::text,
+    preview_url,
+    original_url,
+    media_type,
+    width,
+    height,
+    tags,
+    score
+FROM posts
+WHERE deleted_at IS NULL
+  AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
+  AND ($2::boolean IS NULL OR favorite = $2::boolean)
+  AND ($3::text IS NULL OR
+       ($3::text = '>' AND score > $4::integer) OR
+       ($3::text = '>=' AND score >= $4::integer) OR
+       ($3::text = '<' AND score < $4::integer) OR
+       ($3::text = '<=' AND score <= $4::integer) OR
+       ($3::text = '=' AND score = $4::integer))
+  AND ($5::text IS NULL OR
+       ($5::text = '>' AND width > $6::integer) OR
+       ($5::text = '>=' AND width >= $6::integer) OR
+       ($5::text = '<' AND width < $6::integer) OR
+       ($5::text = '<=' AND width <= $6::integer) OR
+       ($5::text = '=' AND width = $6::integer))
+  AND ($7::text IS NULL OR
+       ($7::text = '>' AND height > $8::integer) OR
+       ($7::text = '>=' AND height >= $8::integer) OR
+       ($7::text = '<' AND height < $8::integer) OR
+       ($7::text = '<=' AND height <= $8::integer) OR
+       ($7::text = '=' AND height = $8::integer))
+  AND ($9::text IS NULL OR
+       ($9::text = '>' AND file_size > $10::bigint) OR
+       ($9::text = '>=' AND file_size >= $10::bigint) OR
+       ($9::text = '<' AND file_size < $10::bigint) OR
+       ($9::text = '<=' AND file_size <= $10::bigint) OR
+       ($9::text = '=' AND file_size = $10::bigint))
+  AND ($11::text IS NULL OR
+       ($11::text = '>' AND id > $12::bigint) OR
+       ($11::text = '>=' AND id >= $12::bigint) OR
+       ($11::text = '<' AND id < $12::bigint) OR
+       ($11::text = '<=' AND id <= $12::bigint) OR
+       ($11::text = '=' AND id = $12::bigint))
+  AND ($13::text IS NULL OR media_type = $13::text)
+  AND ($14::text IS NULL OR source = $14::text)
+  AND ($15::text IS NULL OR artist = $15::text)
+  AND ($16::text[] IS NULL OR tags @> $16::text[])
+  AND ($17::text[] IS NULL OR NOT (tags && $17::text[]))
+  AND ($18::integer IS NULL OR (score < $18::integer OR (score = $18::integer AND id < $19::bigint)))
+ORDER BY score DESC, id DESC
+LIMIT $20
 `
 
 // GetPostDetailSQL fetches the complete visible Inspector shape. The ID is

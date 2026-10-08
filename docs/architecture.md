@@ -23,9 +23,10 @@ Elm MediaGrid
 The Go adapter now executes this boundary against PostgreSQL. `db/migrations/001_posts.sql` defines the small searchable `posts` table, and `db/seed.sql` provides deterministic local rows for development. Twelve matching demo files live under `web/static/media/demo`; the server exposes them at `/media/...` from `MEDIA_ROOT` (defaulting to `../web/static/media` for `go -C server run`).
 
 The API response keeps the browser contract independent from PostgreSQL
-rows. Search uses an opaque, query-bound keyset cursor (`id DESC`) and accepts
+rows. Search uses an opaque, query-bound keyset cursor and accepts
 `limit=1..60` (default 60); the adapter fetches one extra row to decide whether
-to emit `next_cursor`.
+to emit `next_cursor`. The default order is `id DESC`; `order:score` uses
+`score DESC, id DESC` and carries both values in the cursor.
 
 ```http
 GET /api/posts?q=cat
@@ -52,7 +53,12 @@ binds the search string to the handwritten query and maps selected columns to
 newest visible rows through the same keyset cursor, while an unconfigured
 adapter returns `503` and storage failures return `500`. Overlong queries,
 invalid limits, and malformed or query-mismatched cursors return `400`.
-PostgreSQL's web search parser accepts ordinary multiword input. The Go search boundary also validates a bounded KuraQL subset: ordinary and unary-excluded terms plus `favorite`, `score`, `width`, and `height` comparisons. Field predicates are compiled into fixed parameterized SQL slots; score ordering and sort-aware cursors remain separate work.
+KuraQL is parsed into a typed AST before planning. It supports ordinary and
+unary-excluded terms, `tag:` and `-tag:` predicates, `favorite`, numeric
+comparisons for score, width, height, file size, and id, exact media/source/
+artist predicates, and `order:score`. The planner compiles these predicates
+into fixed parameterized SQL slots. Unknown or malformed expressions return
+`400`; cursors are bound to the complete query and sort order.
 
 The Inspector loads read-only metadata on demand from `GET /api/posts/{id}`.
 The detail response extends `PostSummary` with source, artist, hash, file size,

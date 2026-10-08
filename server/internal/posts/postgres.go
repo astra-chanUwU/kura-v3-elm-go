@@ -34,8 +34,9 @@ func (s *PostgresSearcher) Close() {
 	}
 }
 
-// SearchPosts returns summaries in the stable API shape and uses id keyset
-// pagination to avoid offset work as the result set grows.
+// SearchPosts returns summaries in the stable API shape and uses keyset
+// pagination. Newest ordering uses id DESC; score ordering uses score DESC
+// then id DESC with a (score,id) cursor that cannot duplicate or skip rows.
 func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error) {
 	if s == nil || s.pool == nil {
 		return SearchPage{}, ErrUnavailable
@@ -47,12 +48,9 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 	if err != nil {
 		return SearchPage{}, err
 	}
-
-	var cursorID any
-	if cursor != nil {
-		cursorID = cursor.ID
+	if cursor != nil && cursor.Order != compiled.Order {
+		return SearchPage{}, ErrInvalidCursor
 	}
-	page := SearchPage{Posts: make([]PostSummary, 0, limit)}
 	var favorite any
 	if compiled.Favorite != nil {
 		favorite = *compiled.Favorite
@@ -69,46 +67,123 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 	if compiled.Height != nil {
 		heightOperator, heightValue = compiled.Height.Operator, compiled.Height.Value
 	}
-	rows, err := s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, cursorID, limit+1)
+	var fileSizeOperator, fileSizeValue any
+	if compiled.FileSize != nil {
+		fileSizeOperator, fileSizeValue = compiled.FileSize.Operator, compiled.FileSize.Value
+	}
+	var idOperator, idValue any
+	if compiled.ID != nil {
+		idOperator, idValue = compiled.ID.Operator, compiled.ID.Value
+	}
+	var mediaType, source, artist any
+	if compiled.MediaType != nil {
+		mediaType = compiled.MediaType.Value
+	}
+	if compiled.Source != nil {
+		source = compiled.Source.Value
+	}
+	if compiled.Artist != nil {
+		artist = compiled.Artist.Value
+	}
+	var includedTags any
+	var excludedTags any
+	var included, excluded []string
+	for _, tag := range compiled.Tags {
+		if tag.Excluded {
+			excluded = append(excluded, tag.Value)
+		} else {
+			included = append(included, tag.Value)
+		}
+	}
+	if len(included) > 0 {
+		includedTags = included
+	}
+	if len(excluded) > 0 {
+		excludedTags = excluded
+	}
+
+	var rows pgx.Rows
+	if compiled.Order == SortScore {
+		var cursorScore any
+		var cursorID any
+		if cursor != nil {
+			cursorScore = cursor.Score
+			cursorID = cursor.ID
+		}
+		rows, err = s.pool.Query(ctx, SearchPostsScoreSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorScore, cursorID, limit+1)
+		if err != nil {
+			return SearchPage{}, err
+		}
+		defer rows.Close()
+		posts := make([]PostSummary, 0, limit+1)
+		scores := make([]int, 0, limit+1)
+		for rows.Next() {
+			var post PostSummary
+			var score int
+			if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score); err != nil {
+				return SearchPage{}, err
+			}
+			posts = append(posts, post)
+			scores = append(scores, score)
+		}
+		if err := rows.Err(); err != nil {
+			return SearchPage{}, err
+		}
+		if len(posts) <= limit {
+			return SearchPage{Posts: posts}, nil
+		}
+		posts = posts[:limit]
+		scores = scores[:limit]
+		lastID := posts[len(posts)-1].ID
+		var id int64
+		if _, err := fmt.Sscan(lastID, &id); err != nil || id <= 0 {
+			return SearchPage{}, ErrInvalidQuery
+		}
+		lastScore := scores[len(scores)-1]
+		token, err := EncodeSortCursor(query, SortScore, lastScore, id)
+		if err != nil {
+			return SearchPage{}, err
+		}
+		return SearchPage{Posts: posts, NextCursor: &token}, nil
+	}
+
+	var cursorID any
+	if cursor != nil {
+		cursorID = cursor.ID
+	}
+	rows, err = s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorID, limit+1)
 	if err != nil {
 		return SearchPage{}, err
 	}
 	defer rows.Close()
-
+	posts := make([]PostSummary, 0, limit+1)
+	scores := make([]int, 0, limit+1)
 	for rows.Next() {
 		var post PostSummary
-		if err := rows.Scan(
-			&post.ID,
-			&post.PreviewURL,
-			&post.OriginalURL,
-			&post.MediaType,
-			&post.Width,
-			&post.Height,
-			&post.Tags,
-		); err != nil {
+		var score int
+		if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score); err != nil {
 			return SearchPage{}, err
 		}
-		page.Posts = append(page.Posts, post)
+		posts = append(posts, post)
+		scores = append(scores, score)
 	}
 	if err := rows.Err(); err != nil {
 		return SearchPage{}, err
 	}
-	if len(page.Posts) <= limit {
-		return page, nil
+	if len(posts) <= limit {
+		return SearchPage{Posts: posts}, nil
 	}
-	page.Posts = page.Posts[:limit]
-	lastID := page.Posts[len(page.Posts)-1].ID
-	// Postgres IDs are positive; malformed fixture data cannot create a token.
+	posts = posts[:limit]
+	lastID := posts[len(posts)-1].ID
 	var id int64
 	if _, err := fmt.Sscan(lastID, &id); err != nil || id <= 0 {
 		return SearchPage{}, ErrInvalidQuery
 	}
-	token, err := EncodeCursor(query, id)
+	token, err := EncodeSortCursor(query, SortNewest, 0, id)
 	if err != nil {
 		return SearchPage{}, err
 	}
-	page.NextCursor = &token
-	return page, nil
+	return SearchPage{Posts: posts, NextCursor: &token}, nil
 }
 
 // GetPostDetail returns visible post metadata for the Inspector. Deleted rows

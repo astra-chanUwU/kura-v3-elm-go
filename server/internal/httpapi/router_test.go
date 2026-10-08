@@ -97,7 +97,7 @@ func TestSearchPostsDefaultsAndEmptyQuery(t *testing.T) {
 func TestSearchPostsRejectsInvalidKuraQuery(t *testing.T) {
 	fake := &fakeSearcher{}
 	r := NewRouter(fake)
-	for _, raw := range []string{"?q=order%3Ascore", "?q=score%3A%3E%3D", "?q=favorite%3Amaybe"} {
+	for _, raw := range []string{"?q=order%3Apopular", "?q=score%3A%3E%3D", "?q=favorite%3Amaybe"} {
 		resp := request(t, r, raw)
 		if resp.Code != http.StatusBadRequest {
 			t.Errorf("%s: got status %d", raw, resp.Code)
