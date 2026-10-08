@@ -43,6 +43,23 @@ type CollectionsResponse struct {
 	Collections []Collection `json:"collections"`
 }
 
+// CreateCollectionRequest is the payload for POST /api/collections.
+type CreateCollectionRequest struct {
+	Name string `json:"name"`
+}
+
+// AddCollectionPostsRequest is the payload for
+// POST /api/collections/{id}/posts.
+type AddCollectionPostsRequest struct {
+	PostIDs []string `json:"post_ids"`
+}
+
+// ReorderCollectionRequest is the payload for
+// POST /api/collections/{id}/order.
+type ReorderCollectionRequest struct {
+	PostIDs []string `json:"post_ids"`
+}
+
 // PostDetail is the stable read-only representation from GET /api/posts/{id}.
 // It extends PostSummary with Inspector metadata and revision histories.
 type PostDetail struct {
@@ -298,6 +315,66 @@ func (c *Client) ListCollectionPosts(ctx context.Context, collectionID string) (
 	return c.CollectionPosts(ctx, collectionID)
 }
 
+// CreateCollection executes POST /api/collections.
+func (c *Client) CreateCollection(ctx context.Context, request CreateCollectionRequest) (Collection, error) {
+	var result Collection
+	if err := c.postJSON(ctx, "/api/collections", request, &result); err != nil {
+		return Collection{}, err
+	}
+	if result.PostIDs == nil {
+		result.PostIDs = []string{}
+	}
+	return result, nil
+}
+
+// AddCollectionPosts executes POST /api/collections/{id}/posts.
+func (c *Client) AddCollectionPosts(ctx context.Context, collectionID string, request AddCollectionPostsRequest) (Collection, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return Collection{}, fmt.Errorf("collection id must not be empty")
+	}
+	var result Collection
+	path := "/api/collections/" + url.PathEscape(collectionID) + "/posts"
+	if err := c.postJSON(ctx, path, request, &result); err != nil {
+		return Collection{}, err
+	}
+	if result.PostIDs == nil {
+		result.PostIDs = []string{}
+	}
+	return result, nil
+}
+
+// RemoveCollectionPost executes DELETE /api/collections/{id}/posts/{postID}.
+func (c *Client) RemoveCollectionPost(ctx context.Context, collectionID, postID string) error {
+	collectionID = strings.TrimSpace(collectionID)
+	postID = strings.TrimSpace(postID)
+	if collectionID == "" {
+		return fmt.Errorf("collection id must not be empty")
+	}
+	if postID == "" {
+		return fmt.Errorf("post id must not be empty")
+	}
+	path := "/api/collections/" + url.PathEscape(collectionID) + "/posts/" + url.PathEscape(postID)
+	return c.deleteNoContent(ctx, path)
+}
+
+// ReorderCollection executes POST /api/collections/{id}/order.
+func (c *Client) ReorderCollection(ctx context.Context, collectionID string, request ReorderCollectionRequest) (Collection, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return Collection{}, fmt.Errorf("collection id must not be empty")
+	}
+	var result Collection
+	path := "/api/collections/" + url.PathEscape(collectionID) + "/order"
+	if err := c.postJSON(ctx, path, request, &result); err != nil {
+		return Collection{}, err
+	}
+	if result.PostIDs == nil {
+		result.PostIDs = []string{}
+	}
+	return result, nil
+}
+
 // GetPostDetail executes GET /api/posts/{id}.
 func (c *Client) GetPostDetail(ctx context.Context, id string) (PostDetail, error) {
 	id = strings.TrimSpace(id)
@@ -446,6 +523,47 @@ func (c *Client) postJSON(ctx context.Context, path string, request any, target 
 	}
 	if err := json.Unmarshal(respBody, target); err != nil {
 		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) deleteNoContent(ctx context.Context, path string) error {
+	base := c.BaseURL
+	if base == "" {
+		base = "http://localhost:8080"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid api url %q: %w", base, err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	u.RawQuery = ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiMsg struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &apiMsg) == nil && apiMsg.Error != "" {
+			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(body))}
+		}
+		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	return nil
 }

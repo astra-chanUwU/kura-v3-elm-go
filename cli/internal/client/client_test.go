@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -338,6 +339,67 @@ func TestCollectionPosts_SuccessAndAPIError(t *testing.T) {
 func TestCollectionPosts_EmptyID(t *testing.T) {
 	if _, err := New("http://example.test").CollectionPosts(context.Background(), " "); err == nil {
 		t.Fatal("expected empty collection id error")
+	}
+}
+
+func TestCollectionMutations_RequestPathsAndBodies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/collections":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create body: %v", err)
+			}
+			if body["name"] != "Reference" {
+				t.Fatalf("create body mismatch: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"id":"9","name":"Reference","post_ids":[]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/collections/9/posts":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode add body: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"id":"9","name":"Reference","post_ids":["11","10"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/collections/9/order":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode reorder body: %v", err)
+			}
+			_, _ = w.Write([]byte(`{"id":"9","name":"Reference","post_ids":["10","11"]}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/collections/9/posts/11":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	ctx := context.Background()
+	created, err := c.CreateCollection(ctx, CreateCollectionRequest{Name: "Reference"})
+	if err != nil || created.ID != "9" || created.PostIDs == nil {
+		t.Fatalf("create result=%#v err=%v", created, err)
+	}
+	added, err := c.AddCollectionPosts(ctx, "9", AddCollectionPostsRequest{PostIDs: []string{"11", "10"}})
+	if err != nil || len(added.PostIDs) != 2 {
+		t.Fatalf("add result=%#v err=%v", added, err)
+	}
+	reordered, err := c.ReorderCollection(ctx, "9", ReorderCollectionRequest{PostIDs: []string{"10", "11"}})
+	if err != nil || reordered.PostIDs[0] != "10" {
+		t.Fatalf("reorder result=%#v err=%v", reordered, err)
+	}
+	if err := c.RemoveCollectionPost(ctx, "9", "11"); err != nil {
+		t.Fatalf("remove error: %v", err)
+	}
+}
+
+func TestRemoveCollectionPost_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"collection or post not found"}`))
+	}))
+	defer srv.Close()
+	err := New(srv.URL).RemoveCollectionPost(context.Background(), "9", "404")
+	if err == nil || !strings.Contains(err.Error(), "collection or post not found") {
+		t.Fatalf("expected readable remove error, got %v", err)
 	}
 }
 

@@ -399,6 +399,82 @@ func TestCollection_HelpAndValidation(t *testing.T) {
 	}
 }
 
+func collectionMutationServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/collections", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected create method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"9","name":"Reference","post_ids":[]}`)
+	})
+	mux.HandleFunc("/api/collections/9/posts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected add method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"9","name":"Reference","post_ids":["11","10"]}`)
+	})
+	mux.HandleFunc("/api/collections/9/posts/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/collections/9/posts/11" {
+			t.Fatalf("unexpected remove request %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/collections/9/order", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected reorder method %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"9","name":"Reference","post_ids":["10","11"]}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestCollectionMutations_Output(t *testing.T) {
+	srv := collectionMutationServer(t)
+	defer srv.Close()
+
+	code, out, errOut := runWithEnv([]string{"collection", "create", "--api-url", srv.URL, "Reference"}, nil)
+	if code != 0 || errOut != "" || !strings.Contains(out, "9\tReference\t0 posts") {
+		t.Fatalf("create output code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "add", "--json", "--api-url", srv.URL, "9", "11", "10"}, nil)
+	if code != 0 || errOut != "" || !strings.Contains(out, `"post_ids"`) {
+		t.Fatalf("add output code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "remove", "--jsonl", "--api-url=" + srv.URL, "9", "11"}, nil)
+	if code != 0 || errOut != "" || !strings.Contains(out, `"removed":true`) {
+		t.Fatalf("remove output code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "reorder", "--api-url", srv.URL, "9", "10", "11"}, nil)
+	if code != 0 || errOut != "" || !strings.Contains(out, "9\tReference\t2 posts") {
+		t.Fatalf("reorder output code=%d out=%q err=%q", code, out, errOut)
+	}
+}
+
+func TestCollectionMutations_ValidationAndHelp(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"collection", "create"}, "exactly one NAME"},
+		{[]string{"collection", "add", "9"}, "at least one POST_ID"},
+		{[]string{"collection", "remove", "9"}, "POST_ID"},
+		{[]string{"collection", "reorder", "bad"}, "collection id must be a positive integer"},
+	} {
+		code, _, errOut := runWithEnv(tc.args, nil)
+		if code == 0 || !strings.Contains(errOut, tc.want) {
+			t.Fatalf("args=%v code=%d expected %q in %q", tc.args, code, tc.want, errOut)
+		}
+	}
+	code, out, _ := runWithEnv([]string{"collection", "create", "--help"}, nil)
+	if code != 0 || !strings.Contains(out, "NAME") {
+		t.Fatalf("create help missing: code=%d out=%q", code, out)
+	}
+}
+
 func TestPostGet_NotInvented(t *testing.T) {
 	code, _, errOut := runWithEnv([]string{"post", "get", "123"}, nil)
 	if code == 0 {

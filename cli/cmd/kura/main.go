@@ -86,20 +86,29 @@ Examples:
   kura search --limit 20 --cursor tok123 cat
 `
 
-const collectionHelp = `kura collection - list collections and browse their posts
+const collectionHelp = `kura collection - list, browse, and mutate collections
 
 Usage:
   kura collection list [flags]
   kura collection posts [flags] COLLECTION_ID
+  kura collection create [flags] NAME
+  kura collection add [flags] COLLECTION_ID POST_ID...
+  kura collection remove [flags] COLLECTION_ID POST_ID
+  kura collection reorder [flags] COLLECTION_ID [POST_ID...]
 
 Commands:
   list     List collections via GET /api/collections
   posts    List posts in a collection via GET /api/collections/{id}/posts
+  create   Create a collection via POST /api/collections
+  add      Add posts via POST /api/collections/{id}/posts
+  remove   Remove one post via DELETE /api/collections/{id}/posts/{postID}
+  reorder  Replace collection order via POST /api/collections/{id}/order
 
 Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
   --json            Output the raw JSON response (pretty-printed)
-  --jsonl           Output one JSON object per collection or post (JSON Lines)
+  --jsonl           Output one JSON object per collection, post, or mutation
+                    (JSON Lines)
   -h, --help        Show this help
 
 Examples:
@@ -107,6 +116,10 @@ Examples:
   kura collection list --json
   kura collection posts 7
   kura collection posts --jsonl 7
+  kura collection create "Reference set"
+  kura collection add 7 11 10
+  kura collection remove 7 11
+  kura collection reorder 7 10 11
 `
 
 const collectionListHelp = `kura collection list - list collections via the HTTP API
@@ -130,6 +143,57 @@ Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
   --json            Output the raw JSON response (pretty-printed)
   --jsonl           Output one JSON object per post (JSON Lines)
+  -h, --help        Show this help
+`
+
+const collectionCreateHelp = `kura collection create - create a collection via the HTTP API
+
+Usage:
+  kura collection create [flags] NAME
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the created collection as JSON
+  --jsonl           Output the created collection as one JSON Lines object
+  -h, --help        Show this help
+`
+
+const collectionAddHelp = `kura collection add - add posts to a collection via the HTTP API
+
+Usage:
+  kura collection add [flags] COLLECTION_ID POST_ID...
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the updated collection as JSON
+  --jsonl           Output the updated collection as one JSON Lines object
+  -h, --help        Show this help
+`
+
+const collectionRemoveHelp = `kura collection remove - remove a post via the HTTP API
+
+Usage:
+  kura collection remove [flags] COLLECTION_ID POST_ID
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output a removal result as JSON
+  --jsonl           Output a removal result as one JSON Lines object
+  -h, --help        Show this help
+`
+
+const collectionReorderHelp = `kura collection reorder - replace collection order via the HTTP API
+
+Usage:
+  kura collection reorder [flags] COLLECTION_ID [POST_ID...]
+
+Pass no POST_ID values to clear a collection. The supplied IDs must contain
+every current member exactly once, in the desired order.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the updated collection as JSON
+  --jsonl           Output the updated collection as one JSON Lines object
   -h, --help        Show this help
 `
 
@@ -348,7 +412,7 @@ func runCollection(args []string, stdout, stderr io.Writer, getenv func(string) 
 	}
 	subcommand := args[0]
 	subargs := args[1:]
-	if subcommand != "list" && subcommand != "posts" {
+	if subcommand != "list" && subcommand != "posts" && subcommand != "create" && subcommand != "add" && subcommand != "remove" && subcommand != "reorder" {
 		fmt.Fprintf(stderr, "error: unknown collection command %q\n", subcommand)
 		fmt.Fprint(stderr, collectionHelp)
 		return 1
@@ -359,6 +423,9 @@ func runCollection(args []string, stdout, stderr io.Writer, getenv func(string) 
 		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
 			cfg.apiURL = envURL
 		}
+	}
+	if subcommand == "create" || subcommand == "add" || subcommand == "remove" || subcommand == "reorder" {
+		return runCollectionMutation(subcommand, subargs, cfg, stdout, stderr, getenv)
 	}
 	collectionID, err := parseCollectionArgs(subargs, &cfg, subcommand == "posts")
 	if err != nil {
@@ -403,6 +470,198 @@ func runCollection(args []string, stdout, stderr io.Writer, getenv func(string) 
 		return 1
 	}
 	return writePosts(result, cfg, stdout, stderr)
+}
+
+type collectionMutationResult struct {
+	CollectionID string `json:"collection_id"`
+	PostID       string `json:"post_id"`
+	Removed      bool   `json:"removed"`
+}
+
+func runCollectionMutation(subcommand string, args []string, cfg collectionConfig, stdout, stderr io.Writer, getenv func(string) string) int {
+	if getenv != nil {
+		if envURL := strings.TrimSpace(getenv("KURA_API_URL")); envURL != "" {
+			cfg.apiURL = envURL
+		}
+	}
+	positional, err := parseCollectionMutationArgs(args, &cfg, subcommand)
+	if err != nil {
+		if err == errHelpRequested {
+			fmt.Fprint(stdout, collectionMutationHelp(subcommand))
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		fmt.Fprint(stderr, collectionMutationHelp(subcommand))
+		return 1
+	}
+	if cfg.jsonOut && cfg.jsonlOut {
+		fmt.Fprintln(stderr, "error: flags --json and --jsonl are mutually exclusive")
+		return 1
+	}
+	if _, err := url.ParseRequestURI(cfg.apiURL); err != nil {
+		fmt.Fprintf(stderr, "error: invalid --api-url %q: %v\n", cfg.apiURL, err)
+		return 1
+	}
+	c := client.New(cfg.apiURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	switch subcommand {
+	case "create":
+		result, err := c.CreateCollection(ctx, client.CreateCollectionRequest{Name: positional[0]})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return writeCollectionMutation(result, cfg, stdout, stderr)
+	case "add":
+		result, err := c.AddCollectionPosts(ctx, positional[0], client.AddCollectionPostsRequest{PostIDs: positional[1:]})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return writeCollectionMutation(result, cfg, stdout, stderr)
+	case "remove":
+		if err := c.RemoveCollectionPost(ctx, positional[0], positional[1]); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		result := collectionMutationResult{CollectionID: positional[0], PostID: positional[1], Removed: true}
+		if cfg.jsonOut {
+			return encodeJSON(stdout, result)
+		}
+		if cfg.jsonlOut {
+			return encodeJSONL(stdout, result, stderr)
+		}
+		fmt.Fprintf(stdout, "%s\tremoved post %s\n", result.CollectionID, result.PostID)
+		return 0
+	case "reorder":
+		result, err := c.ReorderCollection(ctx, positional[0], client.ReorderCollectionRequest{PostIDs: positional[1:]})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return writeCollectionMutation(result, cfg, stdout, stderr)
+	default:
+		return 1
+	}
+}
+
+func collectionMutationHelp(subcommand string) string {
+	switch subcommand {
+	case "create":
+		return collectionCreateHelp
+	case "add":
+		return collectionAddHelp
+	case "remove":
+		return collectionRemoveHelp
+	case "reorder":
+		return collectionReorderHelp
+	default:
+		return collectionHelp
+	}
+}
+
+func parseCollectionMutationArgs(args []string, cfg *collectionConfig, subcommand string) ([]string, error) {
+	var positional []string
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch {
+		case arg == "-h" || arg == "--help":
+			return nil, errHelpRequested
+		case arg == "--json":
+			cfg.jsonOut = true
+			i++
+		case arg == "--jsonl":
+			cfg.jsonlOut = true
+			i++
+		case arg == "--api-url":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("flag --api-url requires a value")
+			}
+			cfg.apiURL = strings.TrimSpace(args[i+1])
+			i += 2
+		case strings.HasPrefix(arg, "--api-url="):
+			cfg.apiURL = strings.TrimSpace(strings.TrimPrefix(arg, "--api-url="))
+			i++
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("unknown flag %q", arg)
+		default:
+			positional = append(positional, arg)
+			i++
+			for i < len(args) {
+				positional = append(positional, args[i])
+				i++
+			}
+		}
+	}
+	if subcommand == "create" {
+		if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+			return nil, fmt.Errorf("collection create requires exactly one NAME")
+		}
+		return []string{strings.TrimSpace(positional[0])}, nil
+	}
+	minimum := 1
+	want := "at least one COLLECTION_ID"
+	switch subcommand {
+	case "add":
+		minimum = 2
+		want = "COLLECTION_ID and at least one POST_ID"
+	case "remove":
+		minimum = 2
+		want = "COLLECTION_ID and POST_ID"
+	case "reorder":
+		minimum = 1
+		want = "COLLECTION_ID"
+	}
+	if len(positional) < minimum || (subcommand == "remove" && len(positional) != minimum) {
+		return nil, fmt.Errorf("collection %s requires %s", subcommand, want)
+	}
+	for i, raw := range positional {
+		if i == 0 || subcommand != "create" {
+			if err := validateCollectionIDArg(raw, i == 0); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return positional, nil
+}
+
+func validateCollectionIDArg(raw string, collection bool) error {
+	label := "post id"
+	if collection {
+		label = "collection id"
+	}
+	raw = strings.TrimSpace(raw)
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 || raw != strconv.FormatInt(n, 10) {
+		return fmt.Errorf("%s must be a positive integer", label)
+	}
+	return nil
+}
+
+func writeCollectionMutation(result client.Collection, cfg collectionConfig, stdout, stderr io.Writer) int {
+	if cfg.jsonOut {
+		return encodeJSON(stdout, result)
+	}
+	if cfg.jsonlOut {
+		return encodeJSONL(stdout, result, stderr)
+	}
+	fmt.Fprintf(stdout, "%s\t%s\t%d posts\n", result.ID, result.Name, len(result.PostIDs))
+	return 0
+}
+
+func encodeJSONL(stdout io.Writer, value any, stderr io.Writer) int {
+	enc := json.NewEncoder(stdout)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		fmt.Fprintf(stderr, "error: encode jsonl: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func parseCollectionArgs(args []string, cfg *collectionConfig, requireID bool) (string, error) {
@@ -523,13 +782,13 @@ type postShowConfig struct {
 }
 
 type postTagEditConfig struct {
-	apiURL       string
-	jsonOut      bool
-	jsonlOut     bool
-	versionSet   bool
-	version      string
-	addTags      []string
-	removeTags   []string
+	apiURL     string
+	jsonOut    bool
+	jsonlOut   bool
+	versionSet bool
+	version    string
+	addTags    []string
+	removeTags []string
 }
 
 type postTagRevertConfig struct {
@@ -543,15 +802,15 @@ type postTagRevertConfig struct {
 }
 
 type postReactionConfig struct {
-	apiURL       string
-	jsonOut      bool
-	jsonlOut     bool
-	versionSet   bool
-	version      string
-	favoriteSet  bool
-	favoriteVal  string
-	scoreSet     bool
-	scoreVal     string
+	apiURL      string
+	jsonOut     bool
+	jsonlOut    bool
+	versionSet  bool
+	version     string
+	favoriteSet bool
+	favoriteVal string
+	scoreSet    bool
+	scoreVal    string
 }
 
 func runPost(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
@@ -1325,7 +1584,6 @@ func executeReaction(cfg postReactionConfig, postID string, stdout, stderr io.Wr
 	}
 	return 0
 }
-
 
 func runSearch(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	cfg := searchConfig{}
