@@ -65,6 +65,15 @@ The detail response extends `PostSummary` with source, artist, hash, file size,
 creation time, and tags; deleted rows return `404` and an unconfigured detail
 adapter returns `503`.
 
+Uploads use `POST /api/uploads` with a multipart `file` plus optional repeated
+or comma-separated `tags`, `source`, and `artist` fields. The current local
+adapter bounds input to 25 MiB, accepts JPEG, PNG, and GIF images, extracts
+dimensions with Go's image decoders, writes a content-addressed original below
+`MEDIA_ROOT/uploads`, and creates the corresponding searchable post in one
+database transaction. This is a local filesystem boundary; authentication,
+object storage, derivative processing, moderation, and durable jobs remain
+separate product slices.
+
 Tag edits use `POST /api/posts/tags` with selected post ids, their expected
 tag versions, and add/remove lists. The server locks all targets in one
 transaction, rejects stale versions with `409`, updates the generated search

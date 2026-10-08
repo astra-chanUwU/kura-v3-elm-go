@@ -1,7 +1,10 @@
 // Package posts contains the browser-facing post contracts.
 package posts
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // PostSummary is the stable, small representation used by MediaGrid.
 //
@@ -155,4 +158,20 @@ type TagReverter interface {
 // score edits.
 type ReactionMutator interface {
 	EditReactions(ctx context.Context, request ReactionRequest) (ReactionResponse, error)
+}
+
+// UploadRequest is the storage-facing contract for a bounded local upload.
+// The HTTP layer owns multipart parsing; the adapter owns durable media and
+// post creation.
+type UploadRequest struct {
+	File     io.Reader
+	Filename string
+	Tags     []string
+	Source   string
+	Artist   string
+}
+
+// UploadCreator creates a visible post and stores its original media.
+type UploadCreator interface {
+	CreateUpload(ctx context.Context, request UploadRequest) (PostDetail, error)
 }

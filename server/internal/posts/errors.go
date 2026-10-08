@@ -31,3 +31,6 @@ var ErrReactionConflict = errors.New("post reaction version conflict")
 var ErrInvalidReactions = errors.New("invalid reactions")
 
 var ErrInvalidCollections = errors.New("invalid collections")
+
+// ErrInvalidUpload indicates an unsupported, malformed, or oversized upload.
+var ErrInvalidUpload = errors.New("invalid upload")

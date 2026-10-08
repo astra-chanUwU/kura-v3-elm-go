@@ -49,4 +49,4 @@ The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KU
 
 ## Next milestone
 
-The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. KuraQL now has a typed parser boundary, tag-aware predicates, richer field filters, `order:score`, and sort-aware query-bound cursors. The next product work is browser acceptance followed by upload, storage, identity, and moderation slices.
+The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. KuraQL now has a typed parser boundary, tag-aware predicates, richer field filters, `order:score`, and sort-aware query-bound cursors. A bounded local upload path now accepts JPEG, PNG, and GIF files, extracts dimensions, stores content-addressed originals, and creates searchable post records. Authentication, object-storage adapters, moderation, and durable jobs remain the next product slices.

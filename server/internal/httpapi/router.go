@@ -33,6 +33,7 @@ func NewRouter(searchers ...posts.Searcher) http.Handler {
 	r.Post("/api/posts/tags", editTags(searchers...))
 	r.Post("/api/posts/tags/revert", revertTags(searchers...))
 	r.Post("/api/posts/reactions", editReactions(searchers...))
+	r.Post("/api/uploads", uploadPost(searchers...))
 	r.Get("/api/collections", listCollections(searchers...))
 	r.Post("/api/collections", createCollection(searchers...))
 	r.Get("/api/collections/{id}/posts", searchCollectionPosts(searchers...))

@@ -1,6 +1,9 @@
 # Kura V3 frontend design handoff — Opus 5.5
 
-Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, ordered collections, and collection browsing are implemented. Richer revision diffs remain in the implementation sequence.
+Status: design package delivered in [`docs/frontend-design.md`](docs/frontend-design.md). Library browsing, cursor pagination, Inspector details, newest browsing, revision-backed tag edits, favorites, scores, ordered collections, collection browsing, bounded KuraQL, and local image uploads are implemented. Authentication, object storage, moderation, durable jobs, and richer server-side saved-search state remain in the implementation sequence.
+
+The original design-handoff constraints below describe the pre-implementation
+handoff. The current roadmap above is now being delivered in bounded slices.
 
 ## Goal
 
@@ -61,10 +64,12 @@ Use the existing local demo media under `web/static/media/demo` when showing exa
 - Preserve the existing Elm/Go/PostgreSQL architecture and HTTP API.
 - Do not change backend contracts in this design handoff.
 - Do not add realtime transport, Redis, object storage, or speculative services.
-- Do not implement design assets, upload workflows, or authentication here.
+- Design assets, upload workflows, and authentication are separate implementation slices.
 - Keep the design useful for browsing 20,000 images.
 - The next agent will implement the approved design in Elm and integrate any required API changes.
 
 ## Handoff protocol
 
-When the design package is complete, commit and push it to `main`. Stop after publishing and wait for the user to signal that implementation should begin. Do not start the Elm implementation from this handoff.
+The design package is complete. Implementation slices should be committed and
+verified as they land, with browser acceptance kept separate from automated
+checks.

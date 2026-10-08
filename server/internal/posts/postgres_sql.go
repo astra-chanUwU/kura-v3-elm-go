@@ -161,6 +161,15 @@ ORDER BY version DESC
 LIMIT 50
 `
 
+const insertUploadedPostSQL = `
+INSERT INTO posts (
+    preview_url, original_url, media_type, width, height, search_text,
+    source, artist, hash, file_size, tags
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id::text
+`
+
 const lockPostForTagEditSQL = `
 SELECT tags, search_text, tag_version
 FROM posts
