@@ -1,4 +1,4 @@
-module Feature.Navigator exposing (Config, view)
+module Feature.Navigator exposing (Config, SavedItem, view)
 
 import Domain.Collection exposing (Collection)
 import Html exposing (Html, aside, button, div, input, li, p, span, text, ul)
@@ -8,10 +8,22 @@ import Set exposing (Set)
 import Ui.Panel as Panel exposing (Presentation)
 
 
+{-| A saved search row. `id` is the server id, or the query itself when
+the on-device fallback list is active; `label` is the query to run.
+-}
+type alias SavedItem =
+    { id : String
+    , label : String
+    }
+
+
 type alias Config msg =
     { presentation : Presentation
     , current : String
-    , saved : List String
+    , saved : List SavedItem
+    , savedStatus : Maybe String
+    , savedSaving : Bool
+    , localFallback : Bool
     , recent : List String
     , collections : List Collection
     , activeCollection : Maybe String
@@ -35,7 +47,7 @@ view : Config msg -> Html msg
 view config =
     let
         canSave =
-            String.trim config.current /= "" && not (List.member config.current config.saved)
+            String.trim config.current /= "" && not (List.any (\item -> item.label == config.current) config.saved) && not config.savedSaving
 
         active =
             config.activeCollection
@@ -51,20 +63,32 @@ view config =
                   else
                     ul [ class "nav-list" ]
                         (List.map
-                            (\query ->
+                            (\item ->
                                 li [ class "nav-row" ]
-                                    [ queryButton config query
+                                    [ queryButton config item.label
                                     , button
                                         [ class "nav-remove"
                                         , type_ "button"
-                                        , onClick (config.onRemove query)
-                                        , attribute "aria-label" ("Remove saved search " ++ query)
+                                        , onClick (config.onRemove item.id)
+                                        , disabled config.savedSaving
+                                        , attribute "aria-label" ("Remove saved search " ++ item.label)
                                         ]
                                         [ text "×" ]
                                     ]
                             )
                             config.saved
                         )
+                , case config.savedStatus of
+                    Just status ->
+                        p [ class "panel-note" ] [ text status ]
+
+                    Nothing ->
+                        text ""
+                , if config.localFallback then
+                    p [ class "panel-note" ] [ text "Saved on this device." ]
+
+                  else
+                    text ""
                 , button [ class "button button-quiet nav-save", type_ "button", onClick config.onSave, disabled (not canSave) ]
                     [ text "Save current search" ]
                 ]

@@ -2,6 +2,7 @@ module Page.Library exposing (Model, Msg, init, onUrlChange, onUrlRequest, subsc
 
 import Api.Post
 import Api.Collection
+import Api.SavedSearch
 import App.Keyboard as Keyboard exposing (KeyEvent, Modifiers, Target(..))
 import App.Prefs as Prefs exposing (Prefs)
 import App.Route as Route exposing (Route, View(..))
@@ -133,6 +134,10 @@ type alias Model =
     , collectionDraft : String
     , collectionStatus : Maybe String
     , collectionRemovals : Set String
+    , savedSearches : List Api.SavedSearch.SavedSearch
+    , savedSearchFallback : Bool
+    , savedSearchSaving : Bool
+    , savedSearchStatus : Maybe String
     }
 
 
@@ -212,13 +217,17 @@ init flagsValue url key =
             , collectionDraft = ""
             , collectionStatus = Nothing
             , collectionRemovals = Set.empty
+            , savedSearches = []
+            , savedSearchFallback = False
+            , savedSearchSaving = False
+            , savedSearchStatus = Nothing
             }
     in
     let
         ( searching, searchCmd ) =
             startSearch { model | pendingRoute = Just route } route.query
     in
-    ( searching, Cmd.batch [ searchCmd, measureGrid 0, Api.Collection.list flags.apiBase CollectionsCompleted ] )
+    ( searching, Cmd.batch [ searchCmd, measureGrid 0, Api.Collection.list flags.apiBase CollectionsCompleted, Api.SavedSearch.list flags.apiBase SavedSearchesCompleted ] )
 
 
 
@@ -273,6 +282,9 @@ type Msg
     | SaveScore
     | ReactionsCompleted Int (Result Http.Error ReactionResponse)
     | CollectionsCompleted (Result Http.Error (List Collection))
+    | SavedSearchesCompleted (Result Http.Error (List Api.SavedSearch.SavedSearch))
+    | SavedSearchCreated (Result Http.Error Api.SavedSearch.SavedSearch)
+    | SavedSearchDeleted String (Result Http.Error ())
     | CollectionDraftChanged String
     | CreateCollection String
     | CollectionCreated (Result Http.Error Collection)
@@ -698,6 +710,58 @@ updateHelp msg model =
                 Err error ->
                     ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
+        SavedSearchesCompleted result ->
+            case result of
+                Ok savedSearches ->
+                    ( { model
+                        | savedSearches = savedSearches
+                        , savedSearchFallback = False
+                        , savedSearchStatus = Nothing
+                      }
+                    , Cmd.none
+                    )
+
+                Err _ ->
+                    ( { model
+                        | savedSearchFallback = True
+                        , savedSearchStatus = Nothing
+                      }
+                    , Cmd.none
+                    )
+
+        SavedSearchCreated result ->
+            case result of
+                Ok savedSearch ->
+                    ( { model
+                        | savedSearches = model.savedSearches ++ [ savedSearch ]
+                        , savedSearchSaving = False
+                        , savedSearchStatus = Just "Saved search created."
+                      }
+                    , Cmd.none
+                    )
+
+                Err _ ->
+                    fallbackSaveSearch model
+
+        SavedSearchDeleted id result ->
+            case result of
+                Ok () ->
+                    ( { model
+                        | savedSearches = List.filter (\savedSearch -> savedSearch.id /= id) model.savedSearches
+                        , savedSearchSaving = False
+                        , savedSearchStatus = Just "Saved search removed."
+                      }
+                    , Cmd.none
+                    )
+
+                Err _ ->
+                    ( { model
+                        | savedSearchSaving = False
+                        , savedSearchStatus = Just "Could not remove saved search."
+                      }
+                    , Cmd.none
+                    )
+
         CollectionDraftChanged value ->
             ( { model | collectionDraft = value, collectionStatus = Nothing }, Cmd.none )
 
@@ -933,14 +997,27 @@ updateHelp msg model =
                 query =
                     String.trim model.query
             in
-            if query == "" || List.member query model.prefs.savedSearches then
+            if query == "" || List.any (\savedSearch -> savedSearch.query == query) model.savedSearches || List.member query model.prefs.savedSearches then
                 ( model, Cmd.none )
 
-            else
-                savePrefs (\prefs -> { prefs | savedSearches = prefs.savedSearches ++ [ query ] }) model
+            else if model.savedSearchFallback then
+                savePrefs
+                    (\prefs -> { prefs | savedSearches = prefs.savedSearches ++ [ query ] })
+                    { model | savedSearchStatus = Just "Saved search saved on this device." }
 
-        RemoveSavedSearch query ->
-            savePrefs (\prefs -> { prefs | savedSearches = List.filter ((/=) query) prefs.savedSearches }) model
+            else
+                ( { model | savedSearchSaving = True, savedSearchStatus = Just "Saving saved search…" }
+                , Api.SavedSearch.create model.apiBase query query SavedSearchCreated
+                )
+
+        RemoveSavedSearch id ->
+            if model.savedSearchFallback then
+                fallbackRemoveSavedSearch id model
+
+            else
+                ( { model | savedSearchSaving = True, savedSearchStatus = Just "Removing saved search…" }
+                , Api.SavedSearch.delete model.apiBase id (SavedSearchDeleted id)
+                )
 
         SyncUrl seq ->
             if seq == model.urlSeq then
@@ -2036,6 +2113,40 @@ savePrefs change model =
     ( { model | prefs = prefs }, Prefs.save prefs )
 
 
+fallbackSaveSearch : Model -> ( Model, Cmd Msg )
+fallbackSaveSearch model =
+    let
+        query =
+            String.trim model.query
+    in
+    savePrefs
+        (\prefs -> { prefs | savedSearches = prefs.savedSearches ++ [ query ] })
+        { model
+            | savedSearchFallback = True
+            , savedSearchSaving = False
+            , savedSearchStatus = Just "Saved search saved on this device."
+        }
+
+
+fallbackRemoveSavedSearch : String -> Model -> ( Model, Cmd Msg )
+fallbackRemoveSavedSearch id model =
+    let
+        query =
+            model.savedSearches
+                |> List.filter (\savedSearch -> savedSearch.id == id)
+                |> List.head
+                |> Maybe.map .query
+                |> Maybe.withDefault id
+    in
+    savePrefs
+        (\prefs -> { prefs | savedSearches = List.filter ((/=) query) prefs.savedSearches })
+        { model
+            | savedSearchFallback = True
+            , savedSearchSaving = False
+            , savedSearchStatus = Just "Saved search removed from this device."
+        }
+
+
 withCmd : Cmd Msg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
 withCmd extra ( model, cmd ) =
     ( model, Cmd.batch [ cmd, extra ] )
@@ -2795,7 +2906,10 @@ navigatorView model =
         Feature.Navigator.view
             { presentation = navigatorPresentation model
             , current = model.query
-            , saved = model.prefs.savedSearches
+            , saved = savedItems model
+            , savedStatus = model.savedSearchStatus
+            , savedSaving = model.savedSearchSaving
+            , localFallback = model.savedSearchFallback
             , recent = model.recent
             , collections = model.collections
             , activeCollection = model.activeCollection
@@ -2816,6 +2930,15 @@ navigatorView model =
 
     else
         text ""
+
+
+savedItems : Model -> List Feature.Navigator.SavedItem
+savedItems model =
+    if model.savedSearchFallback then
+        List.map (\query -> { id = query, label = query }) model.prefs.savedSearches
+
+    else
+        List.map (\savedSearch -> { id = savedSearch.id, label = savedSearch.query }) model.savedSearches
 
 
 inspectorView : Model -> Html Msg
