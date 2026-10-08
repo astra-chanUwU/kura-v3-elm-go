@@ -36,7 +36,10 @@ func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handl
 	r.Use(requireWriteCapability(strings.TrimSpace(apiToken)))
 	r.Get("/health", health)
 	r.Get("/api/posts", searchPosts(searchers...))
+	r.Get("/api/posts/moderation", listModerationQueue(searchers...))
 	r.Get("/api/posts/{id}", postDetail(searchers...))
+	r.Get("/api/posts/{id}/moderation", listPostModerationActions(searchers...))
+	r.Post("/api/posts/moderation", moderatePosts(searchers...))
 	r.Post("/api/posts/tags", editTags(searchers...))
 	r.Post("/api/posts/tags/revert", revertTags(searchers...))
 	r.Post("/api/posts/reactions", editReactions(searchers...))
@@ -51,7 +54,7 @@ func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handl
 	r.Post("/api/collections/{id}/posts", addCollectionPosts(searchers...))
 	r.Delete("/api/collections/{id}/posts/{postID}", removeCollectionPost(searchers...))
 	r.Post("/api/collections/{id}/order", reorderCollection(searchers...))
-	r.Handle("/media/*", http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot()))))
+	r.Handle("/media/*", gatedMedia(searchers...))
 	return r
 }
 

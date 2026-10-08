@@ -1,5 +1,14 @@
 package posts
 
+// Public visibility is centralized on one predicate: a post is publicly
+// visible only when it is not soft-deleted AND its moderation_state is
+// 'published'. Every query below that serves browser-facing reads or guards
+// a mutation repeats "deleted_at IS NULL AND moderation_state = 'published'"
+// inline so hidden, rejected, pending, or deleted rows are indistinguishable
+// from missing rows. IsPubliclyVisibleModerationState in moderation.go is the
+// Go side of the same rule. Moderation transitions lock rows with
+// deleted_at IS NULL only, because they must reach non-published rows too.
+
 // SearchPostsSQL is the newest-ordered query contract. $1 is websearch text;
 // $2 is favorite; $3/$4 score; $5/$6 width; $7/$8 height; $9/$10 file_size;
 // $11/$12 id; $13 media_type; $14 source; $15 artist; $16 included tags;
@@ -17,6 +26,7 @@ SELECT
     score
 FROM posts
 WHERE deleted_at IS NULL
+  AND moderation_state = 'published'
   AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
   AND ($2::boolean IS NULL OR favorite = $2::boolean)
   AND ($3::text IS NULL OR
@@ -74,6 +84,7 @@ SELECT
     score
 FROM posts
 WHERE deleted_at IS NULL
+  AND moderation_state = 'published'
   AND ($1 = '' OR search_document @@ websearch_to_tsquery('simple', $1))
   AND ($2::boolean IS NULL OR favorite = $2::boolean)
   AND ($3::text IS NULL OR
@@ -138,6 +149,7 @@ SELECT
     reaction_version
 FROM posts
 WHERE deleted_at IS NULL
+  AND moderation_state = 'published'
   AND id = $1::bigint
 `
 
@@ -173,14 +185,14 @@ RETURNING id::text
 const lockPostForTagEditSQL = `
 SELECT tags, search_text, tag_version
 FROM posts
-WHERE id = $1::bigint AND deleted_at IS NULL
+WHERE id = $1::bigint AND deleted_at IS NULL AND moderation_state = 'published'
 FOR UPDATE
 `
 
 const updatePostTagsSQL = `
 UPDATE posts
 SET tags = $1, search_text = $2, tag_version = $3
-WHERE id = $4::bigint AND deleted_at IS NULL
+WHERE id = $4::bigint AND deleted_at IS NULL AND moderation_state = 'published'
 `
 
 const insertPostRevisionSQL = `
@@ -191,7 +203,7 @@ VALUES ($1::bigint, $2, 'tag_edit', $3, $4, $5)
 const lockPostForTagRevertSQL = `
 SELECT tags, search_text, tag_version
 FROM posts
-WHERE id = $1::bigint AND deleted_at IS NULL
+WHERE id = $1::bigint AND deleted_at IS NULL AND moderation_state = 'published'
 FOR UPDATE
 `
 
@@ -209,14 +221,14 @@ VALUES ($1::bigint, $2, 'tag_revert', $3, $4, $5)
 const lockPostForReactionSQL = `
 SELECT favorite, score, reaction_version
 FROM posts
-WHERE id = $1::bigint AND deleted_at IS NULL
+WHERE id = $1::bigint AND deleted_at IS NULL AND moderation_state = 'published'
 FOR UPDATE
 `
 
 const updatePostReactionSQL = `
 UPDATE posts
 SET favorite = $1, score = $2, reaction_version = $3
-WHERE id = $4::bigint AND deleted_at IS NULL
+WHERE id = $4::bigint AND deleted_at IS NULL AND moderation_state = 'published'
 `
 
 const insertPostReactionRevisionSQL = `
@@ -228,7 +240,7 @@ const listCollectionsSQL = `
 SELECT c.id::text, c.name, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE cp.post_id IS NOT NULL), ARRAY[]::text[])
 FROM collections c
 LEFT JOIN collection_posts cp ON cp.collection_id = c.id
-LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.post_id IS NULL OR p.id IS NOT NULL
 GROUP BY c.id, c.name
 ORDER BY c.created_at, c.id
@@ -245,13 +257,13 @@ const addCollectionPostSQL = `
 INSERT INTO collection_posts (collection_id, post_id, position)
 SELECT $1::bigint, p.id, COALESCE((SELECT MAX(position) + 1 FROM collection_posts WHERE collection_id = $1::bigint), 0) + row_number() OVER ()
 FROM posts p
-WHERE p.id = ANY($2::bigint[]) AND p.deleted_at IS NULL
+WHERE p.id = ANY($2::bigint[]) AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 ON CONFLICT (collection_id, post_id) DO NOTHING
 `
 
 const collectionPostIDsSQL = `
 SELECT post_id::text FROM collection_posts cp
-JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.collection_id = $1::bigint
 ORDER BY cp.position, cp.post_id
 `
@@ -266,7 +278,7 @@ SELECT
     p.height,
     p.tags
 FROM collection_posts cp
-JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL
+JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.collection_id = $1::bigint
 ORDER BY cp.position, cp.post_id
 LIMIT $2
@@ -274,5 +286,71 @@ LIMIT $2
 
 const deleteCollectionPostSQL = `
 DELETE FROM collection_posts cp USING posts p
-WHERE cp.collection_id = $1::bigint AND cp.post_id = $2::bigint AND p.id = cp.post_id AND p.deleted_at IS NULL
+WHERE cp.collection_id = $1::bigint AND cp.post_id = $2::bigint AND p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
+`
+
+// lockPostForModerationSQL intentionally filters on deleted_at only: a
+// moderation transition must reach pending, hidden, and rejected rows.
+// Deleted rows stay indistinguishable from missing rows.
+const lockPostForModerationSQL = `
+SELECT moderation_state
+FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL
+FOR UPDATE
+`
+
+const updatePostModerationSQL = `
+UPDATE posts
+SET moderation_state = $1
+WHERE id = $2::bigint AND deleted_at IS NULL
+`
+
+const insertModerationActionSQL = `
+INSERT INTO post_moderation_actions (post_id, action, previous_state, new_state, actor, reason)
+VALUES ($1::bigint, $2, $3, $4, $5, $6)
+`
+
+// moderationActionsByPostSQL returns the newest audit entries for one post.
+// The post itself must be non-deleted; hidden and rejected posts keep their
+// history for capability-checked readers.
+const moderationActionsByPostSQL = `
+SELECT id::text, post_id::text, action, previous_state, new_state, actor, reason, created_at::text
+FROM post_moderation_actions
+WHERE post_id = $1::bigint
+  AND EXISTS (SELECT 1 FROM posts p WHERE p.id = $1::bigint AND p.deleted_at IS NULL)
+ORDER BY created_at DESC, id DESC
+LIMIT 50
+`
+
+// moderationQueueSQL lists non-deleted posts in one moderation state,
+// newest first. The state parameter is validated by ValidateModerationQueue.
+const moderationQueueSQL = `
+SELECT
+    id::text,
+    preview_url,
+    original_url,
+    media_type,
+    width,
+    height,
+    tags,
+    moderation_state
+FROM posts
+WHERE deleted_at IS NULL
+  AND moderation_state = $1::text
+ORDER BY id DESC
+LIMIT $2
+`
+
+// moderatedPostExistsSQL gates audit reads on the non-deleted post row so
+// deleted posts stay indistinguishable from missing posts.
+const moderatedPostExistsSQL = `SELECT 1 FROM posts WHERE id = $1::bigint AND deleted_at IS NULL`
+
+// mediaPostStatesSQL maps a /media/* URL path to every referencing post row
+// so the HTTP layer can deny hidden, rejected, pending, and deleted media.
+// Duplicate content-addressed uploads may share one URL; visibility holds
+// when any non-deleted referencing post is published.
+const mediaPostStatesSQL = `
+SELECT moderation_state, (deleted_at IS NULL)
+FROM posts
+WHERE preview_url = $1::text OR original_url = $1::text
 `

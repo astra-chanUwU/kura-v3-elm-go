@@ -37,3 +37,6 @@ var ErrInvalidSavedSearch = errors.New("invalid saved search")
 
 // ErrInvalidUpload indicates an unsupported, malformed, or oversized upload.
 var ErrInvalidUpload = errors.New("invalid upload")
+
+// ErrInvalidModeration indicates a malformed moderation command.
+var ErrInvalidModeration = errors.New("invalid moderation")
