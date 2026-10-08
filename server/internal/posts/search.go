@@ -34,13 +34,17 @@ type PostDetail struct {
 }
 
 // Revision is an immutable tag-edit entry exposed by the Inspector.
+// TargetTags preserves NULL versus valid empty tags: nil encodes as JSON null
+// (legacy revision without complete state) while non-nil empty slice encodes as [].
+// Revertible is additive metadata derived from target state presence.
 type Revision struct {
-	Version     int      `json:"version"`
-	Kind        string   `json:"kind"`
-	AddedTags   []string `json:"added_tags"`
-	RemovedTags []string `json:"removed_tags"`
-	TargetTags  []string `json:"target_tags,omitempty"`
-	CreatedAt   string   `json:"created_at"`
+	Version     int       `json:"version"`
+	Kind        string    `json:"kind"`
+	AddedTags   []string  `json:"added_tags"`
+	RemovedTags []string  `json:"removed_tags"`
+	TargetTags  *[]string `json:"target_tags"`
+	Revertible  bool      `json:"revertible"`
+	CreatedAt   string    `json:"created_at"`
 }
 
 // ReactionRevision is an immutable favorite/score entry exposed by the

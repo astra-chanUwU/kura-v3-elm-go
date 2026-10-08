@@ -119,6 +119,9 @@ type alias Model =
     , tagStatus : Maybe String
     , tagRequestId : Int
     , tagVersions : Dict String Int
+    , revertConfirm : Maybe Int
+    , revertPending : Maybe Int
+    , revertStatus : Maybe String
     , reactionVersions : Dict String Int
     , reactionSaving : Bool
     , reactionStatus : Maybe String
@@ -195,6 +198,9 @@ init flagsValue url key =
             , tagStatus = Nothing
             , tagRequestId = 0
             , tagVersions = Dict.empty
+            , revertConfirm = Nothing
+            , revertPending = Nothing
+            , revertStatus = Nothing
             , reactionVersions = Dict.empty
             , reactionSaving = False
             , reactionStatus = Nothing
@@ -259,6 +265,8 @@ type Msg
     | TagRemoveChanged String
     | SaveTags
     | RevertTags Int
+    | ConfirmRevert Int
+    | CancelRevert
     | TagsCompleted Int (Result Http.Error TagEditResponse)
     | ToggleFavorite
     | ScoreDraftChanged String
@@ -512,7 +520,13 @@ updateHelp msg model =
             saveTags model
 
         RevertTags targetVersion ->
-            revertTags model targetVersion
+            requestRevert model targetVersion
+
+        ConfirmRevert targetVersion ->
+            confirmRevert model targetVersion
+
+        CancelRevert ->
+            ( { model | revertConfirm = Nothing, revertStatus = Nothing }, Cmd.none )
 
         TagsCompleted requestId result ->
             if requestId /= model.tagRequestId then
@@ -531,6 +545,12 @@ updateHelp msg model =
                             versions =
                                 List.foldl (\post versions_ -> Dict.insert post.id post.version versions_) model.tagVersions response.posts
 
+                            wasRevert =
+                                model.revertPending /= Nothing
+
+                            pendingVersion =
+                                model.revertPending
+
                             refreshed =
                                 case model.selection.active of
                                     Just postId ->
@@ -538,7 +558,21 @@ updateHelp msg model =
                                             | sequence = sequence
                                             , tagVersions = versions
                                             , tagSaving = False
-                                            , tagStatus = Just "Tags saved."
+                                            , revertPending = Nothing
+                                            , revertConfirm = Nothing
+                                            , tagStatus =
+                                                if wasRevert then
+                                                    Nothing
+
+                                                else
+                                                    Just "Tags saved."
+                                            , revertStatus =
+                                                case pendingVersion of
+                                                    Just v ->
+                                                        Just ("Reverted to v" ++ String.fromInt v ++ ".")
+
+                                                    Nothing ->
+                                                        Nothing
                                             , tagAddDraft = ""
                                             , tagRemoveDraft = ""
                                             , details = Dict.insert postId DetailLoading model.details
@@ -551,7 +585,21 @@ updateHelp msg model =
                                             | sequence = sequence
                                             , tagVersions = versions
                                             , tagSaving = False
-                                            , tagStatus = Just "Tags saved."
+                                            , revertPending = Nothing
+                                            , revertConfirm = Nothing
+                                            , tagStatus =
+                                                if wasRevert then
+                                                    Nothing
+
+                                                else
+                                                    Just "Tags saved."
+                                            , revertStatus =
+                                                case pendingVersion of
+                                                    Just v ->
+                                                        Just ("Reverted to v" ++ String.fromInt v ++ ".")
+
+                                                    Nothing ->
+                                                        Nothing
                                             , tagAddDraft = ""
                                             , tagRemoveDraft = ""
                                           }
@@ -561,7 +609,31 @@ updateHelp msg model =
                         refreshed
 
                     Err error ->
-                        ( { model | tagSaving = False, tagStatus = Just (tagErrorToString error) }, Cmd.none )
+                        let
+                            wasRevert =
+                                model.revertPending /= Nothing
+
+                            message =
+                                tagErrorToString error
+                        in
+                        ( { model
+                            | tagSaving = False
+                            , revertPending = Nothing
+                            , tagStatus =
+                                if wasRevert then
+                                    Nothing
+
+                                else
+                                    Just message
+                            , revertStatus =
+                                if wasRevert then
+                                    Just message
+
+                                else
+                                    Nothing
+                          }
+                        , Cmd.none
+                        )
 
         ToggleFavorite ->
             saveFavorite model
@@ -2226,13 +2298,40 @@ saveTags model =
         ( { model | tagStatus = Just "Enter a tag to add or remove." }, Cmd.none )
 
     else
-        ( { model | tagSaving = True, tagStatus = Nothing, tagRequestId = requestId }
+        ( { model | tagSaving = True, tagStatus = Nothing, revertStatus = Nothing, tagRequestId = requestId }
         , Api.Post.editTags model.apiBase targets add remove (TagsCompleted requestId)
         )
 
 
-revertTags : Model -> Int -> ( Model, Cmd Msg )
-revertTags model targetVersion =
+requestRevert : Model -> Int -> ( Model, Cmd Msg )
+requestRevert model targetVersion =
+    case model.selection.active of
+        Nothing ->
+            ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
+
+        Just postId ->
+            case Dict.get postId model.details of
+                Just (DetailReady detail) ->
+                    case List.filter (\r -> r.version == targetVersion) detail.history |> List.head of
+                        Just revision ->
+                            if not revision.revertible then
+                                ( { model | revertStatus = Just "Legacy revision cannot be reverted." }, Cmd.none )
+
+                            else if model.revertPending /= Nothing then
+                                ( model, Cmd.none )
+
+                            else
+                                ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
+
+                        Nothing ->
+                            ( { model | revertStatus = Just "Revision not found." }, Cmd.none )
+
+                _ ->
+                    ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
+
+
+confirmRevert : Model -> Int -> ( Model, Cmd Msg )
+confirmRevert model targetVersion =
     case model.selection.active of
         Nothing ->
             ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
@@ -2245,7 +2344,7 @@ revertTags model targetVersion =
                 target =
                     tagTarget model postId
             in
-            ( { model | tagSaving = True, tagStatus = Nothing, tagRequestId = requestId }
+            ( { model | tagSaving = True, revertPending = Just targetVersion, revertConfirm = Nothing, revertStatus = Nothing, tagStatus = Nothing, tagRequestId = requestId }
             , Api.Post.revertTags model.apiBase [ target ] targetVersion (TagsCompleted requestId)
             )
 
@@ -2752,6 +2851,11 @@ inspectorView model =
             , onScoreDraft = ScoreDraftChanged
             , onSaveScore = SaveScore
             , onRevert = RevertTags
+            , onConfirmRevert = ConfirmRevert
+            , onCancelRevert = CancelRevert
+            , revertConfirm = model.revertConfirm
+            , revertPending = model.revertPending
+            , revertStatus = model.revertStatus
             }
 
     else

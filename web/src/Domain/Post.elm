@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, tagEditResponseDecoder, reactionResponseDecoder)
+module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -47,7 +47,8 @@ type alias TagRevision =
     , kind : String
     , addedTags : List String
     , removedTags : List String
-    , targetTags : List String
+    , targetTags : Maybe (List String)
+    , revertible : Bool
     , createdAt : String
     }
 
@@ -186,13 +187,29 @@ responseDecoder =
 
 revisionDecoder : Decoder TagRevision
 revisionDecoder =
-    Decode.map6 TagRevision
+    Decode.map7
+        (\version kind added removed targetTags createdAt revertible ->
+            { version = version
+            , kind = kind
+            , addedTags = added
+            , removedTags = removed
+            , targetTags = targetTags
+            , revertible = revertible
+            , createdAt = createdAt
+            }
+        )
         (Decode.field "version" Decode.int)
         (Decode.field "kind" Decode.string)
         (Decode.field "added_tags" (Decode.list Decode.string))
         (Decode.field "removed_tags" (Decode.list Decode.string))
-        (Decode.oneOf [ Decode.field "target_tags" (Decode.list Decode.string), Decode.succeed [] ])
+        (Decode.oneOf [ Decode.field "target_tags" (Decode.nullable (Decode.list Decode.string)), Decode.succeed Nothing ])
         (Decode.field "created_at" Decode.string)
+        (Decode.oneOf
+            [ Decode.field "revertible" Decode.bool
+            , Decode.map (\maybeTags -> maybeTags /= Nothing)
+                (Decode.oneOf [ Decode.field "target_tags" (Decode.nullable (Decode.list Decode.string)), Decode.succeed Nothing ])
+            ]
+        )
 
 
 tagEditResponseDecoder : Decoder TagEditResponse

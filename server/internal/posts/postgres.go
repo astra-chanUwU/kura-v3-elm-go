@@ -150,8 +150,22 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 	defer rows.Close()
 	for rows.Next() {
 		var revision Revision
-		if err := rows.Scan(&revision.Version, &revision.Kind, &revision.AddedTags, &revision.RemovedTags, &revision.TargetTags, &revision.CreatedAt); err != nil {
+		var hasTarget bool
+		var targetTags []string
+		if err := rows.Scan(&revision.Version, &revision.Kind, &revision.AddedTags, &revision.RemovedTags, &hasTarget, &targetTags, &revision.CreatedAt); err != nil {
 			return PostDetail{}, err
+		}
+		if hasTarget {
+			tags := targetTags
+			if tags == nil {
+				empty := []string{}
+				tags = empty
+			}
+			revision.TargetTags = &tags
+			revision.Revertible = true
+		} else {
+			revision.TargetTags = nil
+			revision.Revertible = false
 		}
 		detail.History = append(detail.History, revision)
 	}

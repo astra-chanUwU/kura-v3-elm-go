@@ -3,8 +3,8 @@ module Feature.Inspector exposing (Config, view)
 import Api.Post
 import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
 import Feature.Selection
-import Html exposing (Html, a, aside, button, dd, div, dl, dt, input, li, p, text, ul)
-import Html.Attributes exposing (attribute, class, disabled, href, placeholder, rel, style, target, title, type_, value)
+import Html exposing (Html, a, aside, button, dd, div, dl, dt, input, li, p, span, text, ul)
+import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, style, target, title, type_, value)
 import Html.Events exposing (on, onClick, onInput)
 import Json.Decode as Decode
 import Set exposing (Set)
@@ -42,6 +42,11 @@ type alias Config msg =
     , onScoreDraft : String -> msg
     , onSaveScore : msg
     , onRevert : Int -> msg
+    , onConfirmRevert : Int -> msg
+    , onCancelRevert : msg
+    , revertConfirm : Maybe Int
+    , revertPending : Maybe Int
+    , revertStatus : Maybe String
     }
 
 
@@ -295,7 +300,20 @@ historyList config =
                 [ p [ class "panel-note" ] [ text "No tag revisions yet." ] ]
 
             else
-                [ ul [ class "tag-list" ] (List.map (historyItem config) detail.history) ]
+                [ ul [ class "history-list" ] (List.map (historyItem config) detail.history)
+                , case config.revertStatus of
+                    Just status ->
+                        p [ class "panel-note status-info" ] [ text status ]
+
+                    Nothing ->
+                        text ""
+                , case config.revertPending of
+                    Just v ->
+                        p [ class "panel-note" ] [ text ("Reverting to v" ++ String.fromInt v ++ "…") ]
+
+                    Nothing ->
+                        text ""
+                ]
 
         Nothing ->
             [ p [ class "panel-note" ] [ text "Select a post to load history." ] ]
@@ -303,27 +321,136 @@ historyList config =
 
 historyItem : Config msg -> TagRevision -> Html msg
 historyItem config revision =
-    li []
-        [ div []
-            [ text
-                ("v"
-                    ++ String.fromInt revision.version
-                    ++ " ("
-                    ++ revision.kind
-                    ++ ") +"
-                    ++ String.join ", " revision.addedTags
-                    ++ " -"
-                    ++ String.join ", " revision.removedTags
-                )
-            , button
-                [ class "button"
-                , type_ "button"
-                , onClick (config.onRevert revision.version)
-                , disabled config.tagSaving
-                ]
-                [ text "Revert" ]
+    let
+        isConfirming =
+            config.revertConfirm == Just revision.version
+
+        isPending =
+            config.revertPending == Just revision.version
+
+        canRevert =
+            revision.revertible
+
+        beforeTags =
+            revision.removedTags
+
+        afterTags =
+            revision.addedTags
+
+        targetTags =
+            revision.targetTags
+    in
+    li [ class "history-item", classList [ ( "is-legacy", not canRevert ), ( "is-pending", isPending ) ] ]
+        [ div [ class "history-header" ]
+            [ span [ class "history-version" ] [ text ("v" ++ String.fromInt revision.version) ]
+            , span [ class "history-kind" ] [ text revision.kind ]
+            , span [ class "history-time" ] [ text revision.createdAt ]
+            , if not canRevert then
+                span [ class "history-legacy", title "Legacy revision without stored tag state" ] [ text "legacy" ]
+
+              else
+                text ""
             ]
+        , div [ class "history-diff" ]
+            [ div [ class "history-chips before" ]
+                (if List.isEmpty beforeTags then
+                    [ span [ class "panel-note" ] [ text "No removed tags" ] ]
+
+                 else
+                    [ span [ class "history-label" ] [ text "Removed:" ]
+                    , ul [ class "tag-list" ] (List.map chipRemoved beforeTags)
+                    ]
+                )
+            , div [ class "history-chips after" ]
+                (if List.isEmpty afterTags then
+                    [ span [ class "panel-note" ] [ text "No added tags" ] ]
+
+                 else
+                    [ span [ class "history-label" ] [ text "Added:" ]
+                    , ul [ class "tag-list" ] (List.map chipAdded afterTags)
+                    ]
+                )
+            , div [ class "history-chips result" ]
+                (case targetTags of
+                    Nothing ->
+                        [ p [ class "panel-note status-error" ] [ text "No stored tag state — cannot revert" ] ]
+
+                    Just tags ->
+                        if List.isEmpty tags then
+                            [ span [ class "history-label" ] [ text "Result:" ]
+                            , span [ class "panel-note" ] [ text "No tags" ]
+                            ]
+
+                        else
+                            [ span [ class "history-label" ] [ text "Result:" ]
+                            , ul [ class "tag-list" ] (List.map chipResult tags)
+                            ]
+                )
+            ]
+        , div [ class "history-actions" ]
+            (if not canRevert then
+                [ button
+                    [ class "button"
+                    , type_ "button"
+                    , disabled True
+                    , title "Legacy revision cannot be reverted"
+                    ]
+                    [ text "Revert" ]
+                ]
+
+             else if isPending then
+                [ button
+                    [ class "button is-pending"
+                    , type_ "button"
+                    , disabled True
+                    ]
+                    [ text "Reverting…" ]
+                ]
+
+             else if isConfirming then
+                [ p [ class "panel-note" ] [ text ("Revert to v" ++ String.fromInt revision.version ++ "?") ]
+                , button
+                    [ class "button"
+                    , type_ "button"
+                    , onClick (config.onConfirmRevert revision.version)
+                    , disabled config.tagSaving
+                    ]
+                    [ text "Confirm" ]
+                , button
+                    [ class "button button-quiet"
+                    , type_ "button"
+                    , onClick config.onCancelRevert
+                    , disabled config.tagSaving
+                    ]
+                    [ text "Cancel" ]
+                ]
+
+             else
+                [ button
+                    [ class "button"
+                    , type_ "button"
+                    , onClick (config.onRevert revision.version)
+                    , disabled (config.tagSaving || config.revertPending /= Nothing)
+                    ]
+                    [ text "Revert" ]
+                ]
+            )
         ]
+
+
+chipAdded : String -> Html msg
+chipAdded tag =
+    li [] [ span [ class "chip chip-added", title ("Added " ++ tag) ] [ text tag ] ]
+
+
+chipRemoved : String -> Html msg
+chipRemoved tag =
+    li [] [ span [ class "chip chip-removed", title ("Removed " ++ tag) ] [ text tag ] ]
+
+
+chipResult : String -> Html msg
+chipResult tag =
+    li [] [ span [ class "chip chip-result", title tag ] [ text tag ] ]
 
 
 tagItem : Config msg -> String -> Html msg

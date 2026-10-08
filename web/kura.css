@@ -596,3 +596,22 @@ button.chip:hover { border-color: var(--accent); }
 .collection-move { width: 22px; height: 22px; padding: 0; border: 1px solid var(--rule); border-radius: 3px; background: var(--paper-raised); color: var(--ink); font-size: 12px; line-height: 1; }
 .collection-move:disabled { opacity: .35; cursor: default; }
 .collection-move:hover:not(:disabled) { border-color: #bdbab2; background: var(--cell); }
+
+/* Tag revision history - richer diff */
+.history-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.history-item { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper-raised); }
+.history-item.is-legacy { opacity: .7; }
+.history-item.is-pending { border-color: var(--accent); }
+.history-header { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.history-version { font-weight: 650; font-variant-numeric: tabular-nums; }
+.history-kind { color: var(--ink-muted); text-transform: lowercase; }
+.history-time { margin-left: auto; color: var(--ink-muted); font-size: 11px; }
+.history-legacy { padding: 1px 6px; border-radius: 999px; background: var(--cell); color: var(--ink-muted); font-size: 11px; }
+.history-diff { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.history-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.history-label { min-width: 52px; color: var(--ink-muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.history-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.chip-added { background: #e6f0dc; border-color: #b7d1a0; color: #2f4d1e; }
+.chip-removed { background: #fbe4e0; border-color: #e2a99f; color: #6b2a20; text-decoration: line-through; }
+.chip-result { background: var(--paper); border-color: var(--rule); }
+.status-info { color: var(--accent); }

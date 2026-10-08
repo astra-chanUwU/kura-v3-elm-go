@@ -67,8 +67,9 @@ WHERE deleted_at IS NULL
 `
 
 // GetPostRevisionsSQL returns the newest Inspector history entries.
+// target_tags IS NOT NULL preserves NULL versus valid empty tags distinction.
 const GetPostRevisionsSQL = `
-SELECT version, kind, added_tags, removed_tags, target_tags, created_at::text
+SELECT version, kind, added_tags, removed_tags, target_tags IS NOT NULL, target_tags, created_at::text
 FROM post_tag_revisions
 WHERE post_id = $1::bigint
 ORDER BY version DESC
