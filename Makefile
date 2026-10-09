@@ -17,7 +17,7 @@ web-build:
 	cd web && elm make src/Main.elm --output=dist/elm.js
 
 web-serve:
-	python3 -m http.server 8000 --directory web
+	go -C server run ./cmd/kura-web
 
 db-migrate:
 	./scripts/db-migrate.sh

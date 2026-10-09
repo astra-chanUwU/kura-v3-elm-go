@@ -35,7 +35,7 @@ In another terminal, start the frontend:
 make web-serve
 ```
 
-This Makefile command runs `python3 -m http.server 8000 --directory web`, so it needs Python 3. It serves the built HTML, CSS, and JavaScript for local development; the API runs in Go.
+This starts a Go static-file server for the built frontend on port 8000. Keep both terminals running while using the app.
 
 Open [localhost:8000](http://localhost:8000). The frontend connects to the API at `http://localhost:8080`; its address is set in `web/index.html`.
 
