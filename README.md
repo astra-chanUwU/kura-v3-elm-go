@@ -4,7 +4,9 @@ An imageboard and media library built with Elm, Go, and PostgreSQL.
 
 The current milestone is: **I can safely manage my actual image library here
 every day.** See the [daily library plan](docs/daily-library-plan.md) for verified
-status and the next browser-write and collection slices.
+status and the next browser-write and collection slices. The
+[Muse slice prompts](docs/muse-slices/README.md) are ready to run sequentially
+under supervising Codex review.
 
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
@@ -88,6 +90,20 @@ Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/der
 Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
 
 The CLI sends `KURA_API_TOKEN` on writes. The browser currently has no token-entry or user-login screen, so browser uploads and edits use open local mode. There is no password, OAuth, or passkey login flow yet.
+
+## Import local test images
+
+To add a folder of local test images without changing the source files, run:
+
+```sh
+python3 scripts/import-test-media.py "SOURCE_FOLDER" --api-url http://127.0.0.1:8080
+```
+
+The importer accepts JPEG, PNG, and GIF files up to 25 MiB, skips hidden and Photos library content, and records each file's relative path as source metadata. It adds the `test-data` and `folder-test` tags; search for imported posts with `tag:folder-test`. WebP and video files are reported as unsupported. Duplicate detection checks hashes from browse-visible posts; hidden or deleted posts are outside that API listing. If the API requires a bearer token, set `KURA_API_TOKEN` in the environment. A local resume manifest is kept at `.local/test-media-manifest.json` and is ignored by Git.
+
+The manifest belongs to one source folder and API URL. Use a separate ignored
+manifest for another import. Interrupted or ambiguous uploads are verified before
+continuing; unresolved results stop the import rather than resending a file.
 
 ## CLI
 

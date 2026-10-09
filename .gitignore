@@ -4,3 +4,4 @@ web/dist/
 web/elm-stuff/
 /web/static/media/uploads/
 /web/static/media/derivatives/
+/.local/test-media-manifest.json

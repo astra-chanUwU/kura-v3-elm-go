@@ -1,0 +1,15 @@
+# Muse Spark 1.3 high — Bounded ordering and lightweight navigation
+
+Work in /Users/astrochan/Documents/Workstation/kura-v3-elm-go. Implement only this bounded slice under supervising Codex review. Release criterion: "I can safely manage my actual image library here every day." Read docs/daily-library-plan.md and the relevant current code before editing. Inspect git status/diff first and preserve unrelated edits. Keep Elm/Go/PostgreSQL and existing local storage; no new frameworks or services. If a prerequisite is absent, report it and stop instead of expanding the scope. Never read or expose credentials, private media, or ignored import manifests. Never truncate/reset the development database or reseed real data. Database tests may truncate tables: run them only against a disposable test database, and serially across packages. Do not run another agent or edit concurrently with another writer.
+
+Prerequisite: slices 01-05 are reviewed and integrated. Own collection summary/move API and SQL, explicit additive Elm API/types, Navigator ordering controls, and focused integration/Elm tests. Implement only the bounded-ordering subsection of docs/daily-library-plan.md; select and document the additive request/response contract, then complete this one vertical slice.
+
+Current whole-array reorder rejects >200 IDs, ListCollections returns every member ID, and Navigator renders all ordering rows. Make large collections usable without increasing those array limits or adding a collection-size cap.
+
+Add a version-checked single-member move command with post_id, destination neighbor (e.g. before_post_id or null=end), and expected_version. Lock collection, validate membership/neighbors, update deterministic order transactionally, increment only for effective changes, return new version, and reject stale expected_version with409. Specify treatment of hidden members so moves do not silently rewrite or lose their order. Keep existing reorder/CLI compatibility.
+
+Expose lightweight identity/count/version through additive fields or a separate summary endpoint, preserving existing API/CLI contracts. Have Navigator use summaries and paged membership/ordering; do not fetch/render every ID. Wire bounded up/down or neighbor moves across page boundaries, using pagination from slice05 and refresh rules from slice03. Preserve selection/active/scroll and write authorization.
+
+Test first/last and cross-page moves, no-op, stale/concurrent updates, invalid IDs/neighbors, hidden membership, 1000 members, payload/render bounds, metadata counts, and unchanged legacy CLI behavior. No importer, media-format expansion, bulk rewrite, authentication expansion, or visual identity work.
+
+Verify with focused meaningful tests, make check, and git diff --check. Use make web-test for the existing Elm harness. If database/browser evidence is unavailable, say exactly what was not run; do not claim it passed. Report changed files, commands/results, behavior, and remaining limitations. Do not commit or push: stop at a reviewable diff for supervising Codex. Do not implement subsequent slices. Do not rewrite Page.Library or refactor unrelated code.
