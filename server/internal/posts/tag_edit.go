@@ -162,6 +162,18 @@ func (s *PostgresSearcher) applyTagRevert(ctx context.Context, tx pgx.Tx, target
 		return TagEditResult{}, ErrRevisionNotFound
 	}
 	added, removed := tagDelta(currentTags, restored)
+	// pgx binds nil slices as NULL, which violates the NOT NULL array
+	// columns on post_tag_revisions. Normalize every side (including the
+	// restored full state) to a non-nil empty slice before insertion.
+	if added == nil {
+		added = []string{}
+	}
+	if removed == nil {
+		removed = []string{}
+	}
+	if restored == nil {
+		restored = []string{}
+	}
 	nextVersion := currentVersion + 1
 	updatedSearch := updateSearchText(searchText, removed, added)
 	if _, err := tx.Exec(ctx, updatePostTagsSQL, restored, updatedSearch, nextVersion, target.ID); err != nil {
@@ -174,6 +186,10 @@ func (s *PostgresSearcher) applyTagRevert(ctx context.Context, tx pgx.Tx, target
 }
 
 func tagDelta(current, target []string) (added, removed []string) {
+	// Non-nil empty sides: pgx binds nil slices as NULL, violating the
+	// post_tag_revisions NOT NULL constraints on one-sided reverts.
+	added = []string{}
+	removed = []string{}
 	currentSet := make(map[string]struct{}, len(current))
 	for _, tag := range current {
 		currentSet[tag] = struct{}{}

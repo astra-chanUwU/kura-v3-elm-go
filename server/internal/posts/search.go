@@ -21,19 +21,27 @@ type PostSummary struct {
 }
 
 // PostDetail is the stable read-only representation used by the Inspector.
+//
+// DerivativeJobID and DerivativeStatus are additive derivative metadata:
+// the durable job backing the post's thumbnail and its current status.
+// While the thumbnail is processing the preview URL serves the original;
+// once the thumb-320 variant is ready the preview URL serves it, while
+// the original URL never changes.
 type PostDetail struct {
 	PostSummary
-	Source          string             `json:"source"`
-	Artist          string             `json:"artist"`
-	Hash            string             `json:"hash"`
-	FileSize        int64              `json:"file_size"`
-	CreatedAt       string             `json:"created_at"`
-	TagVersion      int                `json:"tag_version"`
-	Favorite        bool               `json:"favorite"`
-	Score           int                `json:"score"`
-	ReactionVersion int                `json:"reaction_version"`
-	History         []Revision         `json:"history"`
-	ReactionHistory []ReactionRevision `json:"reaction_history"`
+	Source           string             `json:"source"`
+	Artist           string             `json:"artist"`
+	Hash             string             `json:"hash"`
+	FileSize         int64              `json:"file_size"`
+	CreatedAt        string             `json:"created_at"`
+	TagVersion       int                `json:"tag_version"`
+	Favorite         bool               `json:"favorite"`
+	Score            int                `json:"score"`
+	ReactionVersion  int                `json:"reaction_version"`
+	History          []Revision         `json:"history"`
+	ReactionHistory  []ReactionRevision `json:"reaction_history"`
+	DerivativeJobID  string             `json:"derivative_job_id,omitempty"`
+	DerivativeStatus string             `json:"derivative_status,omitempty"`
 }
 
 // Revision is an immutable tag-edit entry exposed by the Inspector.

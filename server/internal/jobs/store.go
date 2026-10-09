@@ -109,6 +109,91 @@ func (s *Store) Enqueue(ctx context.Context, request EnqueueRequest) (Job, error
 	return job, nil
 }
 
+// EnqueueInTx inserts a pending row inside an existing transaction, or
+// returns the existing row when the same (kind, idempotency key) was
+// already enqueued. Upload creation uses it so the post row and its
+// derivative job commit atomically: a rolled-back transaction leaves
+// neither a post nor a queued job.
+func EnqueueInTx(ctx context.Context, tx pgx.Tx, request EnqueueRequest) (Job, error) {
+	validated, err := ValidateEnqueue(request)
+	if err != nil {
+		return Job{}, err
+	}
+	var job Job
+	store := &Store{}
+	if scanErr := store.scanJob(tx.QueryRow(ctx, enqueueInsertSQL,
+		validated.Kind, string(validated.Payload), validated.IdempotencyKey, validated.MaxAttempts,
+	), &job); scanErr == nil {
+		return job, nil
+	} else if !errors.Is(scanErr, pgx.ErrNoRows) {
+		return Job{}, scanErr
+	}
+	if err := store.scanJob(tx.QueryRow(ctx, lookupByKindKeySQL,
+		validated.Kind, validated.IdempotencyKey,
+	), &job); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	return job, nil
+}
+
+// RecoverExpiredLeases requeues crashed running rows and reports how many
+// were recovered. Callers run it once at startup before workers claim, so
+// interrupted work resumes instead of stalling on a dead lease. It
+// delegates to the kind-scoped sweep with no filter so startup covers every
+// kind; the worker's ongoing sweeps pass their claim kinds instead.
+func (s *Store) RecoverExpiredLeases(ctx context.Context) (int64, error) {
+	return s.RecoverExpiredLeasesForKinds(ctx)
+}
+
+// recoverExpiredForKindsSQL is the kind-scoped variant of recoverExpiredSQL:
+// a nil or empty kinds slice recovers every kind, otherwise only rows whose
+// kind matches. Backoff, attempt limits, and lease clearing match the
+// startup sweep so stale owners stay rejected by Succeed and Fail.
+const recoverExpiredForKindsSQL = `
+UPDATE jobs
+SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
+    locked_by = NULL,
+    locked_at = NULL,
+    lease_expires_at = NULL,
+    next_retry_at = CASE
+        WHEN attempts >= max_attempts THEN NULL
+        ELSE now() + (LEAST(600000, 5000 * POWER(2, GREATEST(attempts - 1, 0)))::bigint * interval '1 millisecond')
+    END,
+    last_error = CASE
+        WHEN last_error = '' THEN 'lease expired without heartbeat'
+        ELSE last_error
+    END,
+    completed_at = CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+    updated_at = now()
+WHERE status = 'running'
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at <= now()
+  AND ($1::text[] IS NULL OR kind = ANY($1::text[]))
+`
+
+// RecoverExpiredLeasesForKinds requeues expired running rows restricted to
+// kinds, reporting how many were recovered. The in-process worker calls it
+// on a bounded interval with its own claim kinds (derivative in production)
+// so leases that expire after startup are recovered without another
+// restart; other kinds are never touched by that sweep.
+func (s *Store) RecoverExpiredLeasesForKinds(ctx context.Context, kinds ...string) (int64, error) {
+	if s == nil || s.pool == nil {
+		return 0, ErrUnavailable
+	}
+	var filter []string
+	if len(kinds) > 0 {
+		filter = append([]string(nil), kinds...)
+	}
+	tag, err := s.pool.Exec(ctx, recoverExpiredForKindsSQL, filter)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // GetJob returns one job row for status polling.
 func (s *Store) GetJob(ctx context.Context, id string) (Job, error) {
 	if s == nil || s.pool == nil {
@@ -275,9 +360,13 @@ SET status = 'succeeded',
 WHERE id = $1::bigint
   AND locked_by = $2
   AND status = 'running'
+  AND lease_expires_at > now()
 RETURNING ` + jobColumns
 
 // Succeed marks the caller's running row succeeded and clears its lease.
+// The row must still be running, owned by the caller, and inside its
+// lease: a stale worker whose lease lapsed or was reclaimed gets
+// ErrLeaseConflict instead of completing another worker's job.
 func (s *Store) Succeed(ctx context.Context, id, lockedBy string) (Job, error) {
 	if s == nil || s.pool == nil {
 		return Job{}, ErrUnavailable
@@ -363,6 +452,9 @@ func (s *Store) Fail(ctx context.Context, id, lockedBy, errMsg string) (Job, err
 		return Job{}, err
 	}
 	if current.Status != StatusRunning || current.LockedBy == nil || *current.LockedBy != lockedBy {
+		return Job{}, ErrLeaseConflict
+	}
+	if current.LeaseExpiresAt == nil || !current.LeaseExpiresAt.After(time.Now()) {
 		return Job{}, ErrLeaseConflict
 	}
 	var job Job

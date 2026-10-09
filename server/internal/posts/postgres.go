@@ -4,18 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 )
 
 // PostgresSearcher executes the browser-facing post summary query against
 // PostgreSQL. It keeps the pool behind the Searcher interface used by HTTP.
+//
+// The searcher owns one shared PostgreSQL pool: the durable job store and
+// the variant recorder wrap that same pool, so uploads, job status reads,
+// and derivative processing never open a second pool per process.
 type PostgresSearcher struct {
-	pool  *pgxpool.Pool
-	store media.Store
+	pool     *pgxpool.Pool
+	store    media.Store
+	jobStore *jobs.Store
+	variants *media.PostgresVariantStore
 }
 
 // NewPostgresSearcher creates a searcher for databaseURL. The pool connects on
@@ -33,7 +41,136 @@ func NewPostgresSearcherWithStore(ctx context.Context, databaseURL string, store
 	if err != nil {
 		return nil, err
 	}
-	return &PostgresSearcher{pool: pool, store: store}, nil
+	return &PostgresSearcher{
+		pool:     pool,
+		store:    store,
+		jobStore: jobs.NewStore(pool),
+		variants: media.NewPostgresVariantStore(pool),
+	}, nil
+}
+
+// JobsStore exposes the durable job store sharing the searcher's pool. The
+// server wires it into the in-process derivative worker and nowhere else,
+// keeping one pool per process.
+func (s *PostgresSearcher) JobsStore() *jobs.Store {
+	if s == nil {
+		return nil
+	}
+	return s.jobStore
+}
+
+// NewDerivativeProcessor builds the derivative handler over the searcher's
+// media provider and variant recorder. Uploads fall back to the
+// environment media store when no explicit provider was configured, and the
+// processor mirrors that fallback.
+func (s *PostgresSearcher) NewDerivativeProcessor() *media.DerivativeProcessor {
+	if s == nil {
+		return nil
+	}
+	store := s.store
+	if store == nil {
+		store = media.NewStoreFromEnv(uploadMediaRoot())
+	}
+	return &media.DerivativeProcessor{
+		Originals:   store,
+		Derivatives: store,
+		Variants:    s.variants,
+	}
+}
+
+// RecoverExpiredJobs requeues running derivative jobs whose lease lapsed
+// without renewal, e.g. after a crash. The server runs it once at startup
+// before the worker claims, so interrupted thumbnails resume.
+func (s *PostgresSearcher) RecoverExpiredJobs(ctx context.Context) (int64, error) {
+	if s == nil || s.jobStore == nil {
+		return 0, ErrUnavailable
+	}
+	return s.jobStore.RecoverExpiredLeases(ctx)
+}
+
+// GetJob serves one durable job row for GET /api/jobs/{id} polling,
+// implementing jobs.Reader so the HTTP layer needs no second store.
+func (s *PostgresSearcher) GetJob(ctx context.Context, id string) (jobs.Job, error) {
+	if s == nil || s.jobStore == nil {
+		return jobs.Job{}, jobs.ErrUnavailable
+	}
+	return s.jobStore.GetJob(ctx, id)
+}
+
+// overlayReadyPreviews replaces the preview URL with the ready thumb-320
+// variant URL for every post that has one. Posts still processing keep
+// serving their original as the preview; original URLs never change.
+func (s *PostgresSearcher) overlayReadyPreviews(ctx context.Context, summaries []PostSummary) error {
+	if s == nil || s.pool == nil || len(summaries) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(summaries))
+	for _, post := range summaries {
+		if id, err := strconv.ParseInt(post.ID, 10, 64); err == nil && id > 0 {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, readyVariantURLsForPostsSQL, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	ready := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, url string
+		if err := rows.Scan(&id, &url); err != nil {
+			return err
+		}
+		ready[id] = url
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for index := range summaries {
+		if url, ok := ready[summaries[index].ID]; ok && url != "" {
+			summaries[index].PreviewURL = url
+		}
+	}
+	return nil
+}
+
+// enrichPostDetail overlays the ready thumbnail preview and attaches the
+// discoverable derivative job metadata. Missing rows leave the detail
+// untouched: the original stays the preview and no job fields are set.
+func (s *PostgresSearcher) enrichPostDetail(ctx context.Context, detail *PostDetail) error {
+	if s == nil || s.pool == nil || detail == nil {
+		return nil
+	}
+	var preview string
+	if err := s.pool.QueryRow(ctx, readyVariantURLSQL, detail.ID).Scan(&preview); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			preview = ""
+		} else {
+			return err
+		}
+	}
+	if preview != "" {
+		detail.PreviewURL = preview
+	}
+	var jobID, status string
+	if err := s.pool.QueryRow(ctx, derivativeJobForPostSQL, derivativeJobKey(detail.ID)).Scan(&jobID, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	detail.DerivativeJobID = jobID
+	detail.DerivativeStatus = status
+	return nil
+}
+
+// derivativeJobKey mirrors media.EnqueueDerivative's idempotency key for the
+// default variant so reads find the job the upload transaction enqueued.
+func derivativeJobKey(postID string) string {
+	return "derivative:" + postID + ":" + media.DefaultDerivativeVariant
 }
 
 // Close releases PostgreSQL connections owned by the searcher.
@@ -138,6 +275,9 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 		if err := rows.Err(); err != nil {
 			return SearchPage{}, err
 		}
+		if err := s.overlayReadyPreviews(ctx, posts); err != nil {
+			return SearchPage{}, err
+		}
 		if len(posts) <= limit {
 			return SearchPage{Posts: posts}, nil
 		}
@@ -177,6 +317,9 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 		scores = append(scores, score)
 	}
 	if err := rows.Err(); err != nil {
+		return SearchPage{}, err
+	}
+	if err := s.overlayReadyPreviews(ctx, posts); err != nil {
 		return SearchPage{}, err
 	}
 	if len(posts) <= limit {
@@ -270,6 +413,9 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 		detail.ReactionHistory = append(detail.ReactionHistory, revision)
 	}
 	if err := reactionRows.Err(); err != nil {
+		return PostDetail{}, err
+	}
+	if err := s.enrichPostDetail(ctx, &detail); err != nil {
 		return PostDetail{}, err
 	}
 	return detail, nil

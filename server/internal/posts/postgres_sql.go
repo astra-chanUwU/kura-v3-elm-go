@@ -348,9 +348,47 @@ const moderatedPostExistsSQL = `SELECT 1 FROM posts WHERE id = $1::bigint AND de
 // mediaPostStatesSQL maps a /media/* URL path to every referencing post row
 // so the HTTP layer can deny hidden, rejected, pending, and deleted media.
 // Duplicate content-addressed uploads may share one URL; visibility holds
-// when any non-deleted referencing post is published.
+// when any non-deleted referencing post is published. Derivative variant
+// URLs are covered through asset_variants, including variants not
+// currently selected as a post's preview, so hidden originals never leak
+// thumbnails either.
 const mediaPostStatesSQL = `
 SELECT moderation_state, (deleted_at IS NULL)
 FROM posts
 WHERE preview_url = $1::text OR original_url = $1::text
+UNION ALL
+SELECT p.moderation_state, (p.deleted_at IS NULL)
+FROM asset_variants v
+JOIN posts p ON p.id = v.post_id
+WHERE v.url = $1::text
+`
+
+// readyVariantURLSQL returns the served thumbnail URL for one post once its
+// default derivative is ready. Posts without a ready variant fall back to
+// their original URL as the preview.
+const readyVariantURLSQL = `
+SELECT url
+FROM asset_variants
+WHERE post_id = $1::bigint
+  AND variant = 'thumb-320'
+  AND status = 'ready'
+`
+
+// readyVariantURLsForPostsSQL returns ready default thumbnails for a batch
+// of posts so search results overlay previews without per-row queries.
+const readyVariantURLsForPostsSQL = `
+SELECT post_id::text, url
+FROM asset_variants
+WHERE post_id = ANY($1::bigint[])
+  AND variant = 'thumb-320'
+  AND status = 'ready'
+`
+
+// derivativeJobForPostSQL finds the durable derivative job backing one
+// post's default thumbnail through its idempotency key.
+const derivativeJobForPostSQL = `
+SELECT id::text, status
+FROM jobs
+WHERE kind = 'derivative'
+  AND idempotency_key = $1::text
 `

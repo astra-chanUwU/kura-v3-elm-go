@@ -15,14 +15,16 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 )
 
 const maxUploadBytes int64 = 25 << 20
 
 // CreateUpload stores one supported image under MEDIA_ROOT and creates its
-// searchable post row. The temp-file and database steps are deliberately
-// ordered so a partially received upload is never visible as a post.
+// searchable post row plus the default thumb-320 derivative job in one
+// transaction. The temp-file and database steps are deliberately ordered
+// so a partially received upload is never visible as a post.
 func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadRequest) (PostDetail, error) {
 	if s == nil || s.pool == nil {
 		return PostDetail{}, ErrUnavailable
@@ -121,6 +123,17 @@ func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadReque
 	defer func() { _ = tx.Rollback(ctx) }()
 	var id string
 	if err := tx.QueryRow(ctx, insertUploadedPostSQL, mediaURL, mediaURL, mediaType, config.Width, config.Height, searchText, source, artist, "sha256:"+digest, written, tags).Scan(&id); err != nil {
+		return PostDetail{}, err
+	}
+	// The default thumbnail job joins the same transaction so a failed
+	// upload leaves neither a post nor a queued job. The idempotency key
+	// scopes the job to this post and variant, so retries of the same
+	// logical work collapse to one job row.
+	derivativeRequest, err := media.EnqueueDerivative(id, object.Key, media.DefaultDerivativeVariant)
+	if err != nil {
+		return PostDetail{}, err
+	}
+	if _, err := jobs.EnqueueInTx(ctx, tx, derivativeRequest); err != nil {
 		return PostDetail{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

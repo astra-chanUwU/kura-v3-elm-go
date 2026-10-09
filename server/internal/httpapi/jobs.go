@@ -12,10 +12,9 @@ import (
 
 // jobReader serves one job row for GET /api/jobs/{id} polling. Any searcher
 // that also implements jobs.Reader serves job status; routers whose
-// searcher predates jobs answer 503 until a later slice wires a jobs store.
-// Production wiring is deferred the same way: main.go keeps passing only the
-// posts searcher, so the endpoint is reachable but reports unavailable until
-// then.
+// searcher predates jobs answer 503. The PostgreSQL searcher implements the
+// reader over its shared pool, so the endpoint is live once DATABASE_URL is
+// configured.
 func jobReader(searchers ...posts.Searcher) (jobs.Reader, bool) {
 	if len(searchers) == 0 || searchers[0] == nil {
 		return nil, false
