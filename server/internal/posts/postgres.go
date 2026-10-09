@@ -20,9 +20,10 @@ type PostgresSearcher struct {
 
 // NewPostgresSearcher creates a searcher for databaseURL. The pool connects on
 // demand, so a server can still start and serve /health while PostgreSQL is
-// unavailable.
+// unavailable. When S3_ENDPOINT and S3_BUCKET are set, the searcher uses an
+// S3-compatible store; otherwise it falls back to a local filesystem store.
 func NewPostgresSearcher(ctx context.Context, databaseURL string) (*PostgresSearcher, error) {
-	return NewPostgresSearcherWithStore(ctx, databaseURL, media.NewLocalStore(uploadMediaRoot()))
+	return NewPostgresSearcherWithStore(ctx, databaseURL, media.NewStoreFromEnv(uploadMediaRoot()))
 }
 
 // NewPostgresSearcherWithStore creates a searcher with an explicit media

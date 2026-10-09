@@ -91,7 +91,7 @@ func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadReque
 	storedName := digest + "." + extension
 	store := s.store
 	if store == nil {
-		store = media.NewLocalStore(root)
+		store = media.NewStoreFromEnv(root)
 	}
 	objectFile, err := os.Open(tempPath)
 	if err != nil {
