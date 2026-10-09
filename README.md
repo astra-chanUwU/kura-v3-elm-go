@@ -2,6 +2,10 @@
 
 An imageboard and media library built with Elm, Go, and PostgreSQL.
 
+The current milestone is: **I can safely manage my actual image library here
+every day.** See the [daily library plan](docs/daily-library-plan.md) for verified
+status and the next browser-write and collection slices.
+
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
 - Edit tags, revert revisions, set favorites, and score posts.
@@ -11,7 +15,7 @@ An imageboard and media library built with Elm, Go, and PostgreSQL.
 
 ## Run locally
 
-You need Go 1.27+, Elm 0.19.2, and a running PostgreSQL database. The database commands below use `psql`, PostgreSQL's command-line client.
+You need Go 1.27+, Elm 0.19.2, Node.js for `make web-test` and `make check`, and a running PostgreSQL database. The database commands below use `psql`, PostgreSQL's command-line client.
 
 Create a database and set its connection URL, then run these from the repo root:
 
@@ -106,7 +110,9 @@ go -C server vet ./...
 curl http://localhost:8080/health
 ```
 
-`make check` builds the server and frontend and tests/builds the CLI. PostgreSQL-backed server tests require `KURA_TEST_DATABASE_URL` pointing to a disposable database; they truncate test tables. Run them serially across packages:
+`make check` builds the server and frontend, runs server tests and vet, tests and builds the CLI, and runs the Elm revision and upload-queue suites. Run the Elm suites directly with `make web-test`.
+
+PostgreSQL-backed server tests require `KURA_TEST_DATABASE_URL` pointing to a disposable database; they truncate test tables. Without that variable, those tests skip. `make check` runs server packages serially; to run the integration tests directly:
 
 ```sh
 KURA_TEST_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_test?sslmode=disable' \

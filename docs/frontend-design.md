@@ -2,7 +2,7 @@
 
 Status: the Library workspace, grid virtualization, cursor pagination, Inspector detail loading, tag edits, favorites, scores, ordered collections, and collection browsing are built in `web/` and Go.
 
-This package answers `TODO.md`. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
+This package describes the Library workspace. It borrows the *interaction model* of Lightroom Classic's Library module (Grid, Loupe, Compare, Survey, Filmstrip, Library Filter, panels at the edges) and none of its gray skin or photo-editing controls. Everything here fits the existing Elm `web/` app, the Go HTTP API, and PostgreSQL. Items that need Go/API work are marked **[API]**.
 
 Examples use the seeded demo rows (`make db-seed`, query `demo`), for instance `#2006 ruin-explorers.jpeg 1199×836`, `#2004 kson.jpeg 679×437`, `#2009 supernal.jpeg 381×680`. Rows `#1001–#1003` point at files that do not exist and exercise the missing-media state.
 
