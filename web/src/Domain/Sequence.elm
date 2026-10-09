@@ -13,8 +13,10 @@ module Domain.Sequence exposing
     , length
     , member
     , range
+    , refreshSummary
     , slice
     , step
+    , updateSummary
     , updateTags
     )
 
@@ -117,24 +119,37 @@ step delta id sequence =
 
 updateTags : String -> List String -> Sequence -> Sequence
 updateTags postId tags sequence =
+    updateSummary postId (\post -> { post | tags = tags }) sequence
+
+
+{-| Replace one cached summary in place. Unknown ids are ignored so
+thumbnail refreshes never grow the grid on their own.
+-}
+updateSummary : String -> (PostSummary -> PostSummary) -> Sequence -> Sequence
+updateSummary postId change sequence =
     case indexOf postId sequence of
         Just index ->
             case get index sequence of
                 Just post ->
-                    let
-                        updated =
-                            { post | tags = tags }
-
-                    in
                     case sequence of
                         Sequence data ->
-                            Sequence { data | posts = Array.set index updated data.posts }
+                            Sequence { data | posts = Array.set index (change post) data.posts }
 
                 Nothing ->
                     sequence
 
         Nothing ->
             sequence
+
+
+{-| Replace a cached summary with fresher data, such as a post detail whose
+preview URL changed once its thumbnail finished processing. Unknown ids
+are ignored: confirmed uploads must never inject new posts into filtered
+searches or collection results.
+-}
+refreshSummary : PostSummary -> Sequence -> Sequence
+refreshSummary summary sequence =
+    updateSummary summary.id (\_ -> summary) sequence
 
 
 {-| Posts with their indexes from `from` (inclusive) to `to` (exclusive).

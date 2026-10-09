@@ -10,7 +10,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
-import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget)
+import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget, summaryOfDetail)
 import Domain.Collection exposing (Collection)
 import Domain.Query as Query
 import Domain.Selection as Selection exposing (Selection)
@@ -25,6 +25,7 @@ import Feature.QueryEditor as QueryEditor
 import Feature.QuickLook as QuickLook exposing (Zoom(..))
 import Feature.Shortcuts as Shortcuts
 import Feature.Survey as Survey
+import Feature.UploadQueue as UploadQueue
 import Html exposing (Html, button, div, footer, h1, header, p, span, text)
 import Html.Attributes exposing (attribute, class, classList, id, tabindex, title, type_)
 import Html.Events exposing (onClick, preventDefaultOn)
@@ -138,6 +139,19 @@ type alias Model =
     , savedSearchFallback : Bool
     , savedSearchSaving : Bool
     , savedSearchStatus : Maybe String
+    , upload : UploadQueue.Model
+    , uploadedPosts : Dict String PostSummary
+    , uploadOrigin : Maybe UploadOrigin
+    }
+
+
+{-| The result set an upload View navigated away from. Restored when the
+user returns to the grid so View never corrupts the originating search
+or collection.
+-}
+type alias UploadOrigin =
+    { sequence : Sequence
+    , selection : Selection
     }
 
 
@@ -221,6 +235,9 @@ init flagsValue url key =
             , savedSearchFallback = False
             , savedSearchSaving = False
             , savedSearchStatus = Nothing
+            , upload = UploadQueue.init
+            , uploadedPosts = Dict.empty
+            , uploadOrigin = Nothing
             }
     in
     let
@@ -318,6 +335,7 @@ type Msg
     | SaveSearch
     | RemoveSavedSearch String
     | SyncUrl Int
+    | UploadMsg UploadQueue.Msg
     | NoOp
 
 
@@ -483,7 +501,14 @@ updateHelp msg model =
 
         DetailCompleted postId result ->
             ( { model
-                | details =
+                | sequence =
+                    case result of
+                        Ok detail ->
+                            Sequence.refreshSummary (summaryOfDetail detail) model.sequence
+
+                        Err _ ->
+                            model.sequence
+                , details =
                     Dict.insert postId
                         (case result of
                             Ok detail ->
@@ -1026,8 +1051,94 @@ updateHelp msg model =
             else
                 ( model, Cmd.none )
 
+        UploadMsg subMsg ->
+            let
+                ( queue, queueCmd, outs ) =
+                    UploadQueue.update model.apiBase subMsg model.upload
+
+                withQueue =
+                    { model | upload = queue }
+
+                focusCmd =
+                    case subMsg of
+                        UploadQueue.OpenPanel ->
+                            focusLater "upload-tags"
+
+                        _ ->
+                            Cmd.none
+            in
+            handleUploadOuts outs ( withQueue, Cmd.batch [ Cmd.map UploadMsg queueCmd, focusCmd ] )
+
         NoOp ->
             ( model, Cmd.none )
+
+
+{-| Upload queue effects keep the Library stable: the query, collection,
+selection, and scroll position are never touched here. Confirmed uploads
+stay in the queue and detail caches; sequence members are refreshed in
+place, but new posts are never injected into filtered searches or
+collection results.
+-}
+handleUploadOuts : List UploadQueue.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleUploadOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleUploadOuts rest (applyUploadOut out ( model, cmd ))
+
+
+applyUploadOut : UploadQueue.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyUploadOut out ( model, cmd ) =
+    case out of
+        UploadQueue.UploadConfirmed detail ->
+            ( { model
+                | sequence = Sequence.refreshSummary (summaryOfDetail detail) model.sequence
+                , details = Dict.insert detail.id (DetailReady detail) model.details
+                , uploadedPosts = Dict.insert detail.id (summaryOfDetail detail) model.uploadedPosts
+                , tagVersions = Dict.insert detail.id detail.tagVersion model.tagVersions
+                , reactionVersions = Dict.insert detail.id detail.reactionVersion model.reactionVersions
+              }
+            , cmd
+            )
+
+        UploadQueue.ThumbCompleted postId ->
+            ( model
+            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted postId) ]
+            )
+
+        UploadQueue.OpenPost postId ->
+            case Dict.get postId model.uploadedPosts of
+                Just summary ->
+                    openUploadPost postId summary ( model, cmd )
+
+                Nothing ->
+                    ( { model | hint = Just "That upload is no longer available." }, cmd )
+
+
+{-| View navigates to the uploaded post on a transient single-post
+sequence, saving the originating result set first. Returning to the
+grid restores the origin untouched.
+-}
+openUploadPost : String -> PostSummary -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+openUploadPost postId summary ( model, cmd ) =
+    let
+        origin =
+            case model.uploadOrigin of
+                Just saved ->
+                    Just saved
+
+                Nothing ->
+                    Just { sequence = model.sequence, selection = model.selection }
+    in
+    openMode Loupe
+        { model
+            | sequence = Sequence.fromList [ summary ]
+            , selection = Selection.setActive postId Selection.empty
+            , uploadOrigin = origin
+        }
+        |> withCmd cmd
 
 
 runCommand : Command -> Model -> ( Model, Cmd Msg )
@@ -1139,7 +1250,10 @@ runCommand command model =
                 exitToGrid model
 
         Escape ->
-            if drawersOpen model then
+            if UploadQueue.isOpen model.upload then
+                ( { model | upload = UploadQueue.setOpen False model.upload }, Cmd.none )
+
+            else if drawersOpen model then
                 ( { model | navigatorDrawer = False, inspectorDrawer = False }, Cmd.none )
 
             else if model.mode /= Grid then
@@ -1332,6 +1446,7 @@ resultsArrived response model =
                 , search = Ready
                 , recent = remember model.query model.recent
                 , pendingRoute = Nothing
+                , uploadOrigin = Nothing
             }
 
         top =
@@ -1386,6 +1501,7 @@ collectionResultsArrived collectionId response model =
                 , collectionBrowse = Just collectionId
                 , pendingRoute = Nothing
                 , viewport = setScroll 0 model.viewport
+                , uploadOrigin = Nothing
             }
     in
     ( updated, scrollGridLater 0 )
@@ -1594,23 +1710,33 @@ openMode mode model =
 
 {-| Back to the grid at the exact saved scroll offset, unless the active post
 moved out of that view, in which case scroll the minimum distance to reveal it.
+An upload View origin is restored first so the originating result set comes
+back untouched.
 -}
 exitToGrid : Model -> ( Model, Cmd Msg )
 exitToGrid model =
     let
+        restored =
+            case model.uploadOrigin of
+                Just origin ->
+                    { model | sequence = origin.sequence, selection = origin.selection, uploadOrigin = Nothing }
+
+                Nothing ->
+                    model
+
         returnPoint =
-            Maybe.withDefault { scrollTop = model.viewport.scrollTop, activeAtEntry = Nothing } model.returnPoint
+            Maybe.withDefault { scrollTop = restored.viewport.scrollTop, activeAtEntry = Nothing } restored.returnPoint
 
         g =
-            geometry model
+            geometry restored
 
         saved =
-            setScroll returnPoint.scrollTop model.viewport
+            setScroll returnPoint.scrollTop restored.viewport
 
         top =
-            case activeIndex model of
+            case activeIndex restored of
                 Just index ->
-                    if model.selection.active == returnPoint.activeAtEntry || Layout.isFullyVisible g saved index then
+                    if restored.selection.active == returnPoint.activeAtEntry || Layout.isFullyVisible g saved index then
                         returnPoint.scrollTop
 
                     else
@@ -1619,10 +1745,10 @@ exitToGrid model =
                 Nothing ->
                     returnPoint.scrollTop
     in
-    ( { model | mode = Grid, returnPoint = Nothing, zoom = Fit, viewport = setScroll top model.viewport }
+    ( { restored | mode = Grid, returnPoint = Nothing, zoom = Fit, viewport = setScroll top restored.viewport }
     , Cmd.batch
         [ Task.attempt (\_ -> NoOp) (Dom.setViewportOf MediaGrid.elementId 0 top)
-        , case model.selection.active of
+        , case restored.selection.active of
             Just postId ->
                 focusLater (MediaGrid.cellId postId)
 
@@ -2747,6 +2873,7 @@ subscriptions model =
                                 Decode.fail "unhandled key"
                     )
             )
+        , Sub.map UploadMsg (UploadQueue.subscriptions model.upload)
         ]
 
 
@@ -2798,6 +2925,7 @@ shell model =
                 , stage model
                 ]
             , inspectorView model
+            , Html.map UploadMsg (UploadQueue.view model.upload)
             ]
         , statusBar model
         , if model.shortcutsOpen then
@@ -2827,6 +2955,7 @@ topBar model =
             , modeButton model "Compare" "C" OpenCompare (isCompare model.mode)
             , modeButton model "Survey" "N" OpenSurvey (isSurvey model.mode)
             ]
+        , uploadButton model
         , Ui.Button.view [ class "button-quiet" ]
             { label = "Info"
             , key = Just "I"
@@ -2835,6 +2964,37 @@ topBar model =
             , hint = Just "Toggle inspector"
             }
         ]
+
+
+uploadButton : Model -> Html Msg
+uploadButton model =
+    let
+        pending =
+            UploadQueue.pendingCount model.upload
+
+        label =
+            if pending == 0 then
+                "Upload"
+
+            else
+                "Upload (" ++ String.fromInt pending ++ ")"
+    in
+    Ui.Button.view [ class "button-quiet" ]
+        { label = label
+        , key = Nothing
+        , onPress =
+            Just
+                (UploadMsg
+                    (if UploadQueue.isOpen model.upload then
+                        UploadQueue.ClosePanel
+
+                     else
+                        UploadQueue.OpenPanel
+                    )
+                )
+        , pressed = Just (UploadQueue.isOpen model.upload)
+        , hint = Just "Upload images"
+        }
 
 
 modeButton : Model -> String -> String -> Command -> Bool -> Html Msg

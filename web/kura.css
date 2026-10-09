@@ -615,3 +615,62 @@ button.chip:hover { border-color: var(--accent); }
 .chip-removed { background: #fbe4e0; border-color: #e2a99f; color: #6b2a20; text-decoration: line-through; }
 .chip-result { background: var(--paper); border-color: var(--rule); }
 .status-info { color: var(--accent); }
+
+/* Upload panel */
+
+.upload-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 348px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 16px);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / .18);
+}
+.upload-panel .panel-body { min-height: 0; }
+.upload-field { margin-bottom: var(--space-2); }
+.upload-label { display: block; margin-bottom: 2px; color: var(--ink-muted); font-size: 12px; }
+.upload-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: #fff;
+  font-size: 13px;
+  user-select: text;
+}
+.upload-input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+.upload-queue { display: flex; flex-direction: column; gap: 8px; margin: var(--space-2) 0; padding: 0; list-style: none; }
+.upload-item { padding: 8px 10px; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); }
+.upload-item-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.upload-name { flex: 1; min-width: 0; overflow: hidden; font-weight: 600; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.upload-size { flex: none; color: var(--ink-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.upload-phase {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.upload-phase[data-phase="Uploaded"] { border-color: var(--accent); background: var(--accent-tint); }
+.upload-phase[data-phase="Rejected"], .upload-phase[data-phase="Failed"] { border-color: var(--danger); color: var(--danger); }
+.upload-progress { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.upload-bar { flex: 1; height: 8px; accent-color: var(--accent); }
+.upload-percent { min-width: 36px; color: var(--ink-muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.upload-note { margin: 6px 0 0; color: var(--ink-muted); font-size: 12px; }
+.upload-error { margin: 6px 0 0; color: var(--danger); font-size: 12px; }
+.upload-item-actions { display: flex; gap: 4px; margin-top: 6px; }
+.upload-item-actions .button { min-height: 24px; padding: 0 8px; font-size: 12px; }
+
+@media (max-width: 759px) {
+  .upload-panel { top: 0; right: 0; width: 100%; max-width: none; max-height: 70%; border-radius: 0; border-left: 0; border-right: 0; border-top: 0; }
+}

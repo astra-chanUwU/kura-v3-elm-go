@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder)
+module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -39,6 +39,8 @@ type alias PostDetail =
     , reactionVersion : Int
     , history : List TagRevision
     , reactionHistory : List ReactionRevision
+    , derivativeJobId : Maybe String
+    , derivativeStatus : Maybe String
     }
 
 
@@ -129,6 +131,8 @@ detailDecoder =
                 , reactionVersion = 0
                 , history = []
                 , reactionHistory = []
+                , derivativeJobId = Nothing
+                , derivativeStatus = Nothing
                 }
             )
             (Decode.field "id" Decode.string)
@@ -146,8 +150,8 @@ detailDecoder =
         (Decode.field "tags" (Decode.list Decode.string))
         |> Decode.andThen
             (\detail ->
-                Decode.map6
-                    (\tagVersion history favorite score reactionVersion reactionHistory ->
+                Decode.map8
+                    (\tagVersion history favorite score reactionVersion reactionHistory derivativeJobId derivativeStatus ->
                         { detail
                             | tagVersion = tagVersion
                             , history = history
@@ -155,6 +159,8 @@ detailDecoder =
                             , score = score
                             , reactionVersion = reactionVersion
                             , reactionHistory = reactionHistory
+                            , derivativeJobId = derivativeJobId
+                            , derivativeStatus = derivativeStatus
                         }
                     )
                     (Decode.oneOf [ Decode.field "tag_version" Decode.int, Decode.succeed 0 ])
@@ -163,7 +169,18 @@ detailDecoder =
                     (Decode.oneOf [ Decode.field "score" Decode.int, Decode.succeed 0 ])
                     (Decode.oneOf [ Decode.field "reaction_version" Decode.int, Decode.succeed 0 ])
                     (Decode.oneOf [ Decode.field "reaction_history" (Decode.list reactionRevisionDecoder), Decode.succeed [] ])
+                    (Decode.oneOf [ Decode.field "derivative_job_id" Decode.string, Decode.succeed "" ] |> Decode.map emptyToNothing)
+                    (Decode.oneOf [ Decode.field "derivative_status" Decode.string, Decode.succeed "" ] |> Decode.map emptyToNothing)
             )
+
+
+emptyToNothing : String -> Maybe String
+emptyToNothing value =
+    if String.trim value == "" then
+        Nothing
+
+    else
+        Just value
 
 
 decoder : Decoder PostSummary
@@ -248,3 +265,18 @@ reactionRevisionDecoder =
         (Decode.field "favorite" Decode.bool)
         (Decode.field "score" Decode.int)
         (Decode.field "created_at" Decode.string)
+
+
+{-| The grid-cache projection of a detail record. Upload confirmations and
+thumbnail refreshes use it to update cached previews in place.
+-}
+summaryOfDetail : PostDetail -> PostSummary
+summaryOfDetail detail =
+    { id = detail.id
+    , previewUrl = detail.previewUrl
+    , originalUrl = detail.originalUrl
+    , mediaType = detail.mediaType
+    , width = detail.width
+    , height = detail.height
+    , tags = detail.tags
+    }
