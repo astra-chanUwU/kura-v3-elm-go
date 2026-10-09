@@ -50,6 +50,7 @@ func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handl
 	r.Delete("/api/saved-searches/{id}", deleteSavedSearch(searchers...))
 	r.Get("/api/collections", listCollections(searchers...))
 	r.Post("/api/collections", createCollection(searchers...))
+	r.Get("/api/jobs/{id}", getJobStatus(searchers...))
 	r.Get("/api/collections/{id}/posts", searchCollectionPosts(searchers...))
 	r.Post("/api/collections/{id}/posts", addCollectionPosts(searchers...))
 	r.Delete("/api/collections/{id}/posts/{postID}", removeCollectionPost(searchers...))
