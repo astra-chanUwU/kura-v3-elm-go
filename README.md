@@ -1,58 +1,117 @@
-# Kura V3
+# Kura
 
-Kura is an imageboard and media-management application. This repository is the small foundation for the V3 Elm and Go implementation.
+An imageboard and media library built with Elm, Go, and PostgreSQL.
 
-## Initial boundaries
+- Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
+- Search by tags and metadata; save searches and organize posts into ordered collections.
+- Edit tags, revert revisions, set favorites, and score posts.
+- Upload JPEG, PNG, and GIF files, up to 25 MiB each, with a sequential queue and transfer progress.
+- Generate thumbnails through durable PostgreSQL jobs with retries and crash recovery.
+- Moderate posts through the API. Hidden, rejected, and deleted posts are excluded from public browsing and local media access.
 
-- **Elm** owns browser state, routing, search and media-management interaction.
-- **Go** owns the HTTP API and domain behavior. The routing and database stack is chi, pgx, and handwritten SQL over PostgreSQL; generated query code is deferred until the domain contract settles.
-- **PostgreSQL** will be durable structured truth. Large media will live behind an S3-compatible object-store abstraction.
-- **Redis, realtime transports, Rust services, queues, and deployment infrastructure** are deliberately deferred until a concrete product requirement needs them.
-- **The `kura` CLI** uses the same HTTP API as Elm. It supports `kura search`, collection listing/browsing, and collection create/add/remove/reorder mutations with human, JSON, and JSONL output.
+## Run locally
 
-The first product slice is a local search path into a Lightroom-style Library workspace: a virtualized MediaGrid with adjustable density, separate active post and multi-selection, Quick Look (Loupe), Compare, Survey, a Filmstrip, an Inspector, and keyboard navigation throughout (`?` lists the shortcuts), plus CLI access. The workspace design is in `docs/frontend-design.md`. Post details, optimistic tag editing with revert, favorites, scores, ordered collections, collection browsing, and a bounded KuraQL filter subset are live.
-
-## Repository layout
-
-```text
-web/       Elm application
-server/    Go HTTP server and future domain packages
-cli/       CLI entry point reserved for the shared HTTP API client
-db/        PostgreSQL migrations and handwritten SQL queries
-scripts/   small repository scripts
-docs/      architecture and domain notes
-```
-
-## Run the local slice
-
-From the repository root:
+Requires Go 1.27+, Elm 0.19.2, PostgreSQL, `psql`, and Python 3. Create a database and set its connection URL, then run these from the repo root:
 
 ```sh
-export DATABASE_URL='postgres://USER:PASSWORD@localhost:5432/kura_v3_dev?sslmode=disable'
-make db-migrate       # applies schema only; safe to run before the server
-make db-seed          # explicitly loads deterministic development rows
-make server-run       # listens on HTTP_ADDR (default :8080)
-make web-build        # writes web/dist/elm.js
-make web-serve        # serves web/ on http://localhost:8000
-go -C cli run ./cmd/kura search --json "cat demo"
+export DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_v3_dev?sslmode=disable'
+make db-migrate
+make web-build
 ```
 
-`make db-migrate` and `make db-seed` require both `DATABASE_URL` and the PostgreSQL `psql` client. `make db-setup` runs both commands for a fresh development database. Migrations never load or reset application data. The seed uses stable `/media/demo/...` URL paths served by the local fixture route described below.
+For the existing local OrbStack database, use port `55432` and the `kura` user/password.
 
-The repository includes twelve small demo fixtures under `web/static/media/demo`, one copied from each supplied sample folder. They are development-only files totaling about 1.5 MB. The seed includes matching deterministic rows with the source folder name in `search_text`, so queries such as `kson` or `Ruin Explorers` return an image that the grid can load.
+Start the API:
 
-The Go server serves `/media/...` from `MEDIA_ROOT`. When `MEDIA_ROOT` is unset, the documented `make server-run` command uses `../web/static/media` relative to the `server` module. Set `MEDIA_ROOT` to point at another local fixture directory when needed. The route uses Go's `http.FileServer` rooted at that directory and is intended for local demo media only; it does not provide production media storage.
+```sh
+make server-run
+```
 
-The health endpoint is `GET http://localhost:8080/health` and returns a small JSON status response. Search uses `GET /api/posts?q=cat` and returns post summaries from visible rows. Empty or whitespace-only queries browse the newest visible rows using the same cursor pagination. Queries longer than 256 characters return `400`; an unconfigured database returns `503` and other storage failures return `500`. Search uses PostgreSQL's forgiving web search parser, which accepts ordinary multiword queries.
+In another terminal, start the frontend:
 
-Set `KURA_API_TOKEN` on the server to require a bearer token for all API
-mutations (`POST` and `DELETE`). Reads, health, and media remain public for
-the local browser workflow. The CLI reads the same variable and sends
-`Authorization: Bearer ...` on mutation requests automatically; leaving it
-unset preserves the open local-development mode.
+```sh
+make web-serve
+```
 
-The CLI uses the same endpoint and accepts `--json`, `--jsonl`, `--api-url`, `KURA_API_URL`, `--limit`, and `--cursor` for both filtered search and newest browse.
+Open [localhost:8000](http://localhost:8000). The frontend connects to the API at `http://localhost:8080`; its address is set in `web/index.html`.
 
-## Next milestone
+Optional demo data:
 
-The first search-to-MediaGrid slice is wired through PostgreSQL, the CLI, and local demo media. KuraQL now has a typed parser boundary, tag-aware predicates, richer field filters, `order:score`, and sort-aware query-bound cursors. A bounded local upload path accepts JPEG, PNG, and GIF files, extracts dimensions, stores content-addressed originals, and creates searchable post records. Upload persistence now goes through the `media.Store` provider boundary; the default remains an idempotent local filesystem store, while remote object storage can be added behind that interface. Authentication, moderation, and durable jobs remain the next product slices.
+```sh
+make db-seed
+```
+
+The seed loads demo posts and replaces existing demo rows. Three sample rows have no matching image files and display placeholders. Migration commands do not seed data.
+
+## Using the library
+
+Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe for originals, Compare for two posts, and Survey for a small selection. Press `?` for keyboard shortcuts.
+
+The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
+
+An empty search browses newest posts. Examples:
+
+```text
+demo -kson
+tag:cat -tag:dog
+favorite:true score:>=5
+width:>=1200 media_type:image/jpeg
+artist:"Kura Demo" order:score
+```
+
+Numeric filters require an operator: `score:>=5`, `width:<1200`, or `id:=2004`.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection URL. |
+| `HTTP_ADDR` | API listen address; default `:8080`. |
+| `MEDIA_ROOT` | Local media directory; default `web/static/media` when using `make server-run`. |
+| `KURA_API_TOKEN` | Require a bearer token for API writes. Unset means open local mode. |
+| `KURA_API_URL` | CLI API address; default `http://localhost:8080`. |
+
+Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
+
+Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
+
+The CLI sends `KURA_API_TOKEN` on writes. The browser currently has no token-entry or user-login screen, so browser uploads and edits use open local mode. There is no password, OAuth, or passkey login flow yet.
+
+## CLI
+
+```sh
+go -C cli run ./cmd/kura search --json 'tag:cat score:>=5'
+go -C cli run ./cmd/kura post show 2004
+go -C cli run ./cmd/kura collection list
+go -C cli run ./cmd/kura collection posts 1
+go -C cli run ./cmd/kura --help
+```
+
+Commands support `--json`, `--jsonl`, and `--api-url`. Search also supports `--limit` and `--cursor`. Run a command with `--help` for tag, favorite, score, and collection mutations.
+
+## Checks
+
+```sh
+make check
+go -C server test ./...
+go -C server vet ./...
+curl http://localhost:8080/health
+```
+
+`make check` builds the server and frontend and tests/builds the CLI. PostgreSQL-backed server tests require `KURA_TEST_DATABASE_URL` pointing to a disposable database; they truncate test tables. Run them serially across packages:
+
+```sh
+KURA_TEST_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_test?sslmode=disable' \
+  go -C server test -p 1 ./...
+```
+
+## Code
+
+```text
+web/       Elm frontend and CSS
+server/    Go API, media storage, and job worker
+cli/       Command-line client
+db/        PostgreSQL migrations and demo seed
+scripts/   Database commands
+docs/      Design and architecture notes
+```
