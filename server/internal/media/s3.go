@@ -195,6 +195,39 @@ func (s *S3Store) Put(ctx context.Context, key, contentType string, content io.R
 	return s.object(key, contentType, int64(len(data)), true), nil
 }
 
+// Open streams the stored bytes for key through the S3 HTTP API. The
+// caller must close the body. A missing object is a plain not-found error;
+// callers map it to job failure.
+func (s *S3Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	u := s.requestURL(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
+	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
+	s.signRequest(req, emptyHash)
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		return resp.Body, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("media object not found: %s", key)
+	}
+	return nil, fmt.Errorf("s3 get %s: %d %s", key, resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
 func (s *S3Store) Delete(ctx context.Context, key string) error {
 	if err := validateKey(key); err != nil {
 		return err

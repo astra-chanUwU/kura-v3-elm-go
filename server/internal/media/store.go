@@ -23,10 +23,18 @@ type Object struct {
 }
 
 // Store owns durable media bytes. Keys are provider-relative and must use
-// slash-separated paths. Put is idempotent for an existing key.
+// slash-separated paths. Put is idempotent for an existing key. Open is
+// the read side of the same boundary: derivative processing reads
+// originals through it, never through provider-local paths.
 type Store interface {
 	Put(ctx context.Context, key, contentType string, content io.Reader) (Object, error)
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
+}
+
+// Reader is the read-only facet of Store used by derivative processing.
+type Reader interface {
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
 // LocalStore stores objects below Root and exposes them through URLPrefix.
@@ -92,6 +100,29 @@ func (s *LocalStore) Put(ctx context.Context, key, contentType string, content i
 		return Object{}, err
 	}
 	return s.object(key, contentType, info.Size(), true), nil
+}
+
+// Open returns the stored bytes for key. The caller must close the body.
+// A missing object is a plain error; callers map it to job failure.
+func (s *LocalStore) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	file, err := os.Open(filepath.Join(s.Root, filepath.FromSlash(key)))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("media object not found: %s", key)
+		}
+		return nil, err
+	}
+	if info, err := file.Stat(); err != nil {
+		_ = file.Close()
+		return nil, err
+	} else if info.IsDir() {
+		_ = file.Close()
+		return nil, fmt.Errorf("media object path is a directory: %s", key)
+	}
+	return file, nil
 }
 
 func (s *LocalStore) Delete(ctx context.Context, key string) error {

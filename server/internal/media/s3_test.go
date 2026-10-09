@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -58,6 +59,28 @@ func (f *fakeS3Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		key = decoded
 	}
 	switch req.Method {
+	case http.MethodGet:
+		data, ok := f.objects[key]
+		if !ok {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader("not found")),
+				Request:    req,
+			}, nil
+		}
+		h := http.Header{}
+		h.Set("Content-Length", fmt.Sprint(len(data)))
+		if ct, ok := f.contentTypes[key]; ok && ct != "" {
+			h.Set("Content-Type", ct)
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        h,
+			Body:          io.NopCloser(bytes.NewReader(data)),
+			ContentLength: int64(len(data)),
+			Request:       req,
+		}, nil
 	case http.MethodHead:
 		f.headCount++
 		if f.forceHeadErr != 0 {
