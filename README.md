@@ -11,7 +11,9 @@ An imageboard and media library built with Elm, Go, and PostgreSQL.
 
 ## Run locally
 
-Requires Go 1.27+, Elm 0.19.2, PostgreSQL, `psql`, and Python 3. Create a database and set its connection URL, then run these from the repo root:
+You need Go 1.27+, Elm 0.19.2, and a running PostgreSQL database. The database commands below use `psql`, PostgreSQL's command-line client.
+
+Create a database and set its connection URL, then run these from the repo root:
 
 ```sh
 export DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_v3_dev?sslmode=disable'
@@ -33,6 +35,8 @@ In another terminal, start the frontend:
 make web-serve
 ```
 
+This Makefile command runs `python3 -m http.server 8000 --directory web`, so it needs Python 3. It serves the built HTML, CSS, and JavaScript for local development; the API runs in Go.
+
 Open [localhost:8000](http://localhost:8000). The frontend connects to the API at `http://localhost:8080`; its address is set in `web/index.html`.
 
 Optional demo data:
@@ -49,17 +53,21 @@ Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe 
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
 
-An empty search browses newest posts. Examples:
+Type a query into the search bar and press Enter. Leave it blank to browse all visible posts, newest first.
 
-```text
-demo -kson
-tag:cat -tag:dog
-favorite:true score:>=5
-width:>=1200 media_type:image/jpeg
-artist:"Kura Demo" order:score
-```
+Plain words search the post's text. Use `tag:` to match a specific tag. Put filters together with spaces to narrow the results:
 
-Numeric filters require an operator: `score:>=5`, `width:<1200`, or `id:=2004`.
+| To find | Enter |
+| --- | --- |
+| Posts containing the word "cat" | `cat` |
+| Posts tagged "cat" | `tag:cat` |
+| Posts tagged "cat", excluding those tagged "dog" | `tag:cat -tag:dog` |
+| Favorites with a score of at least 5 | `favorite:true score:>=5` |
+| JPEG images at least 1200 pixels wide | `media_type:image/jpeg width:>=1200` |
+| Posts tagged "cat", highest score first | `tag:cat order:score` |
+| The post with ID 2004 | `id:=2004` |
+
+For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than", `<` means "less than", and `=` means "exactly". For example, `width:<1200` finds images narrower than 1200 pixels. Write `score:=5` for exactly 5; `score:5` is not accepted.
 
 ## Configuration
 
