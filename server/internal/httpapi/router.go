@@ -35,6 +35,7 @@ func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handl
 	r.Use(localDevCORS)
 	r.Use(requireWriteCapability(strings.TrimSpace(apiToken)))
 	r.Get("/health", health)
+	r.Get("/api/capabilities", capabilities(strings.TrimSpace(apiToken)))
 	r.Get("/api/posts", searchPosts(searchers...))
 	r.Get("/api/posts/moderation", listModerationQueue(searchers...))
 	r.Get("/api/posts/{id}", postDetail(searchers...))
@@ -74,7 +75,7 @@ func localDevCORS(next http.Handler) http.Handler {
 			w.Header().Add("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.WriteHeader(http.StatusNoContent)
 			return
