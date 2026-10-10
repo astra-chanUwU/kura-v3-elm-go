@@ -14,6 +14,9 @@ type Collection struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	PostIDs []string `json:"post_ids"`
+	// Version is the membership/order version: every effective
+	// add/remove/reorder increments it, no-ops leave it unchanged.
+	Version int64 `json:"version"`
 }
 
 type CreateCollectionRequest struct {
@@ -32,11 +35,24 @@ type CollectionReader interface {
 	ListCollections(context.Context) ([]Collection, error)
 }
 
+// CollectionPostsPage is the response body for
+// GET /api/collections/{id}/posts. NextCursor is null when there is no
+// next page. CollectionVersion is the membership/order version observed by
+// the same database snapshot that produced the page; clients echo it back
+// inside the opaque cursor so concurrent changes surface as conflicts
+// instead of silent gaps or duplicates.
+type CollectionPostsPage struct {
+	Posts             []PostSummary `json:"posts"`
+	NextCursor        *string       `json:"next_cursor"`
+	CollectionVersion int64         `json:"collection_version"`
+}
+
 // CollectionPostSearcher returns visible collection members in their saved
-// collection order. The limit is bounded by the HTTP layer to keep this
-// browse slice a single, predictable page.
+// collection order using versioned keyset pagination. A nil cursor starts
+// from the beginning; a non-nil cursor continues after its (position,
+// post_id) key at the exact collection version it was issued for.
 type CollectionPostSearcher interface {
-	SearchCollectionPosts(context.Context, string, int) (SearchPage, error)
+	SearchCollectionPosts(context.Context, string, *CollectionCursor, int) (CollectionPostsPage, error)
 }
 
 type CollectionMutator interface {
@@ -76,9 +92,9 @@ func ValidateAddCollectionPosts(request AddCollectionPostsRequest) (AddCollectio
 }
 
 func ValidateReorderCollection(request ReorderCollectionRequest) (ReorderCollectionRequest, error) {
-	if len(request.PostIDs) > maxCollectionPosts {
-		return ReorderCollectionRequest{}, fmt.Errorf("%w: post_ids must contain at most %d ids", ErrInvalidCollections, maxCollectionPosts)
-	}
+	// No length cap here: maxCollectionPosts bounds a single add request,
+	// not the total collection size, and reorder carries full membership.
+	// Oversized reorder payloads are still bounded by decodeJSONBody.
 	seen := make(map[string]struct{}, len(request.PostIDs))
 	ids := make([]string, len(request.PostIDs))
 	for i, raw := range request.PostIDs {

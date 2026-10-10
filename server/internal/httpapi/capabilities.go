@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -49,4 +50,11 @@ func capabilities(apiToken string) http.HandlerFunc {
 			Actor:             &system,
 		})
 	}
+}
+
+func health(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Status string `json:"status"`
+	}{Status: "ok"})
 }

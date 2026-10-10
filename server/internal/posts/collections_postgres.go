@@ -20,7 +20,7 @@ func (s *PostgresSearcher) ListCollections(ctx context.Context) ([]Collection, e
 	collections := make([]Collection, 0)
 	for rows.Next() {
 		var collection Collection
-		if err := rows.Scan(&collection.ID, &collection.Name, &collection.PostIDs); err != nil {
+		if err := rows.Scan(&collection.ID, &collection.Name, &collection.Version, &collection.PostIDs); err != nil {
 			return nil, err
 		}
 		if collection.PostIDs == nil {
@@ -35,40 +35,90 @@ func (s *PostgresSearcher) ListCollections(ctx context.Context) ([]Collection, e
 }
 
 // SearchCollectionPosts returns at most limit visible members in collection
-// order. Collection browsing deliberately has no cursor: collections are
-// bounded and this endpoint is a single MediaGrid load.
-func (s *PostgresSearcher) SearchCollectionPosts(ctx context.Context, collectionID string, limit int) (SearchPage, error) {
+// order with the version observed by the same snapshot. The version and the
+// rows come from one repeatable-read transaction, so a concurrent mutation
+// cannot slip between the version check and the page. A cursor issued for
+// an older version fails with ErrCollectionChanged; callers answer 409 and
+// the client restarts from the first page.
+func (s *PostgresSearcher) SearchCollectionPosts(ctx context.Context, collectionID string, cursor *CollectionCursor, limit int) (CollectionPostsPage, error) {
 	if s == nil || s.pool == nil {
-		return SearchPage{}, ErrUnavailable
+		return CollectionPostsPage{}, ErrUnavailable
 	}
 	if limit < 1 || limit > 60 {
-		return SearchPage{}, ErrInvalidQuery
+		return CollectionPostsPage{}, ErrInvalidQuery
 	}
 	id, err := collectionIDValue(collectionID)
 	if err != nil {
-		return SearchPage{}, err
+		return CollectionPostsPage{}, err
 	}
-	var exists int
-	if err := s.pool.QueryRow(ctx, collectionExistsSQL, id).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
-		return SearchPage{}, ErrNotFound
-	} else if err != nil {
-		return SearchPage{}, err
+	if cursor != nil && cursor.CollectionID != id {
+		return CollectionPostsPage{}, ErrInvalidCursor
 	}
-	rows, err := s.pool.Query(ctx, searchCollectionPostsSQL, id, limit)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return SearchPage{}, err
+		return CollectionPostsPage{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var version int64
+	if err := tx.QueryRow(ctx, collectionVersionSQL, id).Scan(&version); errors.Is(err, pgx.ErrNoRows) {
+		return CollectionPostsPage{}, ErrNotFound
+	} else if err != nil {
+		return CollectionPostsPage{}, err
+	}
+	if cursor != nil && cursor.Version != version {
+		return CollectionPostsPage{}, ErrCollectionChanged
+	}
+	var cursorPosition, cursorPostID any
+	if cursor != nil {
+		cursorPosition, cursorPostID = cursor.Position, cursor.PostID
+	}
+	rows, err := tx.Query(ctx, searchCollectionPostsSQL, id, cursorPosition, cursorPostID, limit+1)
+	if err != nil {
+		return CollectionPostsPage{}, err
 	}
 	defer rows.Close()
-	page := SearchPage{Posts: make([]PostSummary, 0, limit)}
+	type positionedPost struct {
+		position int64
+		post     PostSummary
+	}
+	members := make([]positionedPost, 0, limit+1)
 	for rows.Next() {
-		var post PostSummary
-		if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags); err != nil {
-			return SearchPage{}, err
+		var member positionedPost
+		if err := rows.Scan(&member.position, &member.post.ID, &member.post.PreviewURL, &member.post.OriginalURL, &member.post.MediaType, &member.post.Width, &member.post.Height, &member.post.Tags); err != nil {
+			return CollectionPostsPage{}, err
 		}
-		page.Posts = append(page.Posts, post)
+		members = append(members, member)
 	}
 	if err := rows.Err(); err != nil {
-		return SearchPage{}, err
+		return CollectionPostsPage{}, err
+	}
+	page := CollectionPostsPage{Posts: make([]PostSummary, 0, limit), CollectionVersion: version}
+	hasMore := len(members) > limit
+	if hasMore {
+		members = members[:limit]
+	}
+	for _, member := range members {
+		page.Posts = append(page.Posts, member.post)
+	}
+	if err := overlayReadyPreviewsTx(ctx, tx, page.Posts); err != nil {
+		return CollectionPostsPage{}, err
+	}
+	if hasMore {
+		last := members[len(members)-1]
+		var lastID int64
+		if parsed, err := strconv.ParseInt(last.post.ID, 10, 64); err != nil || parsed <= 0 {
+			return CollectionPostsPage{}, ErrInvalidQuery
+		} else {
+			lastID = parsed
+		}
+		token, err := EncodeCollectionCursor(id, version, last.position, lastID)
+		if err != nil {
+			return CollectionPostsPage{}, err
+		}
+		page.NextCursor = &token
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CollectionPostsPage{}, err
 	}
 	return page, nil
 }
@@ -82,7 +132,7 @@ func (s *PostgresSearcher) CreateCollection(ctx context.Context, request CreateC
 		return Collection{}, err
 	}
 	var collection Collection
-	err = s.pool.QueryRow(ctx, insertCollectionSQL, validated.Name).Scan(&collection.ID, &collection.Name)
+	err = s.pool.QueryRow(ctx, insertCollectionSQL, validated.Name).Scan(&collection.ID, &collection.Name, &collection.Version)
 	if err != nil {
 		return Collection{}, err
 	}
@@ -102,8 +152,13 @@ func (s *PostgresSearcher) AddCollectionPosts(ctx context.Context, collectionID 
 	if err != nil {
 		return Collection{}, err
 	}
-	var exists int
-	if err := s.pool.QueryRow(ctx, collectionExistsSQL, id).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Collection{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var locked int64
+	if err := tx.QueryRow(ctx, lockCollectionSQL, id).Scan(&locked); errors.Is(err, pgx.ErrNoRows) {
 		return Collection{}, ErrNotFound
 	} else if err != nil {
 		return Collection{}, err
@@ -112,7 +167,16 @@ func (s *PostgresSearcher) AddCollectionPosts(ctx context.Context, collectionID 
 	for i, postID := range validated.PostIDs {
 		postIDs[i], _ = strconv.ParseInt(postID, 10, 64)
 	}
-	if _, err := s.pool.Exec(ctx, addCollectionPostSQL, id, postIDs); err != nil {
+	tag, err := tx.Exec(ctx, addCollectionPostSQL, id, postIDs)
+	if err != nil {
+		return Collection{}, err
+	}
+	if tag.RowsAffected() > 0 {
+		if _, err := tx.Exec(ctx, bumpCollectionVersionSQL, id); err != nil {
+			return Collection{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return Collection{}, err
 	}
 	return s.collectionByID(ctx, collectionID)
@@ -130,14 +194,27 @@ func (s *PostgresSearcher) RemoveCollectionPost(ctx context.Context, collectionI
 	if err != nil {
 		return ErrInvalidCollections
 	}
-	var exists int
-	if err := s.pool.QueryRow(ctx, collectionExistsSQL, cid).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var locked int64
+	if err := tx.QueryRow(ctx, lockCollectionSQL, cid).Scan(&locked); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, deleteCollectionPostSQL, cid, pid)
-	return err
+	tag, err := tx.Exec(ctx, deleteCollectionPostSQL, cid, pid)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		if _, err := tx.Exec(ctx, bumpCollectionVersionSQL, cid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresSearcher) ReorderCollection(ctx context.Context, collectionID string, request ReorderCollectionRequest) (Collection, error) {
@@ -157,20 +234,21 @@ func (s *PostgresSearcher) ReorderCollection(ctx context.Context, collectionID s
 		return Collection{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var exists int
-	if err := tx.QueryRow(ctx, collectionExistsSQL, cid).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
+	var locked int64
+	if err := tx.QueryRow(ctx, lockCollectionSQL, cid).Scan(&locked); errors.Is(err, pgx.ErrNoRows) {
 		return Collection{}, ErrNotFound
 	} else if err != nil {
 		return Collection{}, err
 	}
-	rows, err := tx.Query(ctx, collectionPostIDsSQL, cid)
+	rows, err := tx.Query(ctx, collectionOrderedMembersSQL, cid)
 	if err != nil {
 		return Collection{}, err
 	}
 	existing := []string{}
 	for rows.Next() {
 		var pid string
-		if err := rows.Scan(&pid); err != nil {
+		var position int64
+		if err := rows.Scan(&pid, &position); err != nil {
 			rows.Close()
 			return Collection{}, err
 		}
@@ -192,9 +270,21 @@ func (s *PostgresSearcher) ReorderCollection(ctx context.Context, collectionID s
 			return Collection{}, ErrInvalidCollections
 		}
 	}
-	for idx, raw := range validated.PostIDs {
-		pid, _ := strconv.ParseInt(raw, 10, 64)
-		if _, err := tx.Exec(ctx, `UPDATE collection_posts SET position=$3 WHERE collection_id=$1::bigint AND post_id=$2::bigint`, cid, pid, int64(idx)); err != nil {
+	unchanged := true
+	for idx, id := range validated.PostIDs {
+		if existing[idx] != id {
+			unchanged = false
+			break
+		}
+	}
+	if !unchanged {
+		for idx, raw := range validated.PostIDs {
+			pid, _ := strconv.ParseInt(raw, 10, 64)
+			if _, err := tx.Exec(ctx, `UPDATE collection_posts SET position=$3 WHERE collection_id=$1::bigint AND post_id=$2::bigint`, cid, pid, int64(idx)); err != nil {
+				return Collection{}, err
+			}
+		}
+		if _, err := tx.Exec(ctx, bumpCollectionVersionSQL, cid); err != nil {
 			return Collection{}, err
 		}
 	}

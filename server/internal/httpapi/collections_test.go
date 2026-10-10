@@ -21,14 +21,15 @@ type fakeCollections struct {
 
 type fakeCollectionPosts struct {
 	fakeCollections
-	result posts.SearchPage
+	result posts.CollectionPostsPage
 	err    error
 	id     string
+	cursor *posts.CollectionCursor
 	limit  int
 }
 
-func (f *fakeCollectionPosts) SearchCollectionPosts(_ context.Context, id string, limit int) (posts.SearchPage, error) {
-	f.id, f.limit = id, limit
+func (f *fakeCollectionPosts) SearchCollectionPosts(_ context.Context, id string, cursor *posts.CollectionCursor, limit int) (posts.CollectionPostsPage, error) {
+	f.id, f.cursor, f.limit = id, cursor, limit
 	return f.result, f.err
 }
 
@@ -102,18 +103,34 @@ func TestCollectionRoutes(t *testing.T) {
 }
 
 func TestCollectionPostsRoute(t *testing.T) {
-	fake := &fakeCollectionPosts{result: posts.SearchPage{Posts: []posts.PostSummary{{ID: "11"}, {ID: "10"}}}}
+	fake := &fakeCollectionPosts{result: posts.CollectionPostsPage{Posts: []posts.PostSummary{{ID: "11"}, {ID: "10"}}, CollectionVersion: 3}}
 	router := NewRouter(fake)
 	response := requestPath(t, router, "/api/collections/7/posts?limit=2")
 	if response.Code != http.StatusOK || fake.id != "7" || fake.limit != 2 {
 		t.Fatalf("browse: status=%d id=%q limit=%d", response.Code, fake.id, fake.limit)
 	}
-	var got posts.SearchPage
-	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+	if fake.cursor != nil {
+		t.Fatalf("first page sent cursor=%#v", fake.cursor)
+	}
+	body := response.Body.Bytes()
+	var got posts.CollectionPostsPage
+	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Posts) != 2 || got.Posts[0].ID != "11" || got.NextCursor != nil {
 		t.Fatalf("unexpected collection page: %#v", got)
+	}
+	if got.CollectionVersion != 3 {
+		t.Fatalf("collection version=%d want 3", got.CollectionVersion)
+	}
+	// The envelope stays additive: a legacy SearchPage decoder still reads
+	// the same posts and cursor from a versioned response.
+	var legacy posts.SearchPage
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		t.Fatalf("legacy decode: %v", err)
+	}
+	if len(legacy.Posts) != 2 || legacy.Posts[0].ID != "11" || legacy.NextCursor != nil {
+		t.Fatalf("legacy view diverged: %#v", legacy)
 	}
 	for _, path := range []string{"/api/collections/7/posts?limit=0", "/api/collections/7/posts?limit=61"} {
 		if response := requestPath(t, router, path); response.Code != http.StatusBadRequest {
@@ -123,6 +140,63 @@ func TestCollectionPostsRoute(t *testing.T) {
 	fake.err = posts.ErrNotFound
 	if response := requestPath(t, router, "/api/collections/7/posts"); response.Code != http.StatusNotFound {
 		t.Fatalf("missing collection status=%d", response.Code)
+	}
+}
+
+func TestCollectionPostsCursorValidation(t *testing.T) {
+	fake := &fakeCollectionPosts{result: posts.CollectionPostsPage{Posts: []posts.PostSummary{{ID: "11"}}}}
+	router := NewRouter(fake)
+	for _, path := range []string{
+		"/api/collections/7/posts?cursor=bad",
+		"/api/collections/7/posts?cursor=",
+	} {
+		if response := requestPath(t, router, path); response.Code != http.StatusBadRequest {
+			t.Errorf("%s: status=%d want 400", path, response.Code)
+		}
+	}
+	other, err := posts.EncodeCollectionCursor(8, 0, 0, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := requestPath(t, router, "/api/collections/7/posts?cursor="+other); response.Code != http.StatusBadRequest {
+		t.Fatalf("cross-collection cursor status=%d want 400", response.Code)
+	}
+	if fake.id != "" {
+		t.Fatalf("invalid cursors reached searcher for collection %q", fake.id)
+	}
+	valid, err := posts.EncodeCollectionCursor(7, 4, 0, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.id = ""
+	if response := requestPath(t, router, "/api/collections/7/posts?cursor="+valid); response.Code != http.StatusOK {
+		t.Fatalf("valid cursor status=%d want 200", response.Code)
+	}
+	if fake.cursor == nil || fake.cursor.CollectionID != 7 || fake.cursor.Version != 4 || fake.cursor.PostID != 11 {
+		t.Fatalf("cursor not forwarded: %#v", fake.cursor)
+	}
+}
+
+func TestCollectionPostsConflict(t *testing.T) {
+	fake := &fakeCollectionPosts{err: posts.ErrCollectionChanged}
+	router := NewRouter(fake)
+	valid, err := posts.EncodeCollectionCursor(7, 4, 0, 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := requestPath(t, router, "/api/collections/7/posts?cursor="+valid)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("stale version status=%d want 409", response.Code)
+	}
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error != "collection changed" || body.Code != "collection_changed" {
+		t.Fatalf("unexpected conflict body: %#v", body)
 	}
 }
 

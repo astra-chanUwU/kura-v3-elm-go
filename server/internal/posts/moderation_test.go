@@ -110,19 +110,20 @@ func TestValidateModerationQueue(t *testing.T) {
 // published, non-deleted rows.
 func TestVisibilitySQLCentralizesPublishedRule(t *testing.T) {
 	guarded := map[string]string{
-		"SearchPostsSQL":           SearchPostsSQL,
-		"SearchPostsScoreSQL":      SearchPostsScoreSQL,
-		"GetPostDetailSQL":         GetPostDetailSQL,
-		"lockPostForTagEditSQL":    lockPostForTagEditSQL,
-		"updatePostTagsSQL":        updatePostTagsSQL,
-		"lockPostForTagRevertSQL":  lockPostForTagRevertSQL,
-		"lockPostForReactionSQL":   lockPostForReactionSQL,
-		"updatePostReactionSQL":    updatePostReactionSQL,
-		"listCollectionsSQL":       listCollectionsSQL,
-		"addCollectionPostSQL":     addCollectionPostSQL,
-		"collectionPostIDsSQL":     collectionPostIDsSQL,
-		"searchCollectionPostsSQL": searchCollectionPostsSQL,
-		"deleteCollectionPostSQL":  deleteCollectionPostSQL,
+		"SearchPostsSQL":              SearchPostsSQL,
+		"SearchPostsScoreSQL":         SearchPostsScoreSQL,
+		"GetPostDetailSQL":            GetPostDetailSQL,
+		"lockPostForTagEditSQL":       lockPostForTagEditSQL,
+		"updatePostTagsSQL":           updatePostTagsSQL,
+		"lockPostForTagRevertSQL":     lockPostForTagRevertSQL,
+		"lockPostForReactionSQL":      lockPostForReactionSQL,
+		"updatePostReactionSQL":       updatePostReactionSQL,
+		"listCollectionsSQL":          listCollectionsSQL,
+		"addCollectionPostSQL":        addCollectionPostSQL,
+		"collectionPostIDsSQL":        collectionPostIDsSQL,
+		"searchCollectionPostsSQL":    searchCollectionPostsSQL,
+		"collectionOrderedMembersSQL": collectionOrderedMembersSQL,
+		"deleteCollectionPostSQL":     deleteCollectionPostSQL,
 	}
 	for name, sql := range guarded {
 		if !strings.Contains(sql, "moderation_state = 'published'") {

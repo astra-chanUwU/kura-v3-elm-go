@@ -97,6 +97,13 @@ func (s *PostgresSearcher) GetJob(ctx context.Context, id string) (jobs.Job, err
 	return s.jobStore.GetJob(ctx, id)
 }
 
+// previewQuerier is satisfied by both the pool and an open transaction so
+// thumbnail overlays can run inside a caller's snapshot instead of
+// borrowing a second pooled connection.
+type previewQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // overlayReadyPreviews replaces the preview URL with the ready thumb-320
 // variant URL for every post that has one. Posts still processing keep
 // serving their original as the preview; original URLs never change.
@@ -104,6 +111,21 @@ func (s *PostgresSearcher) overlayReadyPreviews(ctx context.Context, summaries [
 	if s == nil || s.pool == nil || len(summaries) == 0 {
 		return nil
 	}
+	return overlayReadyPreviewsWith(ctx, s.pool, summaries)
+}
+
+// overlayReadyPreviewsTx is the transaction-scoped overlay for readers
+// that already hold a connection, such as the versioned collection page
+// read. The variant lookup observes the same snapshot as the page, and
+// the read never waits on a second pooled connection.
+func overlayReadyPreviewsTx(ctx context.Context, tx pgx.Tx, summaries []PostSummary) error {
+	if len(summaries) == 0 {
+		return nil
+	}
+	return overlayReadyPreviewsWith(ctx, tx, summaries)
+}
+
+func overlayReadyPreviewsWith(ctx context.Context, q previewQuerier, summaries []PostSummary) error {
 	ids := make([]int64, 0, len(summaries))
 	for _, post := range summaries {
 		if id, err := strconv.ParseInt(post.ID, 10, 64); err == nil && id > 0 {
@@ -113,7 +135,7 @@ func (s *PostgresSearcher) overlayReadyPreviews(ctx context.Context, summaries [
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, readyVariantURLsForPostsSQL, ids)
+	rows, err := q.Query(ctx, readyVariantURLsForPostsSQL, ids)
 	if err != nil {
 		return err
 	}

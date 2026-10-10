@@ -237,27 +237,44 @@ VALUES ($1::bigint, $2, $3, $4)
 `
 
 const listCollectionsSQL = `
-SELECT c.id::text, c.name, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE cp.post_id IS NOT NULL), ARRAY[]::text[])
+SELECT c.id::text, c.name, c.version, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE cp.post_id IS NOT NULL), ARRAY[]::text[])
 FROM collections c
 LEFT JOIN collection_posts cp ON cp.collection_id = c.id
 LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.post_id IS NULL OR p.id IS NOT NULL
-GROUP BY c.id, c.name
+GROUP BY c.id, c.name, c.version
 ORDER BY c.created_at, c.id
 `
 
 const insertCollectionSQL = `
 INSERT INTO collections (name) VALUES ($1)
-RETURNING id::text, name
+RETURNING id::text, name, version
 `
 
 const collectionExistsSQL = `SELECT 1 FROM collections WHERE id = $1::bigint`
 
+// lockCollectionSQL serializes add/remove/reorder mutations on one
+// collection row. Callers hold the returned transaction open until the
+// membership change and version bump commit together.
+const lockCollectionSQL = `SELECT version FROM collections WHERE id = $1::bigint FOR UPDATE`
+
+// collectionVersionSQL reads the membership/order version inside the same
+// snapshot that serves the page, so the cursor check and the rows cannot
+// observe different states.
+const collectionVersionSQL = `SELECT version FROM collections WHERE id = $1::bigint`
+
+// bumpCollectionVersionSQL records one effective membership or order
+// change. No-op mutations skip it so the version stays stable.
+const bumpCollectionVersionSQL = `UPDATE collections SET version = version + 1 WHERE id = $1::bigint`
+
+// addCollectionPostSQL appends visible members in request order. Ordinality
+// binds each position to the caller's array order instead of the posts scan
+// order, so page order is deterministic from the first insert.
 const addCollectionPostSQL = `
 INSERT INTO collection_posts (collection_id, post_id, position)
-SELECT $1::bigint, p.id, COALESCE((SELECT MAX(position) + 1 FROM collection_posts WHERE collection_id = $1::bigint), 0) + row_number() OVER ()
-FROM posts p
-WHERE p.id = ANY($2::bigint[]) AND p.deleted_at IS NULL AND p.moderation_state = 'published'
+SELECT $1::bigint, p.id, COALESCE((SELECT MAX(position) + 1 FROM collection_posts WHERE collection_id = $1::bigint), 0) + u.ord
+FROM unnest($2::bigint[]) WITH ORDINALITY AS u(id, ord)
+JOIN posts p ON p.id = u.id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 ON CONFLICT (collection_id, post_id) DO NOTHING
 `
 
@@ -268,8 +285,13 @@ WHERE cp.collection_id = $1::bigint
 ORDER BY cp.position, cp.post_id
 `
 
+// searchCollectionPostsSQL is the versioned keyset page contract. $1 is the
+// collection; $2/$3 are the cursor (position, post_id) key and are NULL on
+// the first page; $4 is limit+1. Ordering is deterministic position then
+// post_id so position ties paginate without gaps or duplicates.
 const searchCollectionPostsSQL = `
 SELECT
+    cp.position,
     p.id::text,
     p.preview_url,
     p.original_url,
@@ -280,8 +302,18 @@ SELECT
 FROM collection_posts cp
 JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.collection_id = $1::bigint
+  AND ($2::bigint IS NULL OR cp.position > $2::bigint OR (cp.position = $2::bigint AND cp.post_id > $3::bigint))
 ORDER BY cp.position, cp.post_id
-LIMIT $2
+LIMIT $4
+`
+
+// collectionOrderedMembersSQL returns visible membership with positions in
+// page order so reorder can verify the exact set and detect order no-ops.
+const collectionOrderedMembersSQL = `
+SELECT post_id::text, position FROM collection_posts cp
+JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
+WHERE cp.collection_id = $1::bigint
+ORDER BY cp.position, cp.post_id
 `
 
 const deleteCollectionPostSQL = `

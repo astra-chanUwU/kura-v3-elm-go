@@ -43,18 +43,22 @@ func TestValidateReorderCollection(t *testing.T) {
 			t.Errorf("reorder ids %v accepted", ids)
 		}
 	}
-	over := make([]string, maxCollectionPosts+1)
-	for i := range over {
-		over[i] = strconv.Itoa(i + 1)
+	// The 200-ID bound applies per add request, never as a total-size cap:
+	// reorder carries full membership and must accept large collections.
+	for _, size := range []int{maxCollectionPosts, maxCollectionPosts + 1, 1000} {
+		ids := make([]string, size)
+		for i := range ids {
+			ids[i] = strconv.Itoa(i + 1)
+		}
+		if _, err := ValidateReorderCollection(ReorderCollectionRequest{PostIDs: ids}); err != nil {
+			t.Fatalf("reorder of %d ids rejected: %v", size, err)
+		}
 	}
-	if _, err := ValidateReorderCollection(ReorderCollectionRequest{PostIDs: over}); err == nil {
-		t.Errorf("over-length reorder accepted")
+	overAdd := make([]string, maxCollectionPosts+1)
+	for i := range overAdd {
+		overAdd[i] = strconv.Itoa(i + 1)
 	}
-	maxIDs := make([]string, maxCollectionPosts)
-	for i := range maxIDs {
-		maxIDs[i] = strconv.Itoa(i + 1)
-	}
-	if _, err := ValidateReorderCollection(ReorderCollectionRequest{PostIDs: maxIDs}); err != nil {
-		t.Fatalf("max-length reorder rejected: %v", err)
+	if _, err := ValidateAddCollectionPosts(AddCollectionPostsRequest{PostIDs: overAdd}); err == nil {
+		t.Errorf("over-length add request accepted")
 	}
 }

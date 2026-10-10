@@ -26,17 +26,21 @@ type PostSummary struct {
 
 // SearchResponse is the envelope for GET /api/posts.
 // next_cursor is optional and forwards pagination when the API adds it.
+// collection_version is present only on collection page responses.
 type SearchResponse struct {
-	Posts      []PostSummary `json:"posts"`
-	NextCursor *string       `json:"next_cursor,omitempty"`
+	Posts             []PostSummary `json:"posts"`
+	NextCursor        *string       `json:"next_cursor,omitempty"`
+	CollectionVersion *int64        `json:"collection_version,omitempty"`
 }
 
 // Collection is the stable browser-facing representation from
-// GET /api/collections.
+// GET /api/collections. Version is the membership/order version and is
+// zero for responses from servers that predate versioned pagination.
 type Collection struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
 	PostIDs []string `json:"post_ids"`
+	Version int64    `json:"version,omitempty"`
 }
 
 // CollectionsResponse is the envelope for GET /api/collections.

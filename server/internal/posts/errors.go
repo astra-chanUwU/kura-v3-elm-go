@@ -32,6 +32,11 @@ var ErrInvalidReactions = errors.New("invalid reactions")
 
 var ErrInvalidCollections = errors.New("invalid collections")
 
+// ErrCollectionChanged indicates that a versioned collection cursor was
+// issued for an older membership/order version. The HTTP layer maps it to
+// a 409 response carrying the collection_changed code.
+var ErrCollectionChanged = errors.New("collection changed")
+
 // ErrInvalidSavedSearch indicates malformed owner-scoped saved-search input.
 var ErrInvalidSavedSearch = errors.New("invalid saved search")
 
