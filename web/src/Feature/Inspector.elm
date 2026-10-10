@@ -1,13 +1,15 @@
 module Feature.Inspector exposing (Config, view)
 
 import Api.Post
+import Domain.Collection exposing (Collection)
 import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
-import Feature.Selection
-import Html exposing (Html, a, aside, button, dd, div, dl, dt, input, li, p, span, text, ul)
-import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, style, target, title, type_, value)
-import Html.Events exposing (on, onClick, onInput)
+import Html exposing (Html, a, aside, button, dd, details, div, dl, dt, form, input, label, li, option, p, select, span, summary, text, ul)
+import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, selected, style, target, title, type_, value)
+import Html.Events exposing (on, onClick, onInput, onSubmit)
 import Json.Decode as Decode
 import Set exposing (Set)
+import Ui.Button
+import Ui.Icon
 import Ui.Media
 import Ui.Panel as Panel exposing (Presentation)
 
@@ -20,12 +22,15 @@ type alias Config msg =
     , detailLoading : Bool
     , detailError : Maybe String
     , selectedCount : Int
+    , showPreview : Bool
     , commonTags : List String
     , missing : Set String
     , onTag : String -> Bool -> msg
     , onClear : msg
     , onClose : msg
-    , onApiPending : String -> msg
+    , collections : List Collection
+    , activeCollection : Maybe String
+    , onSelectCollection : String -> msg
     , onFavorite : msg
     , onAddToCollection : msg
     , onMediaError : String -> msg
@@ -41,6 +46,7 @@ type alias Config msg =
     , reactionSaving : Bool
     , reactionStatus : Maybe String
     , onScoreDraft : String -> msg
+    , onStepScore : Int -> msg
     , onSaveScore : msg
     , onRevert : Int -> msg
     , onConfirmRevert : Int -> msg
@@ -53,28 +59,44 @@ type alias Config msg =
 
 view : Config msg -> Html msg
 view config =
-    aside [ class (Panel.presentationClass "inspector" config.presentation), attribute "aria-label" "Inspector" ]
-        [ Panel.header "Inspector" config.presentation config.onClose
+    aside [ class (Panel.presentationClass "inspector" config.presentation), attribute "aria-label" "Image details" ]
+        [ Panel.header
+            (if config.selectedCount > 0 then
+                String.fromInt config.selectedCount ++ " selected"
+
+             else
+                "Image details"
+            )
+            config.presentation
+            config.onClose
         , div [ class "panel-body" ]
             (case config.active of
                 Nothing ->
-                    [ p [ class "panel-note" ] [ text "No active post. Click a thumbnail or use the arrow keys." ]
-                    , selectionSection config
-                    , if config.selectedCount > 0 then
-                        tagEditor config
-
-                      else
-                        text ""
-                    ]
+                    [ p [ class "inspector-empty" ] [ text "Select an image to see its details." ] ]
 
                 Just post ->
                     [ identitySection config post
-                    , selectionSection config
-                    , detailSection config post
                     , reactionSection config post
-                    , Panel.section "Tags" (tagList config (detailTags config post))
-                    , tagEditor config
-                    , Panel.section "History" (historyList config)
+                    , Panel.section
+                        (if config.selectedCount > 1 then
+                            "Shared tags"
+
+                         else
+                            "Tags"
+                        )
+                        (tagList config
+                            (if config.selectedCount > 1 then
+                                config.commonTags
+
+                             else
+                                detailTags config post
+                            )
+                            ++ [ tagEditor config ]
+                        )
+                    , detailSection config post
+                    , details [ class "panel-section inspector-disclosure" ]
+                        (summary [] [ text "History" ] :: historyList config)
+                    , selectionSection config
                     ]
             )
         ]
@@ -85,13 +107,54 @@ detailSection config post =
     case config.detail of
         Just detail ->
             if detail.id == post.id then
-                Panel.section "Source"
-                    [ dl [ class "facts" ]
-                        [ fact "Source" (if detail.source == "" then "—" else detail.source)
-                        , fact "Artist" (if detail.artist == "" then "—" else detail.artist)
-                        , fact "Hash" (if detail.hash == "" then "—" else detail.hash)
-                        , fact "File size" (if detail.fileSize <= 0 then "—" else String.fromInt detail.fileSize ++ " bytes")
-                        , fact "Created" (if detail.createdAt == "" then "—" else detail.createdAt)
+                div []
+                    [ if detail.source == "" then
+                        text ""
+
+                      else
+                        Panel.section "Source"
+                            [ if String.startsWith "https://" detail.source || String.startsWith "http://" detail.source then
+                                a [ class "source-link", href detail.source, target "_blank", rel "noopener noreferrer" ]
+                                    [ span [] [ text detail.source ], Ui.Icon.view "external" ]
+
+                              else
+                                p [ class "source-text" ] [ text detail.source ]
+                            ]
+                    , details [ class "panel-section inspector-disclosure" ]
+                        [ summary [] [ text "File details" ]
+                        , dl [ class "facts" ]
+                            ([ div [ class "fact" ]
+                                [ dt [] [ text "Original" ]
+                                , dd [] [ a [ href (Api.Post.mediaUrl config.apiBase post.originalUrl), target "_blank", rel "noopener noreferrer" ] [ text "Open original ↗" ] ]
+                                ]
+                             , fact "Dimensions" (String.fromInt post.width ++ " × " ++ String.fromInt post.height)
+                             , fact "Type" post.mediaType
+                             ]
+                                ++ (if detail.artist == "" then
+                                        []
+
+                                    else
+                                        [ fact "Artist" detail.artist ]
+                                   )
+                                ++ (if detail.hash == "" then
+                                        []
+
+                                    else
+                                        [ fact "Hash" detail.hash ]
+                                   )
+                                ++ (if detail.fileSize <= 0 then
+                                        []
+
+                                    else
+                                        [ fact "Size" (fileSize detail.fileSize) ]
+                                   )
+                                ++ (if detail.createdAt == "" then
+                                        []
+
+                                    else
+                                        [ fact "Added" (String.left 10 detail.createdAt) ]
+                                   )
+                            )
                         ]
                     ]
 
@@ -104,18 +167,16 @@ detailSection config post =
 
 detailPlaceholder : Config msg -> Html msg
 detailPlaceholder config =
-    Panel.section "Source"
-        (if config.detailLoading then
-            [ p [ class "panel-note" ] [ text "Loading post details…" ] ]
+    if config.detailLoading then
+        p [ class "panel-note inspector-loading", attribute "role" "status" ] [ text "Loading details…" ]
 
-         else
-            case config.detailError of
-                Just message ->
-                    [ p [ class "panel-note status-error" ] [ text ("Post details unavailable: " ++ message) ] ]
+    else
+        case config.detailError of
+            Just message ->
+                p [ class "panel-note status-error" ] [ text message ]
 
-                Nothing ->
-                    [ p [ class "panel-note" ] [ text "Select a post to load its details." ] ]
-        )
+            Nothing ->
+                text ""
 
 
 detailTags : Config msg -> PostSummary -> List String
@@ -134,115 +195,136 @@ detailTags config post =
 
 identitySection : Config msg -> PostSummary -> Html msg
 identitySection config post =
-    let
-        ratio =
-            if post.height > 0 then
-                toFloat post.width / toFloat post.height
-
-            else
-                1
-    in
     div [ class "panel-section inspector-identity" ]
-        [ div [ class "inspector-preview", style "aspect-ratio" (String.fromFloat ratio) ]
-            [ Ui.Media.image [ class "inspector-preview-image" ]
-                { url = Api.Post.mediaUrl config.apiBase post.previewUrl
-                , postId = post.id
-                , missing = Set.member post.id config.missing
-                , onError = config.onMediaError
-                }
-            ]
-        , p [ class "inspector-id" ] [ text ("Post #" ++ post.id) ]
-        , dl [ class "facts" ]
-            [ fact "Dimensions" (String.fromInt post.width ++ " × " ++ String.fromInt post.height)
-            , fact "Aspect" (aspect post)
-            , fact "Media type" post.mediaType
-            , div [ class "fact" ]
-                [ dt [] [ text "Original" ]
-                , dd [] [ a [ href (Api.Post.mediaUrl config.apiBase post.originalUrl), target "_blank", rel "noopener" ] [ text "Open" ] ]
+        [ if config.showPreview then
+            div [ class "inspector-preview", style "aspect-ratio" "4 / 3" ]
+                [ Ui.Media.image [ class "inspector-preview-image" ]
+                    { url = Api.Post.mediaUrl config.apiBase post.previewUrl
+                    , postId = post.id
+                    , missing = Set.member post.id config.missing
+                    , onError = config.onMediaError
+                    }
                 ]
+
+          else
+            text ""
+        , div [ class "identity-row" ]
+            [ div []
+                [ p [ class "inspector-id" ] [ text ("#" ++ post.id) ]
+                , p [ class "identity-meta" ] [ text (String.fromInt post.width ++ " × " ++ String.fromInt post.height ++ " · " ++ mediaLabel post.mediaType) ]
+                ]
+            , favoriteButton config
             ]
         ]
 
 
+favoriteButton : Config msg -> Html msg
+favoriteButton config =
+    let
+        favorite =
+            config.detail |> Maybe.map .favorite |> Maybe.withDefault False
+    in
+    Ui.Button.icon "heart"
+        [ class "favorite-button" ]
+        { label =
+            if favorite then
+                "Remove favorite"
+
+            else
+                "Favorite"
+        , key = Nothing
+        , onPress =
+            if config.writesEnabled && not config.reactionSaving && config.detail /= Nothing then
+                Just config.onFavorite
+
+            else
+                Nothing
+        , pressed = Just favorite
+        , hint = Just "Toggle favorite for the selection (F)"
+        }
+
+
 selectionSection : Config msg -> Html msg
 selectionSection config =
-    Panel.section "Selection"
-        ([ Feature.Selection.view
-            { count = config.selectedCount
-            , activeId = Maybe.map .id config.active
-            , onClear = config.onClear
-            , onApiPending = config.onApiPending
-            , onFavorite = config.onFavorite
-            , onAddToCollection = config.onAddToCollection
-            , writesEnabled = config.writesEnabled
-            }
-         ]
-            ++ (if config.selectedCount > 1 then
-                    [ p [ class "panel-label" ] [ text "Common tags" ]
-                    , if List.isEmpty config.commonTags then
-                        p [ class "panel-note" ] [ text "None in common." ]
+    details [ class "panel-section inspector-disclosure" ]
+        [ summary [] [ text "Selection actions" ]
+        , if List.isEmpty config.collections then
+            p [ class "panel-note" ] [ text "Create a collection in the library to add images." ]
 
-                      else
-                        ul [ class "tag-list" ] (List.map (tagItem config) config.commonTags)
-                    ]
+          else
+            div [ class "collection-target" ]
+                [ select [ class "compact-input", attribute "aria-label" "Target collection", onInput config.onSelectCollection, disabled (not config.writesEnabled) ]
+                    (List.map
+                        (\collection -> option [ value collection.id, selected (config.activeCollection == Just collection.id) ] [ text collection.name ])
+                        config.collections
+                    )
+                , button [ class "button", type_ "button", onClick config.onAddToCollection, disabled (not config.writesEnabled || config.activeCollection == Nothing) ] [ text "Add to collection" ]
+                ]
+        , if config.selectedCount > 0 then
+            button [ class "button button-quiet", type_ "button", onClick config.onClear ] [ text "Clear selection" ]
 
-                else
-                    []
-               )
-        )
+          else
+            text ""
+        ]
 
 
 tagList : Config msg -> List String -> List (Html msg)
 tagList config tags =
     if List.isEmpty tags then
-        [ p [ class "panel-note" ] [ text "No tags available." ] ]
+        []
 
     else
-        [ ul [ class "tag-list" ] (List.map (tagItem config) tags)
-        , p [ class "panel-note" ] [ text "Click to filter by a tag; Alt+click to exclude it." ]
-        ]
+        [ ul [ class "tag-list" ] (List.map (tagItem config) tags) ]
 
 
 tagEditor : Config msg -> Html msg
 tagEditor config =
-    Panel.section "Edit tags"
+    form [ class "tag-editor", onSubmit config.onSaveTags ]
         [ input
-            [ class "query-input"
+            [ class "compact-input"
+            , Html.Attributes.id "tags-to-add"
             , type_ "text"
-            , placeholder "Add tag"
+            , placeholder "Add tags…"
             , value config.tagAdd
             , onInput config.onTagAdd
             , attribute "aria-label" "Tags to add"
+            , title "Separate multiple tags with commas; Enter to save"
             , attribute "autocomplete" "off"
+            , disabled (not config.writesEnabled || config.tagSaving)
             ]
             []
-        , input
-            [ class "query-input"
-            , type_ "text"
-            , placeholder "Remove tag"
-            , value config.tagRemove
-            , onInput config.onTagRemove
-            , attribute "aria-label" "Tags to remove"
-            , attribute "autocomplete" "off"
+        , details [ class "tag-remove-disclosure" ]
+            [ summary [] [ text "Remove tags" ]
+            , input
+                [ class "compact-input"
+                , type_ "text"
+                , placeholder "Tags to remove…"
+                , value config.tagRemove
+                , onInput config.onTagRemove
+                , attribute "aria-label" "Tags to remove"
+                , disabled (not config.writesEnabled || config.tagSaving)
+                ]
+                []
             ]
-            []
-        , button
-            [ class "button"
-            , type_ "button"
-            , onClick config.onSaveTags
-            , disabled (config.tagSaving || not config.writesEnabled || (String.trim config.tagAdd == "" && String.trim config.tagRemove == ""))
-            ]
-            [ text "Save tags" ]
+        , if config.tagSaving || String.trim config.tagAdd /= "" || String.trim config.tagRemove /= "" then
+            button [ class "button", type_ "submit", disabled (config.tagSaving || not config.writesEnabled) ]
+                [ text
+                    (if config.tagSaving then
+                        "Saving…"
+
+                     else
+                        "Save tags"
+                    )
+                ]
+
+          else
+            text ""
         , case config.tagStatus of
             Just status ->
-                p [ class "panel-note status-error" ] [ text status ]
+                p [ class "panel-note", attribute "role" "status" ] [ text status ]
 
             Nothing ->
-                if config.writesEnabled then
-                    p [ class "panel-note" ] [ text "Separate multiple tags with commas." ]
-
-                else
-                    p [ class "panel-note" ] [ text "Unlock to edit tags." ]
+                text ""
         ]
 
 
@@ -251,55 +333,58 @@ reactionSection config post =
     case config.detail of
         Just detail ->
             if detail.id == post.id then
-                Panel.section "Rating"
-                    [ button
-                        [ class "button"
-                        , type_ "button"
-                        , onClick config.onFavorite
-                        , disabled (config.reactionSaving || not config.writesEnabled)
-                        ]
-                        [ text
-                            (if detail.favorite then
-                                "★ Favorite"
+                div [ class "panel-section score-section" ]
+                    [ form [ class "score-form", onSubmit config.onSaveScore ]
+                        [ label [ Html.Attributes.for "post-score" ] [ text "Score" ]
+                        , div [ class "score-stepper" ]
+                            [ button [ class "score-step", type_ "button", onClick (config.onStepScore -1), disabled (config.reactionSaving || not config.writesEnabled || (String.toInt config.scoreDraft |> Maybe.withDefault 0) <= 0), attribute "aria-label" "Decrease score" ] [ text "−" ]
+                            , input
+                                [ class "compact-input score-input"
+                                , Html.Attributes.id "post-score"
+                                , type_ "number"
+                                , attribute "min" "0"
+                                , value config.scoreDraft
+                                , onInput config.onScoreDraft
+                                , attribute "aria-label" "Score"
+                                , title "Score for the selection; Enter to save"
+                                , disabled (config.reactionSaving || not config.writesEnabled)
+                                ]
+                                []
+                            , button [ class "score-step", type_ "button", onClick (config.onStepScore 1), disabled (config.reactionSaving || not config.writesEnabled), attribute "aria-label" "Increase score" ] [ text "+" ]
+                            ]
+                        , if config.scoreDraft /= String.fromInt detail.score then
+                            button [ class "button", type_ "submit", disabled (config.reactionSaving || not config.writesEnabled) ] [ text "Save" ]
 
-                             else
-                                "☆ Favorite"
-                            )
+                          else
+                            text ""
                         ]
-                    , input
-                        [ class "query-input"
-                        , type_ "number"
-                        , attribute "min" "0"
-                        , value config.scoreDraft
-                        , onInput config.onScoreDraft
-                        , attribute "aria-label" "Score"
-                        , disabled (config.reactionSaving || not config.writesEnabled)
-                        ]
-                        []
-                    , button
-                        [ class "button"
-                        , type_ "button"
-                        , onClick config.onSaveScore
-                        , disabled (config.reactionSaving || not config.writesEnabled)
-                        ]
-                        [ text "Save score" ]
                     , case config.reactionStatus of
                         Just status ->
-                            p [ class "panel-note status-error" ] [ text status ]
+                            p [ class "panel-note", attribute "role" "status" ] [ text status ]
 
                         Nothing ->
-                            if config.writesEnabled then
-                                p [ class "panel-note" ] [ text ("Score " ++ String.fromInt detail.score) ]
-
-                            else
-                                p [ class "panel-note" ] [ text "Unlock to change the rating." ]
+                            text ""
                     ]
 
             else
-                Panel.section "Rating" [ p [ class "panel-note" ] [ text "Select a post to edit its rating." ] ]
+                text ""
 
         Nothing ->
-            Panel.section "Rating" [ p [ class "panel-note" ] [ text "Loading rating…" ] ]
+            text ""
+
+
+mediaLabel : String -> String
+mediaLabel mediaType =
+    String.replace "image/" "" mediaType |> String.toUpper
+
+
+fileSize : Int -> String
+fileSize bytes =
+    if bytes >= 1048576 then
+        String.fromFloat (toFloat (round (toFloat bytes / 104857.6)) / 10) ++ " MB"
+
+    else
+        String.fromInt (max 1 (bytes // 1024)) ++ " KB"
 
 
 historyList : Config msg -> List (Html msg)
@@ -479,28 +564,3 @@ tagItem config tag =
 fact : String -> String -> Html msg
 fact label value =
     div [ class "fact" ] [ dt [] [ text label ], dd [] [ text value ] ]
-
-
-aspect : PostSummary -> String
-aspect post =
-    let
-        hundredths =
-            if post.height > 0 then
-                round (toFloat post.width / toFloat post.height * 100)
-
-            else
-                100
-
-        frac =
-            modBy 100 hundredths
-    in
-    String.fromInt (hundredths // 100)
-        ++ "."
-        ++ (if frac < 10 then
-                "0"
-
-            else
-                ""
-           )
-        ++ String.fromInt frac
-        ++ " : 1"

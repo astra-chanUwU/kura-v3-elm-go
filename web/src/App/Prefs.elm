@@ -40,7 +40,7 @@ type alias Prefs =
 
 default : Prefs
 default =
-    { thumbSize = 144
+    { thumbSize = 176
     , cellExtras = ExtrasHover
     , navigatorDocked = True
     , inspectorDocked = True

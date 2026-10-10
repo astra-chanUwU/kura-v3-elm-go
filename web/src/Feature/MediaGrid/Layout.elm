@@ -38,13 +38,13 @@ geometry width thumb =
     let
         gap =
             if thumb <= 144 then
-                4
-
-            else
                 8
 
+            else
+                16
+
         padding =
-            8
+            16
 
         inner =
             max 0 (width - 2 * padding)

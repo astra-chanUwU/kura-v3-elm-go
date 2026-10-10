@@ -6,8 +6,7 @@ credential and send it as an `Authorization` header.
 -}
 
 import Api.Access exposing (authHeaders)
-import Domain.Collection exposing (Collection, PostsResponse, decoder, responseDecoder)
-import Domain.Post
+import Domain.Collection exposing (Collection, CollectionPostsPage, decoder, postsDecoder, responseDecoder)
 import Http
 import Json.Encode as Encode
 import String
@@ -19,11 +18,16 @@ list apiBase toMsg =
     Http.get { url = endpoint apiBase [ "api", "collections" ], expect = Http.expectJson toMsg responseDecoder }
 
 
-posts : String -> String -> Int -> (Result Http.Error PostsResponse -> msg) -> Cmd msg
-posts apiBase collectionId limit toMsg =
+{-| Fetch one versioned page of collection members. A `Nothing` cursor
+starts from the beginning; a `Just` cursor continues after its key at
+the exact collection version it was issued for, so a concurrent
+membership/order change answers 409 instead of silently skipping rows.
+-}
+posts : String -> String -> Maybe String -> Int -> (Result Http.Error CollectionPostsPage -> msg) -> Cmd msg
+posts apiBase collectionId cursor limit toMsg =
     Http.get
-        { url = endpointWithLimit apiBase [ "api", "collections", collectionId, "posts" ] limit
-        , expect = Http.expectJson toMsg Domain.Post.responseDecoder
+        { url = endpointWithCursor apiBase [ "api", "collections", collectionId, "posts" ] cursor limit
+        , expect = Http.expectJson toMsg postsDecoder
         }
 
 
@@ -88,10 +92,21 @@ endpoint apiBase path =
         Url.Builder.crossOrigin apiBase path []
 
 
-endpointWithLimit : String -> List String -> Int -> String
-endpointWithLimit apiBase path limit =
+endpointWithCursor : String -> List String -> Maybe String -> Int -> String
+endpointWithCursor apiBase path cursor limit =
+    let
+        params =
+            [ Url.Builder.int "limit" limit ]
+                ++ (case cursor of
+                        Just value ->
+                            [ Url.Builder.string "cursor" value ]
+
+                        Nothing ->
+                            []
+                   )
+    in
     if String.trim apiBase == "" then
-        Url.Builder.absolute path [ Url.Builder.int "limit" limit ]
+        Url.Builder.absolute path params
 
     else
-        Url.Builder.crossOrigin apiBase path [ Url.Builder.int "limit" limit ]
+        Url.Builder.crossOrigin apiBase path params

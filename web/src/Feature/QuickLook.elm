@@ -2,8 +2,8 @@ module Feature.QuickLook exposing (Config, Zoom(..), toggleZoom, view)
 
 import Api.Post
 import Domain.Post exposing (PostSummary)
-import Html exposing (Html, a, div, p, span, text)
-import Html.Attributes exposing (class, classList, href, rel, target)
+import Html exposing (Html, button, div, p, span, text)
+import Html.Attributes exposing (attribute, class, classList, disabled, title, type_)
 import Html.Events exposing (onClick)
 import Ui.Button
 import Ui.Media
@@ -51,33 +51,43 @@ view config =
     in
     div [ class "loupe" ]
         [ Ui.Toolbar.view
-            [ p [ class "view-position" ] [ text (String.fromInt (config.index + 1) ++ " / " ++ String.fromInt config.total) ]
+            [ Ui.Button.view [ class "button-quiet" ] { label = "← Back to grid", key = Nothing, onPress = Just config.onClose, pressed = Nothing, hint = Just "Back to grid (Esc)" }
             , p [ class "view-caption" ]
                 [ span [ class "view-caption-id" ] [ text ("#" ++ post.id) ]
-                , text (" · " ++ String.fromInt post.width ++ " × " ++ String.fromInt post.height ++ " · " ++ post.mediaType)
+                , text (" · " ++ String.fromInt post.width ++ " × " ++ String.fromInt post.height)
                 ]
             ]
-            [ Ui.Button.view [] { label = "Previous", key = Just "←", onPress = previousIf config, pressed = Nothing, hint = Nothing }
-            , Ui.Button.view [] { label = "Next", key = Just "→", onPress = nextIf config, pressed = Nothing, hint = Nothing }
-            , Ui.Button.view []
-                { label =
-                    if config.zoom == Fit then
-                        "Fit"
+            [ Ui.Button.view []
+                { label = "Fit"
+                , key = Nothing
+                , onPress =
+                    if config.zoom == Actual then
+                        Just config.onZoom
 
                     else
-                        "1:1"
-                , key = Just "Z"
-                , onPress = Just config.onZoom
-                , pressed = Just (config.zoom == Actual)
-                , hint = Just "Toggle fit / actual size"
+                        Nothing
+                , pressed = Just (config.zoom == Fit)
+                , hint = Just "Toggle fit / actual size (Z)"
                 }
-            , a [ class "button", href originalUrl, target "_blank", rel "noopener" ] [ text "Original" ]
-            , Ui.Button.view [] { label = "Grid", key = Just "Esc", onPress = Just config.onClose, pressed = Nothing, hint = Nothing }
+            , Ui.Button.view []
+                { label = "100%"
+                , key = Nothing
+                , onPress =
+                    if config.zoom == Fit then
+                        Just config.onZoom
+
+                    else
+                        Nothing
+                , pressed = Just (config.zoom == Actual)
+                , hint = Just "Toggle fit / actual size (Z)"
+                }
             ]
         , div [ class "loupe-canvas", classList [ ( "is-actual", config.zoom == Actual ) ] ]
             [ Ui.Media.image
                 [ class "loupe-image", onClick config.onZoom ]
                 { url = originalUrl, postId = post.id, missing = config.missing, onError = config.onMediaError }
+            , navArrow "previous" "Previous image" "‹" (previousIf config)
+            , navArrow "next" "Next image" "›" (nextIf config)
             ]
         ]
 
@@ -98,3 +108,18 @@ nextIf config =
 
     else
         Nothing
+
+
+navArrow : String -> String -> String -> Maybe msg -> Html msg
+navArrow direction label glyph action =
+    button
+        ([ class ("loupe-arrow loupe-arrow-" ++ direction), type_ "button", attribute "aria-label" label, title label ]
+            ++ (case action of
+                    Just msg ->
+                        [ onClick msg ]
+
+                    Nothing ->
+                        [ disabled True ]
+               )
+        )
+        [ text glyph ]

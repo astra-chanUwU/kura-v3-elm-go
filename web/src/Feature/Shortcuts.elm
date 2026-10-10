@@ -59,6 +59,9 @@ shortcuts =
     , ( [ "/" ], "Focus the query" )
     , ( [ "\\" ], "Toggle the filter bar" )
     , ( [ "I" ], "Toggle the inspector" )
+    , ( [ "T" ], "Focus the tag field" )
+    , ( [ "B" ], "Add selection to the target collection" )
+    , ( [ "F" ], "Toggle favorite" )
     , ( [ "Shift", "N" ], "Toggle the navigator" )
     , ( [ "?" ], "This sheet" )
     ]

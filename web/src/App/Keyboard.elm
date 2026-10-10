@@ -75,7 +75,7 @@ targetDecoder =
             if editable || List.member tag [ "INPUT", "TEXTAREA", "SELECT" ] then
                 Editable
 
-            else if List.member tag [ "BUTTON", "A" ] then
+            else if List.member tag [ "BUTTON", "A", "SUMMARY" ] then
                 Control
 
             else

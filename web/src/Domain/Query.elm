@@ -1,4 +1,4 @@
-module Domain.Query exposing (addTerm, excludeTerm, removeTerm, terms)
+module Domain.Query exposing (addTerm, excludeTerm, order, removeTerm, setOrder, terms)
 
 {-| Query text helpers for the FilterBar and Inspector tag links.
 
@@ -75,3 +75,27 @@ quote tag =
 isSpace : Char -> Bool
 isSpace char =
     char == ' ' || char == '\t' || char == '\n' || char == '\u{000D}'
+
+
+order : String -> String
+order query =
+    if List.member "order:score" (terms query) then
+        "score"
+
+    else
+        "newest"
+
+
+setOrder : String -> String -> String
+setOrder requested query =
+    let
+        kept =
+            terms query |> List.filter (\term -> not (String.startsWith "order:" term))
+    in
+    String.join " "
+        (if requested == "score" then
+            kept ++ [ "order:score" ]
+
+         else
+            kept
+        )
