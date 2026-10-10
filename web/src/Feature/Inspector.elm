@@ -29,6 +29,7 @@ type alias Config msg =
     , onFavorite : msg
     , onAddToCollection : msg
     , onMediaError : String -> msg
+    , writesEnabled : Bool
     , tagAdd : String
     , tagRemove : String
     , tagStatus : Maybe String
@@ -173,6 +174,7 @@ selectionSection config =
             , onApiPending = config.onApiPending
             , onFavorite = config.onFavorite
             , onAddToCollection = config.onAddToCollection
+            , writesEnabled = config.writesEnabled
             }
          ]
             ++ (if config.selectedCount > 1 then
@@ -228,7 +230,7 @@ tagEditor config =
             [ class "button"
             , type_ "button"
             , onClick config.onSaveTags
-            , disabled (config.tagSaving || (String.trim config.tagAdd == "" && String.trim config.tagRemove == ""))
+            , disabled (config.tagSaving || not config.writesEnabled || (String.trim config.tagAdd == "" && String.trim config.tagRemove == ""))
             ]
             [ text "Save tags" ]
         , case config.tagStatus of
@@ -236,7 +238,11 @@ tagEditor config =
                 p [ class "panel-note status-error" ] [ text status ]
 
             Nothing ->
-                p [ class "panel-note" ] [ text "Separate multiple tags with commas." ]
+                if config.writesEnabled then
+                    p [ class "panel-note" ] [ text "Separate multiple tags with commas." ]
+
+                else
+                    p [ class "panel-note" ] [ text "Unlock to edit tags." ]
         ]
 
 
@@ -250,7 +256,7 @@ reactionSection config post =
                         [ class "button"
                         , type_ "button"
                         , onClick config.onFavorite
-                        , disabled config.reactionSaving
+                        , disabled (config.reactionSaving || not config.writesEnabled)
                         ]
                         [ text
                             (if detail.favorite then
@@ -267,14 +273,14 @@ reactionSection config post =
                         , value config.scoreDraft
                         , onInput config.onScoreDraft
                         , attribute "aria-label" "Score"
-                        , disabled config.reactionSaving
+                        , disabled (config.reactionSaving || not config.writesEnabled)
                         ]
                         []
                     , button
                         [ class "button"
                         , type_ "button"
                         , onClick config.onSaveScore
-                        , disabled config.reactionSaving
+                        , disabled (config.reactionSaving || not config.writesEnabled)
                         ]
                         [ text "Save score" ]
                     , case config.reactionStatus of
@@ -282,7 +288,11 @@ reactionSection config post =
                             p [ class "panel-note status-error" ] [ text status ]
 
                         Nothing ->
-                            p [ class "panel-note" ] [ text ("Score " ++ String.fromInt detail.score) ]
+                            if config.writesEnabled then
+                                p [ class "panel-note" ] [ text ("Score " ++ String.fromInt detail.score) ]
+
+                            else
+                                p [ class "panel-note" ] [ text "Unlock to change the rating." ]
                     ]
 
             else
@@ -413,7 +423,7 @@ historyItem config revision =
                     [ class "button"
                     , type_ "button"
                     , onClick (config.onConfirmRevert revision.version)
-                    , disabled config.tagSaving
+                    , disabled (config.tagSaving || not config.writesEnabled)
                     ]
                     [ text "Confirm" ]
                 , button
@@ -430,7 +440,7 @@ historyItem config revision =
                     [ class "button"
                     , type_ "button"
                     , onClick (config.onRevert revision.version)
-                    , disabled (config.tagSaving || config.revertPending /= Nothing)
+                    , disabled (config.tagSaving || not config.writesEnabled || config.revertPending /= Nothing)
                     ]
                     [ text "Revert" ]
                 ]

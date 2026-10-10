@@ -3,7 +3,8 @@ module UploadQueueTests exposing (allPassed, suite)
 import Api.Job as Job
 import Domain.Post as Post
 import Domain.Sequence as Sequence
-import Feature.UploadQueue as UploadQueue exposing (Entry, FileInfo, Model, Msg(..))
+import Feature.UploadQueue as UploadQueue exposing (Context, Entry, FileInfo, Model, Msg(..), OutMsg(..))
+import Http
 import Json.Decode as Decode
 
 
@@ -97,7 +98,7 @@ caseTerminalJobs =
 casePhaseLabels : Bool
 casePhaseLabels =
     UploadQueue.phaseLabel UploadQueue.Queued == "Queued"
-        && UploadQueue.phaseLabel UploadQueue.Saving == "Saving"
+        && UploadQueue.phaseLabel (UploadQueue.Saving 1) == "Saving"
         && UploadQueue.thumbLabel (UploadQueue.ThumbWaiting 3) == "Thumbnail: processing…"
         && UploadQueue.thumbLabel UploadQueue.ThumbReady == "Thumbnail: ready"
 
@@ -161,17 +162,200 @@ testModel entries =
     { base | entries = entries, nextId = List.length entries }
 
 
+openCtx : Context
+openCtx =
+    UploadQueue.context "" Nothing True 1
+
+
+lockedCtx : Context
+lockedCtx =
+    UploadQueue.context "" Nothing False 1
+
+
 dismissEntries : Model -> Int -> List Entry
 dismissEntries model entryId =
-    UploadQueue.update "" (DismissEntry entryId) model
+    UploadQueue.update openCtx (DismissEntry entryId) model
         |> (\( next, _, _ ) -> next.entries)
+
+
+phasesOf : Model -> List String
+phasesOf model =
+    List.map (\entry -> UploadQueue.phaseLabel entry.phase) model.entries
+
+
+outsOf : ( Model, Cmd Msg, List OutMsg ) -> List String
+outsOf ( _, _, outs ) =
+    List.map outLabel outs
+
+
+outLabel : OutMsg -> String
+outLabel out =
+    case out of
+        UploadConfirmed _ ->
+            "UploadConfirmed"
+
+        ThumbCompleted _ ->
+            "ThumbCompleted"
+
+        OpenPost _ ->
+            "OpenPost"
+
+        CredentialRejected generation ->
+            "CredentialRejected " ++ String.fromInt generation
+
+
+decodeTestDetail : Result String Post.PostDetail
+decodeTestDetail =
+    case Decode.decodeString Post.detailDecoder detailJson of
+        Ok detail ->
+            Ok detail
+
+        Err err ->
+            Err (Decode.errorToString err)
+
+
+caseLockedPumpHoldsQueued : Bool
+caseLockedPumpHoldsQueued =
+    let
+        model =
+            testModel [ testEntry 0 UploadQueue.Queued, testEntry 1 UploadQueue.Queued ]
+
+        ( next, _, outs ) =
+            UploadQueue.update lockedCtx (DismissEntry 0) model
+    in
+    List.map .id next.entries == [ 1 ] && phasesOf next == [ "Queued" ] && outs == []
+
+
+caseUnlockedPumpAttemptsQueued : Bool
+caseUnlockedPumpAttemptsQueued =
+    -- Without the picked file the attempt fails the entry instead of
+    -- stalling; the point is the unlocked queue does not hold still.
+    let
+        model =
+            testModel [ testEntry 0 UploadQueue.Queued, testEntry 1 UploadQueue.Queued ]
+
+        ( next, _, _ ) =
+            UploadQueue.update openCtx (DismissEntry 0) model
+    in
+    List.map .id next.entries == [ 1 ] && phasesOf next == [ "Failed" ]
+
+
+caseResumeLockedHolds : Bool
+caseResumeLockedHolds =
+    let
+        model =
+            testModel [ testEntry 0 UploadQueue.Queued ]
+
+        ( next, _, outs ) =
+            UploadQueue.resume lockedCtx model
+    in
+    phasesOf next == [ "Queued" ] && outs == []
+
+
+caseFinishQueuedIgnored : Bool
+caseFinishQueuedIgnored =
+    case decodeTestDetail of
+        Err _ ->
+            False
+
+        Ok detail ->
+            let
+                model =
+                    testModel [ testEntry 0 UploadQueue.Queued ]
+
+                ( next, _, outs ) =
+                    UploadQueue.update openCtx (UploadFinished 0 1 (Ok detail)) model
+            in
+            phasesOf next == [ "Queued" ] && outs == []
+
+
+caseFinishTimeoutHonest : Bool
+caseFinishTimeoutHonest =
+    let
+        model =
+            testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+
+        ( next, _, outs ) =
+            UploadQueue.update openCtx (UploadFinished 0 1 (Err Http.Timeout)) model
+    in
+    case next.entries of
+        [ entry ] ->
+            case entry.phase of
+                UploadQueue.Failed message ->
+                    String.contains "may already exist" message && outs == []
+
+                _ ->
+                    False
+
+        _ ->
+            False
+
+
+caseFinishUnauthorizedHoldsQueue : Bool
+caseFinishUnauthorizedHoldsQueue =
+    let
+        model =
+            testModel
+                [ testEntry 0 (UploadQueue.Saving 1)
+                , testEntry 1 UploadQueue.Queued
+                ]
+
+        ( next, _, outs ) =
+            UploadQueue.update openCtx (UploadFinished 0 1 (Err (Http.BadStatus 401))) model
+    in
+    phasesOf next == [ "Failed", "Queued" ]
+        && outsOf ( next, Cmd.none, outs ) == [ "CredentialRejected 1" ]
+
+
+caseStaleUnauthorizedCarriesRequestGeneration : Bool
+caseStaleUnauthorizedCarriesRequestGeneration =
+    let
+        renewedCtx =
+            UploadQueue.context "" Nothing True 2
+
+        model =
+            testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+
+        ( _, _, outs ) =
+            UploadQueue.update renewedCtx (UploadFinished 0 1 (Err (Http.BadStatus 401))) model
+    in
+    outsOf ( model, Cmd.none, outs ) == [ "CredentialRejected 1" ]
+
+
+caseFinishConfirmedStands : Bool
+caseFinishConfirmedStands =
+    case decodeTestDetail of
+        Err _ ->
+            False
+
+        Ok detail ->
+            let
+                model =
+                    testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+
+                ( next, _, outs ) =
+                    UploadQueue.update lockedCtx (UploadFinished 0 1 (Ok detail)) model
+            in
+            -- A confirmed upload stands even when the browser locked
+            -- mid-flight: lock is not rollback.
+            case next.entries of
+                [ entry ] ->
+                    case entry.phase of
+                        UploadQueue.Uploaded uploaded ->
+                            uploaded.postId == "42" && outsOf ( next, Cmd.none, outs ) == [ "UploadConfirmed" ]
+
+                        _ ->
+                            False
+
+                _ ->
+                    False
 
 
 caseDismissUploadingRefused : Bool
 caseDismissUploadingRefused =
     let
         model =
-            testModel [ testEntry 0 (UploadQueue.Uploading { sent = 10, size = 100 }) ]
+            testModel [ testEntry 0 (UploadQueue.Uploading { sent = 10, size = 100, accessGeneration = 1 }) ]
     in
     dismissEntries model 0 == model.entries
 
@@ -180,7 +364,7 @@ caseDismissSavingRefused : Bool
 caseDismissSavingRefused =
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Saving, testEntry 1 UploadQueue.Queued ]
+            testModel [ testEntry 0 (UploadQueue.Saving 1), testEntry 1 UploadQueue.Queued ]
     in
     dismissEntries model 0 == model.entries
 
@@ -208,8 +392,8 @@ caseDismissiblePhases =
     UploadQueue.isDismissible (testEntry 0 UploadQueue.Queued)
         && UploadQueue.isDismissible (testEntry 0 (UploadQueue.Rejected "nope"))
         && UploadQueue.isDismissible (testEntry 0 (UploadQueue.Failed "nope"))
-        && not (UploadQueue.isDismissible (testEntry 0 (UploadQueue.Uploading { sent = 0, size = 1 })))
-        && not (UploadQueue.isDismissible (testEntry 0 UploadQueue.Saving))
+        && not (UploadQueue.isDismissible (testEntry 0 (UploadQueue.Uploading { sent = 0, size = 1, accessGeneration = 1 })))
+        && not (UploadQueue.isDismissible (testEntry 0 (UploadQueue.Saving 1)))
 
 
 detailJson : String
@@ -280,4 +464,12 @@ suite =
     , ( "derivative job fields decode", caseDerivativeDecodes )
     , ( "missing derivative fields decode as Nothing", caseDerivativeAbsent )
     , ( "detail projects to grid summary", caseSummaryProjection )
+    , ( "locked queue holds queued entries", caseLockedPumpHoldsQueued )
+    , ( "unlocked queue attempts queued entries", caseUnlockedPumpAttemptsQueued )
+    , ( "resume while locked is a no-op", caseResumeLockedHolds )
+    , ( "finish for a queued entry is ignored", caseFinishQueuedIgnored )
+    , ( "lost upload response stays uncertain without retry", caseFinishTimeoutHonest )
+    , ( "upload 401 holds later files until access changes", caseFinishUnauthorizedHoldsQueue )
+    , ( "late upload 401 retains its request generation", caseStaleUnauthorizedCarriesRequestGeneration )
+    , ( "confirmed upload stands through lock", caseFinishConfirmedStands )
     ]

@@ -1,8 +1,10 @@
 module Page.Library exposing (Model, Msg, init, onUrlChange, onUrlRequest, subscriptions, update, view)
 
 import Api.Post
+import Api.Access
 import Api.Collection
 import Api.SavedSearch
+import App.Access
 import App.Keyboard as Keyboard exposing (KeyEvent, Modifiers, Target(..))
 import App.Prefs as Prefs exposing (Prefs)
 import App.Route as Route exposing (Route, View(..))
@@ -26,9 +28,9 @@ import Feature.QuickLook as QuickLook exposing (Zoom(..))
 import Feature.Shortcuts as Shortcuts
 import Feature.Survey as Survey
 import Feature.UploadQueue as UploadQueue
-import Html exposing (Html, button, div, footer, h1, header, p, span, text)
-import Html.Attributes exposing (attribute, class, classList, id, tabindex, title, type_)
-import Html.Events exposing (onClick, preventDefaultOn)
+import Html exposing (Html, button, div, footer, form, h1, header, input, p, span, text)
+import Html.Attributes exposing (attribute, class, classList, disabled, id, placeholder, tabindex, title, type_, value)
+import Html.Events exposing (onClick, onInput, onSubmit, preventDefaultOn)
 import Http
 import Json.Decode as Decode
 import Dict exposing (Dict)
@@ -142,6 +144,7 @@ type alias Model =
     , upload : UploadQueue.Model
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
+    , access : App.Access.State
     }
 
 
@@ -232,19 +235,30 @@ init flagsValue url key =
             , collectionStatus = Nothing
             , collectionRemovals = Set.empty
             , savedSearches = []
-            , savedSearchFallback = False
+            , savedSearchFallback = True
             , savedSearchSaving = False
             , savedSearchStatus = Nothing
             , upload = UploadQueue.init
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
+            , access = App.Access.init
             }
     in
     let
         ( searching, searchCmd ) =
             startSearch { model | pendingRoute = Just route } route.query
     in
-    ( searching, Cmd.batch [ searchCmd, measureGrid 0, Api.Collection.list flags.apiBase CollectionsCompleted, Api.SavedSearch.list flags.apiBase SavedSearchesCompleted ] )
+    -- Collections and search are public reads. Saved searches are
+    -- owner-scoped, so their list waits for gate discovery; the local
+    -- fallback shows until then.
+    ( searching
+    , Cmd.batch
+        [ searchCmd
+        , measureGrid 0
+        , Api.Collection.list flags.apiBase CollectionsCompleted
+        , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
+        ]
+    )
 
 
 
@@ -286,35 +300,40 @@ type Msg
     | DraftChanged String
     | SearchSubmitted
     | SearchCompleted Int SearchRequest (Result Http.Error SearchResponse)
-    | DetailCompleted String (Result Http.Error PostDetail)
+    | DetailCompleted Int String (Result Http.Error PostDetail)
     | TagAddChanged String
     | TagRemoveChanged String
     | SaveTags
     | RevertTags Int
     | ConfirmRevert Int
     | CancelRevert
-    | TagsCompleted Int (Result Http.Error TagEditResponse)
+    | TagsCompleted Int Int (List String) (Result Http.Error TagEditResponse)
     | ToggleFavorite
     | ScoreDraftChanged String
     | SaveScore
-    | ReactionsCompleted Int (Result Http.Error ReactionResponse)
+    | ReactionsCompleted Int Int (List String) (Result Http.Error ReactionResponse)
     | CollectionsCompleted (Result Http.Error (List Collection))
-    | SavedSearchesCompleted (Result Http.Error (List Api.SavedSearch.SavedSearch))
-    | SavedSearchCreated (Result Http.Error Api.SavedSearch.SavedSearch)
-    | SavedSearchDeleted String (Result Http.Error ())
+    | CapabilitiesReceived Int (Result Http.Error Api.Access.Capabilities)
+    | TokenDraftChanged String
+    | UnlockRequested
+    | LockRequested
+    | AccessRetry
+    | SavedSearchesCompleted Int (Result Http.Error (List Api.SavedSearch.SavedSearch))
+    | SavedSearchCreated Int (Result Http.Error Api.SavedSearch.SavedSearch)
+    | SavedSearchDeleted Int String (Result Http.Error ())
     | CollectionDraftChanged String
     | CreateCollection String
-    | CollectionCreated (Result Http.Error Collection)
+    | CollectionCreated Int (Result Http.Error Collection)
     | SelectCollection String
     | OpenCollection String
     | OpenAllPosts
     | CollectionPostsCompleted Int String (Result Http.Error SearchResponse)
     | AddToCollection
-    | CollectionAdded (Result Http.Error Collection)
+    | CollectionAdded Int (Result Http.Error Collection)
     | MoveCollectionPost String Int
-    | CollectionReordered (Result Http.Error Collection)
+    | CollectionReordered Int (Result Http.Error Collection)
     | RemoveCollectionPost String
-    | CollectionPostRemoved String (Result Http.Error ())
+    | CollectionPostRemoved Int String (Result Http.Error ())
     | Retry
     | RunQuery String
     | KeyCommand Command
@@ -499,53 +518,57 @@ updateHelp msg model =
                     ( _, Err error ) ->
                         ( { model | search = Failed (httpErrorToString error), pendingRoute = Nothing }, Cmd.none )
 
-        DetailCompleted postId result ->
-            ( { model
-                | sequence =
-                    case result of
-                        Ok detail ->
-                            Sequence.refreshSummary (summaryOfDetail detail) model.sequence
+        DetailCompleted generation postId result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Cmd.none )
 
-                        Err _ ->
-                            model.sequence
-                , details =
-                    Dict.insert postId
-                        (case result of
-                            Ok detail ->
-                                DetailReady detail
-
-                            Err error ->
-                                DetailFailed (httpErrorToString error)
-                        )
-                        model.details
-                , tagVersions =
-                    case result of
-                        Ok detail ->
-                            Dict.insert postId detail.tagVersion model.tagVersions
-
-                        Err _ ->
-                            model.tagVersions
-                , reactionVersions =
-                    case result of
-                        Ok detail ->
-                            Dict.insert postId detail.reactionVersion model.reactionVersions
-
-                        Err _ ->
-                            model.reactionVersions
-                , scoreDraft =
-                    if model.selection.active == Just postId then
+            else
+                ( { model
+                    | sequence =
                         case result of
                             Ok detail ->
-                                String.fromInt detail.score
+                                Sequence.refreshSummary (summaryOfDetail detail) model.sequence
 
                             Err _ ->
-                                model.scoreDraft
+                                model.sequence
+                    , details =
+                        Dict.insert postId
+                            (case result of
+                                Ok detail ->
+                                    DetailReady detail
 
-                    else
-                        model.scoreDraft
-              }
-            , Cmd.none
-            )
+                                Err error ->
+                                    DetailFailed (httpErrorToString error)
+                            )
+                            model.details
+                    , tagVersions =
+                        case result of
+                            Ok detail ->
+                                Dict.insert postId detail.tagVersion model.tagVersions
+
+                            Err _ ->
+                                model.tagVersions
+                    , reactionVersions =
+                        case result of
+                            Ok detail ->
+                                Dict.insert postId detail.reactionVersion model.reactionVersions
+
+                            Err _ ->
+                                model.reactionVersions
+                    , scoreDraft =
+                        if model.selection.active == Just postId then
+                            case result of
+                                Ok detail ->
+                                    String.fromInt detail.score
+
+                                Err _ ->
+                                    model.scoreDraft
+
+                        else
+                            model.scoreDraft
+                  }
+                , Cmd.none
+                )
 
         TagAddChanged value ->
             ( { model | tagAddDraft = value, tagStatus = Nothing }, Cmd.none )
@@ -565,8 +588,47 @@ updateHelp msg model =
         CancelRevert ->
             ( { model | revertConfirm = Nothing, revertStatus = Nothing }, Cmd.none )
 
-        TagsCompleted requestId result ->
-            if requestId /= model.tagRequestId then
+        CapabilitiesReceived generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Cmd.none )
+
+            else
+                capabilitiesSettled { model | access = App.Access.discovered generation result model.access }
+
+        TokenDraftChanged draft ->
+            ( { model | access = App.Access.draftChanged draft model.access }, Cmd.none )
+
+        UnlockRequested ->
+            let
+                ( access, candidate ) =
+                    App.Access.unlockRequested model.access
+            in
+            case candidate of
+                Nothing ->
+                    ( { model | access = access }, Cmd.none )
+
+                Just token ->
+                    ( { model | access = access }
+                    , Api.Access.validate model.apiBase token (CapabilitiesReceived access.generation)
+                    )
+
+        LockRequested ->
+            lockNow model "Locked. Browsing stays available."
+
+        AccessRetry ->
+            let
+                access =
+                    App.Access.retryRequested model.access
+            in
+            ( { model | access = access }
+            , Api.Access.discover model.apiBase (CapabilitiesReceived access.generation)
+            )
+
+        TagsCompleted generation requestId postIds result ->
+            if not (App.Access.isCurrent generation model.access) then
+                refreshPublicPosts postIds model
+
+            else if requestId /= model.tagRequestId then
                 ( model, Cmd.none )
 
             else
@@ -614,7 +676,7 @@ updateHelp msg model =
                                             , tagRemoveDraft = ""
                                             , details = Dict.insert postId DetailLoading model.details
                                           }
-                                        , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                                        , Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId)
                                         )
 
                                     Nothing ->
@@ -644,6 +706,9 @@ updateHelp msg model =
                                         )
                         in
                         refreshed
+
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
 
                     Err error ->
                         let
@@ -681,8 +746,11 @@ updateHelp msg model =
         SaveScore ->
             saveScore model
 
-        ReactionsCompleted requestId result ->
-            if requestId /= model.reactionRequestId then
+        ReactionsCompleted generation requestId postIds result ->
+            if not (App.Access.isCurrent generation model.access) then
+                refreshPublicPosts postIds model
+
+            else if requestId /= model.reactionRequestId then
                 ( model, Cmd.none )
 
             else
@@ -701,13 +769,16 @@ updateHelp msg model =
                                             , reactionStatus = Just "Rating saved."
                                             , details = Dict.insert postId DetailLoading model.details
                                           }
-                                        , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                                        , Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId)
                                         )
 
                                     Nothing ->
                                         ( { model | reactionVersions = versions, reactionSaving = False, reactionStatus = Just "Rating saved." }, Cmd.none )
                         in
                         refreshed
+
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
 
                     Err error ->
                         ( { model | reactionSaving = False, reactionStatus = Just (reactionErrorToString error) }, Cmd.none )
@@ -735,57 +806,109 @@ updateHelp msg model =
                 Err error ->
                     ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
-        SavedSearchesCompleted result ->
-            case result of
-                Ok savedSearches ->
-                    ( { model
-                        | savedSearches = savedSearches
-                        , savedSearchFallback = False
-                        , savedSearchStatus = Nothing
-                      }
-                    , Cmd.none
-                    )
+        SavedSearchesCompleted generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Cmd.none )
 
-                Err _ ->
-                    ( { model
-                        | savedSearchFallback = True
-                        , savedSearchStatus = Nothing
-                      }
-                    , Cmd.none
-                    )
+            else
+                case result of
+                    Ok savedSearches ->
+                        ( { model
+                            | savedSearches = savedSearches
+                            , savedSearchFallback = False
+                            , savedSearchStatus = Nothing
+                          }
+                        , Cmd.none
+                        )
 
-        SavedSearchCreated result ->
-            case result of
-                Ok savedSearch ->
-                    ( { model
-                        | savedSearches = model.savedSearches ++ [ savedSearch ]
-                        , savedSearchSaving = False
-                        , savedSearchStatus = Just "Saved search created."
-                      }
-                    , Cmd.none
-                    )
+                    Err (Http.BadStatus 401) ->
+                        if App.Access.canWrite model.access then
+                            revokeAccess model
 
-                Err _ ->
-                    fallbackSaveSearch model
+                        else
+                            ( { model
+                                | savedSearchFallback = True
+                                , savedSearchStatus = Nothing
+                              }
+                            , Cmd.none
+                            )
 
-        SavedSearchDeleted id result ->
-            case result of
-                Ok () ->
-                    ( { model
-                        | savedSearches = List.filter (\savedSearch -> savedSearch.id /= id) model.savedSearches
-                        , savedSearchSaving = False
-                        , savedSearchStatus = Just "Saved search removed."
-                      }
-                    , Cmd.none
-                    )
+                    Err _ ->
+                        ( { model
+                            | savedSearchFallback = True
+                            , savedSearchStatus = Nothing
+                          }
+                        , Cmd.none
+                        )
 
-                Err _ ->
-                    ( { model
-                        | savedSearchSaving = False
-                        , savedSearchStatus = Just "Could not remove saved search."
-                      }
-                    , Cmd.none
-                    )
+        SavedSearchCreated generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                refreshCurrentOwnerSearches model
+
+            else
+                case result of
+                    Ok savedSearch ->
+                        ( { model
+                            | savedSearches = model.savedSearches ++ [ savedSearch ]
+                            , savedSearchSaving = False
+                            , savedSearchStatus = Just "Saved search created."
+                          }
+                        , Cmd.none
+                        )
+
+                    Err (Http.BadStatus 401) ->
+                        if App.Access.canWrite model.access then
+                            revokeAccess model
+
+                        else
+                            fallbackSaveSearch model
+
+                    Err _ ->
+                        if model.savedSearchFallback then
+                            fallbackSaveSearch model
+
+                        else
+                            ( { model
+                                | savedSearchSaving = False
+                                , savedSearchStatus = Just "Could not save the search."
+                              }
+                            , Cmd.none
+                            )
+
+        SavedSearchDeleted generation id result ->
+            if not (App.Access.isCurrent generation model.access) then
+                refreshCurrentOwnerSearches model
+
+            else
+                case result of
+                    Ok () ->
+                        ( { model
+                            | savedSearches = List.filter (\savedSearch -> savedSearch.id /= id) model.savedSearches
+                            , savedSearchSaving = False
+                            , savedSearchStatus = Just "Saved search removed."
+                          }
+                        , Cmd.none
+                        )
+
+                    Err (Http.BadStatus 401) ->
+                        if App.Access.canWrite model.access then
+                            revokeAccess model
+
+                        else
+                            ( { model
+                                | savedSearchSaving = False
+                                , savedSearchStatus = Just "Could not remove saved search."
+                              }
+                            , Cmd.none
+                            )
+
+                    Err _ ->
+                        ( { model
+                            | savedSearchSaving = False
+                            , savedSearchStatus = Just "Could not remove saved search."
+                          }
+                        , Cmd.none
+                        )
 
         CollectionDraftChanged value ->
             ( { model | collectionDraft = value, collectionStatus = Nothing }, Cmd.none )
@@ -794,138 +917,181 @@ updateHelp msg model =
             if String.trim name == "" then
                 ( model, Cmd.none )
 
+            else if not (App.Access.canWrite model.access) then
+                ( { model | collectionStatus = Just "Unlock to create collections." }, Cmd.none )
+
             else
                 ( { model | collectionStatus = Just "Creating collection…" }
-                , Api.Collection.create model.apiBase name CollectionCreated
+                , Api.Collection.create model.apiBase (App.Access.credential model.access) name (CollectionCreated model.access.generation)
                 )
 
-        CollectionCreated result ->
-            case result of
-                Ok collection ->
-                    ( { model
-                        | collections = model.collections ++ [ collection ]
-                        , activeCollection = Just collection.id
-                        , collectionDraft = ""
-                        , collectionStatus = Just "Collection created."
-                      }
-                    , Cmd.none
-                    )
+        CollectionCreated generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Api.Collection.list model.apiBase CollectionsCompleted )
 
-                Err error ->
-                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+            else
+                case result of
+                    Ok collection ->
+                        ( { model
+                            | collections = model.collections ++ [ collection ]
+                            , activeCollection = Just collection.id
+                            , collectionDraft = ""
+                            , collectionStatus = Just "Collection created."
+                          }
+                        , Cmd.none
+                        )
+
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
+
+                    Err error ->
+                        ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
         SelectCollection id ->
             ( { model | activeCollection = Just id, collectionStatus = Nothing }, Cmd.none )
 
         AddToCollection ->
-            case model.activeCollection of
-                Just collectionId ->
-                    let
-                        postIds = Selection.targets model.sequence model.selection
-                    in
-                    if List.isEmpty postIds then
-                        ( { model | collectionStatus = Just "Select a post first." }, Cmd.none )
+            if not (App.Access.canWrite model.access) then
+                ( { model | collectionStatus = Just "Unlock to add to a collection." }, Cmd.none )
 
-                    else
-                        ( { model | collectionStatus = Just "Adding posts…" }
-                        , Api.Collection.addPosts model.apiBase collectionId postIds CollectionAdded
+            else
+                case model.activeCollection of
+                    Just collectionId ->
+                        let
+                            postIds = Selection.targets model.sequence model.selection
+                        in
+                        if List.isEmpty postIds then
+                            ( { model | collectionStatus = Just "Select a post first." }, Cmd.none )
+
+                        else
+                            ( { model | collectionStatus = Just "Adding posts…" }
+                            , Api.Collection.addPosts model.apiBase (App.Access.credential model.access) collectionId postIds (CollectionAdded model.access.generation)
+                            )
+
+                    Nothing ->
+                        ( { model | collectionStatus = Just "Create or select a collection first." }, Cmd.none )
+
+        CollectionAdded generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Api.Collection.list model.apiBase CollectionsCompleted )
+
+            else
+                case result of
+                    Ok updated ->
+                        ( { model
+                            | collections = List.map (\collection -> if collection.id == updated.id then updated else collection) model.collections
+                            , collectionStatus = Just "Posts added to collection."
+                          }
+                        , Cmd.none
                         )
 
-                Nothing ->
-                    ( { model | collectionStatus = Just "Create or select a collection first." }, Cmd.none )
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
 
-        CollectionAdded result ->
-            case result of
-                Ok updated ->
-                    ( { model
-                        | collections = List.map (\collection -> if collection.id == updated.id then updated else collection) model.collections
-                        , collectionStatus = Just "Posts added to collection."
-                      }
-                    , Cmd.none
-                    )
-
-                Err error ->
-                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+                    Err error ->
+                        ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
         MoveCollectionPost postId delta ->
-            case model.activeCollection of
-                Nothing ->
-                    ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+            if not (App.Access.canWrite model.access) then
+                ( { model | collectionStatus = Just "Unlock to reorder collections." }, Cmd.none )
 
-                Just collectionId ->
-                    case List.filter (\c -> c.id == collectionId) model.collections |> List.head of
-                        Nothing ->
-                            ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+            else
+                case model.activeCollection of
+                    Nothing ->
+                        ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
 
-                        Just collection ->
-                            let
-                                next =
-                                    moveInList postId delta collection.postIds
-                            in
-                            case next of
-                                Nothing ->
-                                    ( model, Cmd.none )
-
-                                Just reordered ->
-                                    ( { model | collectionStatus = Just "Reordering…" }
-                                    , Api.Collection.reorder model.apiBase collectionId reordered CollectionReordered
-                                    )
-
-        CollectionReordered result ->
-            case result of
-                Ok updated ->
-                    ( { model
-                        | collections = List.map (\c -> if c.id == updated.id then updated else c) model.collections
-                        , collectionStatus = Just "Order saved."
-                      }
-                    , Cmd.none
-                    )
-
-                Err error ->
-                    ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
-
-        RemoveCollectionPost postId ->
-            case model.activeCollection of
-                Nothing ->
-                    ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
-
-                Just collectionId ->
-                    if Set.member postId model.collectionRemovals then
-                        ( model, Cmd.none )
-
-                    else
+                    Just collectionId ->
                         case List.filter (\c -> c.id == collectionId) model.collections |> List.head of
                             Nothing ->
                                 ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
 
                             Just collection ->
-                                if not (List.member postId collection.postIds) then
-                                    ( model, Cmd.none )
+                                let
+                                    next =
+                                        moveInList postId delta collection.postIds
+                                in
+                                case next of
+                                    Nothing ->
+                                        ( model, Cmd.none )
 
-                                else
-                                    ( { model | collectionStatus = Just "Removing…", collectionRemovals = Set.insert postId model.collectionRemovals }
-                                    , Api.Collection.removePost model.apiBase collectionId postId (CollectionPostRemoved postId)
-                                    )
+                                    Just reordered ->
+                                        ( { model | collectionStatus = Just "Reordering…" }
+                                        , Api.Collection.reorder model.apiBase (App.Access.credential model.access) collectionId reordered (CollectionReordered model.access.generation)
+                                        )
 
-        CollectionPostRemoved postId result ->
-            case result of
-                Ok () ->
-                    let
-                        updatedCollections =
-                            List.map
-                                (\collection ->
-                                    if Just collection.id == model.activeCollection then
-                                        { collection | postIds = List.filter ((/=) postId) collection.postIds }
+        CollectionReordered generation result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Api.Collection.list model.apiBase CollectionsCompleted )
+
+            else
+                case result of
+                    Ok updated ->
+                        ( { model
+                            | collections = List.map (\c -> if c.id == updated.id then updated else c) model.collections
+                            , collectionStatus = Just "Order saved."
+                          }
+                        , Cmd.none
+                        )
+
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
+
+                    Err error ->
+                        ( { model | collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+
+        RemoveCollectionPost postId ->
+            if not (App.Access.canWrite model.access) then
+                ( { model | collectionStatus = Just "Unlock to remove from collections." }, Cmd.none )
+
+            else
+                case model.activeCollection of
+                    Nothing ->
+                        ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                    Just collectionId ->
+                        if Set.member postId model.collectionRemovals then
+                            ( model, Cmd.none )
+
+                        else
+                            case List.filter (\c -> c.id == collectionId) model.collections |> List.head of
+                                Nothing ->
+                                    ( { model | collectionStatus = Just "Select a collection first." }, Cmd.none )
+
+                                Just collection ->
+                                    if not (List.member postId collection.postIds) then
+                                        ( model, Cmd.none )
 
                                     else
-                                        collection
-                                )
-                                model.collections
-                    in
-                    ( { model | collections = updatedCollections, collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just "Removed from collection." }, Cmd.none )
+                                        ( { model | collectionStatus = Just "Removing…", collectionRemovals = Set.insert postId model.collectionRemovals }
+                                        , Api.Collection.removePost model.apiBase (App.Access.credential model.access) collectionId postId (CollectionPostRemoved model.access.generation postId)
+                                        )
 
-                Err error ->
-                    ( { model | collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just (httpErrorToString error) }, Cmd.none )
+        CollectionPostRemoved generation postId result ->
+            if not (App.Access.isCurrent generation model.access) then
+                ( model, Api.Collection.list model.apiBase CollectionsCompleted )
+
+            else
+                case result of
+                    Ok () ->
+                        let
+                            updatedCollections =
+                                List.map
+                                    (\collection ->
+                                        if Just collection.id == model.activeCollection then
+                                            { collection | postIds = List.filter ((/=) postId) collection.postIds }
+
+                                        else
+                                            collection
+                                    )
+                                    model.collections
+                        in
+                        ( { model | collections = updatedCollections, collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just "Removed from collection." }, Cmd.none )
+
+                    Err (Http.BadStatus 401) ->
+                        revokeAccess model
+
+                    Err error ->
+                        ( { model | collectionRemovals = Set.remove postId model.collectionRemovals, collectionStatus = Just (httpErrorToString error) }, Cmd.none )
 
         Retry ->
             startSearch model model.query
@@ -1022,7 +1188,7 @@ updateHelp msg model =
                 query =
                     String.trim model.query
             in
-            if query == "" || List.any (\savedSearch -> savedSearch.query == query) model.savedSearches || List.member query model.prefs.savedSearches then
+            if query == "" || List.any (\savedSearch -> savedSearch.label == query) (savedItems model) then
                 ( model, Cmd.none )
 
             else if model.savedSearchFallback then
@@ -1030,18 +1196,29 @@ updateHelp msg model =
                     (\prefs -> { prefs | savedSearches = prefs.savedSearches ++ [ query ] })
                     { model | savedSearchStatus = Just "Saved search saved on this device." }
 
+            else if not (App.Access.canWrite model.access) then
+                fallbackSaveSearch model
+
             else
                 ( { model | savedSearchSaving = True, savedSearchStatus = Just "Saving saved search…" }
-                , Api.SavedSearch.create model.apiBase query query SavedSearchCreated
+                , Api.SavedSearch.create model.apiBase (App.Access.credential model.access) query query (SavedSearchCreated model.access.generation)
                 )
 
         RemoveSavedSearch id ->
             if model.savedSearchFallback then
                 fallbackRemoveSavedSearch id model
 
+            else if not (App.Access.canWrite model.access) then
+                ( { model
+                    | savedSearchSaving = False
+                    , savedSearchStatus = Just "Unlock to remove saved searches."
+                  }
+                , Cmd.none
+                )
+
             else
                 ( { model | savedSearchSaving = True, savedSearchStatus = Just "Removing saved search…" }
-                , Api.SavedSearch.delete model.apiBase id (SavedSearchDeleted id)
+                , Api.SavedSearch.delete model.apiBase (App.Access.credential model.access) id (SavedSearchDeleted model.access.generation id)
                 )
 
         SyncUrl seq ->
@@ -1052,25 +1229,47 @@ updateHelp msg model =
                 ( model, Cmd.none )
 
         UploadMsg subMsg ->
-            let
-                ( queue, queueCmd, outs ) =
-                    UploadQueue.update model.apiBase subMsg model.upload
+            case subMsg of
+                UploadQueue.BrowseClicked ->
+                    if App.Access.canWrite model.access then
+                        delegateUpload subMsg model
 
-                withQueue =
-                    { model | upload = queue }
+                    else
+                        ( { model | hint = Just "Unlock to upload images." }, Cmd.none )
 
-                focusCmd =
-                    case subMsg of
-                        UploadQueue.OpenPanel ->
-                            focusLater "upload-tags"
-
-                        _ ->
-                            Cmd.none
-            in
-            handleUploadOuts outs ( withQueue, Cmd.batch [ Cmd.map UploadMsg queueCmd, focusCmd ] )
+                _ ->
+                    delegateUpload subMsg model
 
         NoOp ->
             ( model, Cmd.none )
+
+
+{-| Per-call queue context: uploads carry the current credential and only
+start while writes are enabled. The queue never stores the credential.
+-}
+uploadContext : Model -> UploadQueue.Context
+uploadContext model =
+    UploadQueue.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+
+
+delegateUpload : UploadQueue.Msg -> Model -> ( Model, Cmd Msg )
+delegateUpload subMsg model =
+    let
+        ( queue, queueCmd, outs ) =
+            UploadQueue.update (uploadContext model) subMsg model.upload
+
+        withQueue =
+            { model | upload = queue }
+
+        focusCmd =
+            case subMsg of
+                UploadQueue.OpenPanel ->
+                    focusLater "upload-tags"
+
+                _ ->
+                    Cmd.none
+    in
+    handleUploadOuts outs ( withQueue, Cmd.batch [ Cmd.map UploadMsg queueCmd, focusCmd ] )
 
 
 {-| Upload queue effects keep the Library stable: the query, collection,
@@ -1105,7 +1304,7 @@ applyUploadOut out ( model, cmd ) =
 
         UploadQueue.ThumbCompleted postId ->
             ( model
-            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted postId) ]
+            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
             )
 
         UploadQueue.OpenPost postId ->
@@ -1115,6 +1314,16 @@ applyUploadOut out ( model, cmd ) =
 
                 Nothing ->
                     ( { model | hint = Just "That upload is no longer available." }, cmd )
+
+        UploadQueue.CredentialRejected requestGeneration ->
+            if App.Access.isCurrent requestGeneration model.access && App.Access.canWrite model.access then
+                revokeAccess model
+
+            else
+                -- Already locked (for example a lock landed mid-upload):
+                -- the entry already settled honestly, so there is nothing
+                -- further to revoke.
+                ( model, cmd )
 
 
 {-| View navigates to the uploaded post on a transient single-post
@@ -2200,7 +2409,7 @@ prepareActiveDetail model =
 
                 _ ->
                     ( { model | details = Dict.insert postId DetailLoading model.details }
-                    , Api.Post.detail model.apiBase postId (DetailCompleted postId)
+                    , Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId)
                     )
 
 
@@ -2237,6 +2446,135 @@ savePrefs change model =
             change model.prefs
     in
     ( { model | prefs = prefs }, Prefs.save prefs )
+
+
+{-| Settle a capabilities response into follow-up work. A fresh unlock
+loads the authenticated owner's saved searches and resumes the paused
+upload queue; a fresh open-local discovery loads the local actor's
+list. Lock and unavailable answers clear the server list so only the
+on-device fallback shows.
+-}
+capabilitiesSettled : Model -> ( Model, Cmd Msg )
+capabilitiesSettled model =
+    case model.access.status of
+        App.Access.Unlocked ->
+            let
+                ( queue, queueCmd, outs ) =
+                    UploadQueue.resume (uploadContext model) model.upload
+
+                ( withQueue, queueCmds ) =
+                    handleUploadOuts outs ( { model | upload = queue }, Cmd.map UploadMsg queueCmd )
+            in
+            ( { withQueue | hint = Just "Unlocked. Writes enabled." }
+            , Cmd.batch [ queueCmds, loadServerSearches model ]
+            )
+
+        App.Access.OpenLocal ->
+            ( model, loadServerSearches model )
+
+        App.Access.Locked ->
+            ( { model | savedSearches = [], savedSearchFallback = True }, Cmd.none )
+
+        App.Access.Unavailable ->
+            ( { model | savedSearches = [], savedSearchFallback = True }, Cmd.none )
+
+        _ ->
+            ( model, Cmd.none )
+
+
+{-| Owner-scoped saved-search list for the current credential: the
+system owner's entries while unlocked, the local actor's while
+open-local. Never called while locked.
+-}
+loadServerSearches : Model -> Cmd Msg
+loadServerSearches model =
+    Api.SavedSearch.list model.apiBase
+        (App.Access.credential model.access)
+        (SavedSearchesCompleted model.access.generation)
+
+
+{-| User-initiated lock: secrets clear, in-flight credentialed responses
+go stale, the server list clears back to the local fallback, and public
+state re-fetches so already-accepted writes still show. Lock is not
+rollback and never replays mutations or uploads.
+-}
+lockNow : Model -> String -> ( Model, Cmd Msg )
+lockNow model hint =
+    reconcilePublic
+        { model
+            | access = App.Access.lockRequested model.access
+            , savedSearches = []
+            , savedSearchFallback = True
+            , savedSearchSaving = False
+            , tagSaving = False
+            , revertPending = Nothing
+            , revertConfirm = Nothing
+            , reactionSaving = False
+            , collectionStatus = Nothing
+            , collectionRemovals = Set.empty
+            , hint = Just hint
+        }
+
+
+{-| Server-initiated lock after a 401 on a credentialed request. Same
+clearing as a manual lock, plus the fixed notice, then public
+reconciliation. Stale in-flight flags reset because their completions
+will arrive with an obsolete generation and be ignored.
+-}
+revokeAccess : Model -> ( Model, Cmd Msg )
+revokeAccess model =
+    reconcilePublic
+        { model
+            | access = App.Access.revoked model.access
+            , savedSearches = []
+            , savedSearchFallback = True
+            , savedSearchSaving = False
+            , tagSaving = False
+            , revertPending = Nothing
+            , revertConfirm = Nothing
+            , reactionSaving = False
+            , collectionStatus = Nothing
+            , collectionRemovals = Set.empty
+            , hint = Just "The browser was locked (401). Unlock to continue writing."
+        }
+
+
+{-| Re-fetch public metadata without replacing the result sequence or
+resetting the workspace. Inactive details are invalidated and load lazily
+on selection; current targets are bounded to one page. Late completions
+also refresh their captured targets, after the server has actually settled.
+-}
+reconcilePublic : Model -> ( Model, Cmd Msg )
+reconcilePublic model =
+    let
+        postIds =
+            ((model.selection.active |> Maybe.map List.singleton |> Maybe.withDefault []) ++ Set.toList model.selection.selected)
+                |> List.take 60
+
+        ( refreshed, postCmd ) =
+            refreshPublicPosts postIds { model | details = Dict.empty }
+    in
+    ( refreshed, Cmd.batch [ postCmd, Api.Collection.list model.apiBase CollectionsCompleted ] )
+
+
+refreshPublicPosts : List String -> Model -> ( Model, Cmd Msg )
+refreshPublicPosts postIds model =
+    let
+        ids =
+            Set.fromList postIds |> Set.toList
+    in
+    ( { model | details = List.foldl (\id details -> Dict.insert id DetailLoading details) model.details ids }
+    , ids |> List.map (\id -> Api.Post.detail model.apiBase id (DetailCompleted model.access.generation id)) |> Cmd.batch
+    )
+
+
+refreshCurrentOwnerSearches : Model -> ( Model, Cmd Msg )
+refreshCurrentOwnerSearches model =
+    if App.Access.canWrite model.access then
+        ( model, loadServerSearches model )
+
+    else
+        ( model, Cmd.none )
 
 
 fallbackSaveSearch : Model -> ( Model, Cmd Msg )
@@ -2528,7 +2866,10 @@ saveTags model =
         requestId =
             model.tagRequestId + 1
     in
-    if List.isEmpty targets then
+    if not (App.Access.canWrite model.access) then
+        ( { model | tagStatus = Just "Unlock to edit tags." }, Cmd.none )
+
+    else if List.isEmpty targets then
         ( { model | tagStatus = Just "Select a post before editing tags." }, Cmd.none )
 
     else if List.isEmpty add && List.isEmpty remove then
@@ -2536,54 +2877,62 @@ saveTags model =
 
     else
         ( { model | tagSaving = True, tagStatus = Nothing, revertStatus = Nothing, tagRequestId = requestId }
-        , Api.Post.editTags model.apiBase targets add remove (TagsCompleted requestId)
+        , Api.Post.editTags model.apiBase (App.Access.credential model.access) targets add remove (TagsCompleted model.access.generation requestId (List.map .id targets))
         )
 
 
 requestRevert : Model -> Int -> ( Model, Cmd Msg )
 requestRevert model targetVersion =
-    case model.selection.active of
-        Nothing ->
-            ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
+    if not (App.Access.canWrite model.access) then
+        ( { model | revertStatus = Just "Unlock to revert tags." }, Cmd.none )
 
-        Just postId ->
-            case Dict.get postId model.details of
-                Just (DetailReady detail) ->
-                    case List.filter (\r -> r.version == targetVersion) detail.history |> List.head of
-                        Just revision ->
-                            if not revision.revertible then
-                                ( { model | revertStatus = Just "Legacy revision cannot be reverted." }, Cmd.none )
+    else
+        case model.selection.active of
+            Nothing ->
+                ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
 
-                            else if model.revertPending /= Nothing then
-                                ( model, Cmd.none )
+            Just postId ->
+                case Dict.get postId model.details of
+                    Just (DetailReady detail) ->
+                        case List.filter (\r -> r.version == targetVersion) detail.history |> List.head of
+                            Just revision ->
+                                if not revision.revertible then
+                                    ( { model | revertStatus = Just "Legacy revision cannot be reverted." }, Cmd.none )
 
-                            else
-                                ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
+                                else if model.revertPending /= Nothing then
+                                    ( model, Cmd.none )
 
-                        Nothing ->
-                            ( { model | revertStatus = Just "Revision not found." }, Cmd.none )
+                                else
+                                    ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
 
-                _ ->
-                    ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
+                            Nothing ->
+                                ( { model | revertStatus = Just "Revision not found." }, Cmd.none )
+
+                    _ ->
+                        ( { model | revertConfirm = Just targetVersion, revertStatus = Nothing }, Cmd.none )
 
 
 confirmRevert : Model -> Int -> ( Model, Cmd Msg )
 confirmRevert model targetVersion =
-    case model.selection.active of
-        Nothing ->
-            ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
+    if not (App.Access.canWrite model.access) then
+        ( { model | revertStatus = Just "Unlock to revert tags." }, Cmd.none )
 
-        Just postId ->
-            let
-                requestId =
-                    model.tagRequestId + 1
+    else
+        case model.selection.active of
+            Nothing ->
+                ( { model | tagStatus = Just "Select a post before reverting tags." }, Cmd.none )
 
-                target =
-                    tagTarget model postId
-            in
-            ( { model | tagSaving = True, revertPending = Just targetVersion, revertConfirm = Nothing, revertStatus = Nothing, tagStatus = Nothing, tagRequestId = requestId }
-            , Api.Post.revertTags model.apiBase [ target ] targetVersion (TagsCompleted requestId)
-            )
+            Just postId ->
+                let
+                    requestId =
+                        model.tagRequestId + 1
+
+                    target =
+                        tagTarget model postId
+                in
+                ( { model | tagSaving = True, revertPending = Just targetVersion, revertConfirm = Nothing, revertStatus = Nothing, tagStatus = Nothing, tagRequestId = requestId }
+                , Api.Post.revertTags model.apiBase (App.Access.credential model.access) [ target ] targetVersion (TagsCompleted model.access.generation requestId [ postId ])
+                )
 
 
 tagTarget : Model -> String -> TagEditTarget
@@ -2648,18 +2997,22 @@ saveFavorite model =
         requestId =
             model.reactionRequestId + 1
     in
-    case favorite of
-        Nothing ->
-            ( { model | reactionStatus = Just "Select a post and load its details before changing favorite." }, Cmd.none )
+    if not (App.Access.canWrite model.access) then
+        ( { model | reactionStatus = Just "Unlock to change favorites." }, Cmd.none )
 
-        Just value ->
-            if List.isEmpty targets then
-                ( { model | reactionStatus = Just "Select a post before changing favorite." }, Cmd.none )
+    else
+        case favorite of
+            Nothing ->
+                ( { model | reactionStatus = Just "Select a post and load its details before changing favorite." }, Cmd.none )
 
-            else
-                ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
-                , Api.Post.editReactions model.apiBase targets (Just value) Nothing (ReactionsCompleted requestId)
-                )
+            Just value ->
+                if List.isEmpty targets then
+                    ( { model | reactionStatus = Just "Select a post before changing favorite." }, Cmd.none )
+
+                else
+                    ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
+                    , Api.Post.editReactions model.apiBase (App.Access.credential model.access) targets (Just value) Nothing (ReactionsCompleted model.access.generation requestId (List.map .id targets))
+                    )
 
 
 saveScore : Model -> ( Model, Cmd Msg )
@@ -2674,21 +3027,25 @@ saveScore model =
         requestId =
             model.reactionRequestId + 1
     in
-    case String.toInt (String.trim model.scoreDraft) of
-        Nothing ->
-            ( { model | reactionStatus = Just "Score must be a non-negative integer." }, Cmd.none )
+    if not (App.Access.canWrite model.access) then
+        ( { model | reactionStatus = Just "Unlock to change the score." }, Cmd.none )
 
-        Just score ->
-            if score < 0 then
+    else
+        case String.toInt (String.trim model.scoreDraft) of
+            Nothing ->
                 ( { model | reactionStatus = Just "Score must be a non-negative integer." }, Cmd.none )
 
-            else if List.isEmpty targets then
-                ( { model | reactionStatus = Just "Select a post before changing score." }, Cmd.none )
+            Just score ->
+                if score < 0 then
+                    ( { model | reactionStatus = Just "Score must be a non-negative integer." }, Cmd.none )
 
-            else
-                ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
-                , Api.Post.editReactions model.apiBase targets Nothing (Just score) (ReactionsCompleted requestId)
-                )
+                else if List.isEmpty targets then
+                    ( { model | reactionStatus = Just "Select a post before changing score." }, Cmd.none )
+
+                else
+                    ( { model | reactionSaving = True, reactionStatus = Nothing, reactionRequestId = requestId }
+                    , Api.Post.editReactions model.apiBase (App.Access.credential model.access) targets Nothing (Just score) (ReactionsCompleted model.access.generation requestId (List.map .id targets))
+                    )
 
 
 splitTagDraft : String -> List String
@@ -2925,7 +3282,7 @@ shell model =
                 , stage model
                 ]
             , inspectorView model
-            , Html.map UploadMsg (UploadQueue.view model.upload)
+            , Html.map UploadMsg (UploadQueue.view (App.Access.canWrite model.access) model.upload)
             ]
         , statusBar model
         , if model.shortcutsOpen then
@@ -2955,6 +3312,7 @@ topBar model =
             , modeButton model "Compare" "C" OpenCompare (isCompare model.mode)
             , modeButton model "Survey" "N" OpenSurvey (isSurvey model.mode)
             ]
+        , accessControls model
         , uploadButton model
         , Ui.Button.view [ class "button-quiet" ]
             { label = "Info"
@@ -2995,6 +3353,92 @@ uploadButton model =
         , pressed = Just (UploadQueue.isOpen model.upload)
         , hint = Just "Upload images"
         }
+
+
+{-| Compact write-access controls. Open-local mode shows a quiet label;
+gated mode shows a token field with Unlock, or the unlocked state with
+Lock. The token draft lives only in transient access state and clears
+on validation; wrong tokens keep the browser locked with a fixed
+message that never echoes the draft.
+-}
+accessControls : Model -> Html Msg
+accessControls model =
+    case model.access.status of
+        App.Access.Checking ->
+            span [ class "access-state" ] [ text "Checking access…" ]
+
+        App.Access.OpenLocal ->
+            span [ class "access-state", title "Local mode: writes need no token." ] [ text "Local" ]
+
+        App.Access.Locked ->
+            accessUnlockForm model False
+
+        App.Access.Validating ->
+            accessUnlockForm model True
+
+        App.Access.Unlocked ->
+            div [ class "access-block" ]
+                [ span [ class "access-state", title "Writes enabled as the system owner." ] [ text "Unlocked" ]
+                , Ui.Button.view [ class "button-quiet" ]
+                    { label = "Lock"
+                    , key = Nothing
+                    , onPress = Just LockRequested
+                    , pressed = Nothing
+                    , hint = Just "Lock writes and clear the token"
+                    }
+                ]
+
+        App.Access.Unavailable ->
+            div [ class "access-block" ]
+                [ span [ class "access-state" ] [ text "Access unavailable" ]
+                , Ui.Button.view [ class "button-quiet" ]
+                    { label = "Retry"
+                    , key = Nothing
+                    , onPress = Just AccessRetry
+                    , pressed = Nothing
+                    , hint = Just "Retry capability discovery"
+                    }
+                ]
+
+
+accessUnlockForm : Model -> Bool -> Html Msg
+accessUnlockForm model busy =
+    form [ class "access-block", onSubmit UnlockRequested ]
+        [ input
+            [ class "token-field"
+            , type_ "password"
+            , placeholder "Token"
+            , value model.access.draft
+            , onInput TokenDraftChanged
+            , attribute "aria-label" "Access token"
+            , attribute "autocomplete" "off"
+            , disabled busy
+            ]
+            []
+        , Ui.Button.view [ class "button-quiet" ]
+            { label =
+                if busy then
+                    "Unlocking…"
+
+                else
+                    "Unlock"
+            , key = Nothing
+            , onPress =
+                if busy then
+                    Nothing
+
+                else
+                    Just UnlockRequested
+            , pressed = Nothing
+            , hint = Just "Validate the token and enable writes"
+            }
+        , case model.access.notice of
+            Just notice ->
+                span [ class "access-notice" ] [ text notice ]
+
+            Nothing ->
+                text ""
+        ]
 
 
 modeButton : Model -> String -> String -> Command -> Bool -> Html Msg
@@ -3086,19 +3530,20 @@ navigatorView model =
             , onSave = SaveSearch
             , onRemove = RemoveSavedSearch
             , onClose = KeyCommand ToggleNavigator
+            , writesEnabled = App.Access.canWrite model.access
             }
 
     else
         text ""
 
 
-savedItems : Model -> List Feature.Navigator.SavedItem
+{-| Owner separation for the navigator: the local fallback shows only the
+on-device queries, otherwise only the authenticated owner's server
+entries. The two lists are never merged.
+-}
+savedItems : Model -> List Api.SavedSearch.VisibleItem
 savedItems model =
-    if model.savedSearchFallback then
-        List.map (\query -> { id = query, label = query }) model.prefs.savedSearches
-
-    else
-        List.map (\savedSearch -> { id = savedSearch.id, label = savedSearch.query }) model.savedSearches
+    Api.SavedSearch.visible model.savedSearchFallback model.savedSearches model.prefs.savedSearches
 
 
 inspectorView : Model -> Html Msg
@@ -3121,6 +3566,7 @@ inspectorView model =
             , onFavorite = KeyCommand ToggleFavoriteAction
             , onAddToCollection = AddToCollection
             , onMediaError = MediaFailed
+            , writesEnabled = App.Access.canWrite model.access
             , tagAdd = model.tagAddDraft
             , tagRemove = model.tagRemoveDraft
             , tagStatus = model.tagStatus

@@ -1,5 +1,6 @@
 module Feature.UploadQueue exposing
-    ( Entry
+    ( Context
+    , Entry
     , FileInfo
     , Model
     , Msg(..)
@@ -9,6 +10,7 @@ module Feature.UploadQueue exposing
     , UploadedInfo
     , acceptMimes
     , activeUploadId
+    , context
     , formatBytes
     , init
     , isDismissible
@@ -19,6 +21,7 @@ module Feature.UploadQueue exposing
     , pendingCount
     , phaseLabel
     , pollIntervalMs
+    , resume
     , setOpen
     , subscriptions
     , thumbLabel
@@ -98,8 +101,8 @@ type alias FileInfo =
 
 type Phase
     = Queued
-    | Uploading { sent : Int, size : Int }
-    | Saving
+    | Uploading { sent : Int, size : Int, accessGeneration : Int }
+    | Saving Int
     | Uploaded UploadedInfo
     | Rejected String
     | Failed String
@@ -146,6 +149,28 @@ type alias Model =
     }
 
 
+{-| Per-call access context from the Library: where to send uploads,
+which credential to attach, and whether writes are currently enabled.
+The queue never stores the credential; every request is built from the
+context handed to that update.
+-}
+type alias Context =
+    { apiBase : String
+    , credential : Maybe String
+    , writesEnabled : Bool
+    , accessGeneration : Int
+    }
+
+
+context : String -> Maybe String -> Bool -> Int -> Context
+context apiBase credential writesEnabled accessGeneration =
+    { apiBase = apiBase
+    , credential = credential
+    , writesEnabled = writesEnabled
+    , accessGeneration = accessGeneration
+    }
+
+
 type Msg
     = OpenPanel
     | ClosePanel
@@ -155,7 +180,7 @@ type Msg
     | BrowseClicked
     | FilesPicked File (List File)
     | TransferProgress Int Http.Progress
-    | UploadFinished Int (Result Http.Error PostDetail)
+    | UploadFinished Int Int (Result Http.Error PostDetail)
     | JobTick Time.Posix
     | JobFinished Int (Result Http.Error Job)
     | ViewPost String
@@ -167,6 +192,7 @@ type OutMsg
     = UploadConfirmed PostDetail
     | ThumbCompleted String
     | OpenPost String
+    | CredentialRejected Int
 
 
 init : Model
@@ -192,7 +218,7 @@ isDismissible entry =
         Uploading _ ->
             False
 
-        Saving ->
+        Saving _ ->
             False
 
         _ ->
@@ -205,7 +231,7 @@ isActivePhase phase =
         Uploading _ ->
             True
 
-        Saving ->
+        Saving _ ->
             True
 
         _ ->
@@ -330,7 +356,7 @@ phaseLabel phase =
         Uploading _ ->
             "Uploading"
 
-        Saving ->
+        Saving _ ->
             "Saving"
 
         Uploaded _ ->
@@ -360,8 +386,8 @@ thumbLabel thumb =
 -- UPDATE
 
 
-update : String -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
-update apiBase msg model =
+update : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
+update ctx msg model =
     case msg of
         OpenPanel ->
             ( { model | open = True }, Cmd.none, [] )
@@ -382,16 +408,16 @@ update apiBase msg model =
             ( model, Select.files acceptMimes FilesPicked, [] )
 
         FilesPicked first rest ->
-            addFiles apiBase model (first :: rest)
+            addFiles ctx model (first :: rest)
 
         TransferProgress entryId progress ->
             ( { model | entries = List.map (applyProgress entryId progress) model.entries }, Cmd.none, [] )
 
-        UploadFinished entryId result ->
-            finishUpload apiBase model entryId result
+        UploadFinished entryId requestGeneration result ->
+            finishUpload ctx model entryId requestGeneration result
 
         JobTick _ ->
-            pollThumbs apiBase model
+            pollThumbs ctx model
 
         JobFinished entryId result ->
             ( { model | entries = List.map (applyJobResult entryId result) model.entries }
@@ -412,7 +438,7 @@ update apiBase msg model =
                         ( model, Cmd.none, [] )
 
                     else
-                        pump apiBase
+                        pump ctx
                             { model
                                 | entries = List.filter (\candidate -> candidate.id /= entryId) model.entries
                                 , files = Dict.remove entryId model.files
@@ -438,6 +464,21 @@ update apiBase msg model =
             )
 
 
+{-| Resume a paused queue after unlock. Queued entries start only while
+writes are enabled; while locked this is a no-op so a lock can never
+launch a new upload. In-flight entries are untouched either way: the
+browser cannot cancel their requests, and their completions still
+settle honestly through `UploadFinished`.
+-}
+resume : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
+resume ctx model =
+    if ctx.writesEnabled then
+        pump ctx model
+
+    else
+        ( model, Cmd.none, [] )
+
+
 fileInfoOf : File -> FileInfo
 fileInfoOf file =
     { name = File.name file
@@ -446,8 +487,8 @@ fileInfoOf file =
     }
 
 
-addFiles : String -> Model -> List File -> ( Model, Cmd Msg, List OutMsg )
-addFiles apiBase model files =
+addFiles : Context -> Model -> List File -> ( Model, Cmd Msg, List OutMsg )
+addFiles ctx model files =
     let
         sharedTags =
             parseTags model.tagsDraft
@@ -487,56 +528,71 @@ addFiles apiBase model files =
                 model.files
                 (List.map2 Tuple.pair (List.map .id entries) files)
     in
-    pump apiBase { model | entries = model.entries ++ entries, files = stored, nextId = model.nextId + List.length files }
+    pump ctx { model | entries = model.entries ++ entries, files = stored, nextId = model.nextId + List.length files }
 
 
-{-| Start the first queued entry when nothing is in flight. The apiBase
-threads through from the caller.
+{-| Start the first queued entry when nothing is in flight and writes are
+enabled. While locked the queue holds its place: queued entries wait for
+`resume` instead of launching uncredentialed uploads that a gated server
+would reject. The context threads through from the caller; the queue
+itself never stores the credential.
 -}
-pump : String -> Model -> ( Model, Cmd Msg, List OutMsg )
-pump apiBase model =
-    startNext apiBase model |> (\( m, c ) -> ( m, c, [] ))
+pump : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
+pump ctx model =
+    startNext ctx model |> (\( m, c ) -> ( m, c, [] ))
 
 
-startNext : String -> Model -> ( Model, Cmd Msg )
-startNext apiBase model =
-    case ( activeEntry model, List.filter (\entry -> entry.phase == Queued) model.entries |> List.head ) of
-        ( Nothing, Just next ) ->
-            case Dict.get next.id model.files of
-                Just file ->
-                    ( { model | entries = List.map (beginUpload next.id) model.entries }
-                    , Upload.request apiBase
-                        (trackerKey next.id)
-                        file
-                        { tags = next.tags, source = next.source, artist = next.artist }
-                        (UploadFinished next.id)
-                    )
+startNext : Context -> Model -> ( Model, Cmd Msg )
+startNext ctx model =
+    if not ctx.writesEnabled then
+        ( model, Cmd.none )
 
-                Nothing ->
-                    -- The picked file is gone; fail this entry and move on
-                    -- rather than stalling the queue behind it.
-                    startNext apiBase
-                        { model
-                            | entries =
-                                List.map
-                                    (\entry ->
-                                        if entry.id == next.id then
-                                            { entry | phase = Failed "The selected file is no longer available." }
+    else
+        case ( activeEntry model, List.filter (\entry -> entry.phase == Queued) model.entries |> List.head ) of
+            ( Nothing, Just next ) ->
+                case Dict.get next.id model.files of
+                    Just file ->
+                        ( { model | entries = List.map (beginUpload next.id ctx.accessGeneration) model.entries }
+                        , Upload.request ctx.apiBase
+                            ctx.credential
+                            (trackerKey next.id)
+                            file
+                            { tags = next.tags, source = next.source, artist = next.artist }
+                            (UploadFinished next.id ctx.accessGeneration)
+                        )
 
-                                        else
-                                            entry
-                                    )
-                                    model.entries
-                        }
+                    Nothing ->
+                        -- The picked file is gone; fail this entry and move on
+                        -- rather than stalling the queue behind it.
+                        startNext ctx
+                            { model
+                                | entries =
+                                    List.map
+                                        (\entry ->
+                                            if entry.id == next.id then
+                                                { entry | phase = Failed "The selected file is no longer available." }
 
-        _ ->
-            ( model, Cmd.none )
+                                            else
+                                                entry
+                                        )
+                                        model.entries
+                            }
+
+            _ ->
+                ( model, Cmd.none )
 
 
-beginUpload : Int -> Entry -> Entry
-beginUpload entryId entry =
+beginUpload : Int -> Int -> Entry -> Entry
+beginUpload entryId accessGeneration entry =
     if entry.id == entryId && entry.phase == Queued then
-        { entry | phase = Uploading { sent = 0, size = max 1 entry.size } }
+        { entry
+            | phase =
+                Uploading
+                    { sent = 0
+                    , size = max 1 entry.size
+                    , accessGeneration = accessGeneration
+                    }
+        }
 
     else
         entry
@@ -560,47 +616,76 @@ applyProgress entryId progress entry =
 
     else
         case ( entry.phase, progress ) of
-            ( Uploading _, Http.Sending sending ) ->
+            ( Uploading current, Http.Sending sending ) ->
                 if sending.sent >= sending.size then
-                    { entry | phase = Saving }
+                    { entry | phase = Saving current.accessGeneration }
 
                 else
-                    { entry | phase = Uploading { sent = sending.sent, size = sending.size } }
+                    { entry
+                        | phase =
+                            Uploading
+                                { sent = sending.sent
+                                , size = sending.size
+                                , accessGeneration = current.accessGeneration
+                                }
+                    }
 
-            ( Saving, Http.Sending sending ) ->
+            ( Saving accessGeneration, Http.Sending sending ) ->
                 if sending.sent < sending.size then
-                    { entry | phase = Uploading { sent = sending.sent, size = sending.size } }
+                    { entry
+                        | phase =
+                            Uploading
+                                { sent = sending.sent
+                                , size = sending.size
+                                , accessGeneration = accessGeneration
+                                }
+                    }
 
                 else
                     entry
 
-            ( Uploading _, Http.Receiving _ ) ->
-                { entry | phase = Saving }
+            ( Uploading current, Http.Receiving _ ) ->
+                { entry | phase = Saving current.accessGeneration }
 
             _ ->
                 entry
 
 
-finishUpload : String -> Model -> Int -> Result Http.Error PostDetail -> ( Model, Cmd Msg, List OutMsg )
-finishUpload apiBase model entryId result =
+finishUpload : Context -> Model -> Int -> Int -> Result Http.Error PostDetail -> ( Model, Cmd Msg, List OutMsg )
+finishUpload ctx model entryId requestGeneration result =
     case List.filter (\entry -> entry.id == entryId) model.entries |> List.head of
         Nothing ->
             ( model, Cmd.none, [] )
 
         Just entry ->
             case entry.phase of
-                Uploading _ ->
-                    settleUpload apiBase model entry result
+                Uploading active ->
+                    if active.accessGeneration == requestGeneration then
+                        settleUpload ctx model entry requestGeneration result
 
-                Saving ->
-                    settleUpload apiBase model entry result
+                    else
+                        ( model, Cmd.none, [] )
+
+                Saving activeGeneration ->
+                    if activeGeneration == requestGeneration then
+                        settleUpload ctx model entry requestGeneration result
+
+                    else
+                        ( model, Cmd.none, [] )
 
                 _ ->
                     ( model, Cmd.none, [] )
 
 
-settleUpload : String -> Model -> Entry -> Result Http.Error PostDetail -> ( Model, Cmd Msg, List OutMsg )
-settleUpload apiBase model entry result =
+{-| Settle one upload honestly. A confirmed upload stands even when the
+browser locked mid-flight: lock is not rollback, and the entry keeps
+its server-confirmed post id. A 401 additionally reports
+`CredentialRejected` so the Library can lock. Failures never resend:
+after a lost response the post may already exist, so resubmission stays
+an explicit user decision.
+-}
+settleUpload : Context -> Model -> Entry -> Int -> Result Http.Error PostDetail -> ( Model, Cmd Msg, List OutMsg )
+settleUpload ctx model entry requestGeneration result =
     case result of
         Ok detail ->
             let
@@ -639,7 +724,7 @@ settleUpload apiBase model entry result =
                         , files = Dict.remove entry.id model.files
                     }
             in
-            pump apiBase withSettled
+            pump ctx withSettled
                 |> (\( pumped, cmd, _ ) -> ( pumped, cmd, [ UploadConfirmed detail ] ))
 
         Err error ->
@@ -652,12 +737,31 @@ settleUpload apiBase model entry result =
                         | entries = List.map (\candidate -> if candidate.id == entry.id then failed else candidate) model.entries
                         , files = Dict.remove entry.id model.files
                     }
+
+                outs =
+                    case error of
+                        Http.BadStatus 401 ->
+                            [ CredentialRejected requestGeneration ]
+
+                        _ ->
+                            []
             in
-            pump apiBase withFailed
+            case error of
+                Http.BadStatus 401 ->
+                    if ctx.accessGeneration /= requestGeneration && ctx.writesEnabled then
+                        pump ctx withFailed
+                            |> (\( pumped, cmd, _ ) -> ( pumped, cmd, outs ))
+
+                    else
+                        ( withFailed, Cmd.none, outs )
+
+                _ ->
+                    pump ctx withFailed
+                        |> (\( pumped, cmd, _ ) -> ( pumped, cmd, outs ))
 
 
-pollThumbs : String -> Model -> ( Model, Cmd Msg, List OutMsg )
-pollThumbs apiBase model =
+pollThumbs : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
+pollThumbs ctx model =
     let
         ( entries, cmds ) =
             List.foldr
@@ -675,7 +779,7 @@ pollThumbs apiBase model =
                                         case info.jobId of
                                             Just jobId ->
                                                 ( { entry | phase = Uploaded { info | thumb = ThumbWaiting (polls + 1) } } :: kept
-                                                , Job.get apiBase jobId (JobFinished entry.id) :: commands
+                                                , Job.get ctx.apiBase jobId (JobFinished entry.id) :: commands
                                                 )
 
                                             Nothing ->
@@ -841,8 +945,11 @@ isWaitingThumb entry =
 -- VIEW
 
 
-view : Model -> Html Msg
-view model =
+{-| The panel stays inspectable while locked (finished entries keep
+their thumbnails and post links), but picking new files needs writes.
+-}
+view : Bool -> Model -> Html Msg
+view writesEnabled model =
     if not model.open then
         text ""
 
@@ -891,7 +998,14 @@ view model =
                             []
                         ]
                     , p [ class "panel-note" ] [ text "Shared fields apply to files you pick next. JPEG, PNG, or GIF up to 25 MiB each." ]
-                    , button [ class "button", type_ "button", id "upload-browse", onClick BrowseClicked ] [ text "Choose files…" ]
+                    , if writesEnabled then
+                        button [ class "button", type_ "button", id "upload-browse", onClick BrowseClicked ] [ text "Choose files…" ]
+
+                      else
+                        div []
+                            [ button [ class "button", type_ "button", id "upload-browse", disabled True, title "Unlock to upload images." ] [ text "Choose files…" ]
+                            , p [ class "panel-note" ] [ text "Unlock to upload images." ]
+                            ]
                     ]
                 , div [ class "panel-section" ]
                     [ h2 [ class "panel-section-title" ] [ text (queueHeading model) ]
@@ -985,7 +1099,7 @@ phaseDetail entry =
                 , span [ class "upload-percent" ] [ text (String.fromInt fraction ++ "%") ]
                 ]
 
-        Saving ->
+        Saving _ ->
             p [ class "upload-note" ] [ text "Saving to the Library…" ]
 
         Uploaded info ->

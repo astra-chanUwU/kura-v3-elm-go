@@ -1,5 +1,6 @@
 port module TestRunner exposing (main)
 
+import AccessTests
 import Json.Encode as Encode
 import Platform
 import RevisionTests
@@ -18,7 +19,7 @@ type Msg
 
 allTests : List ( String, Bool )
 allTests =
-    RevisionTests.suite ++ UploadQueueTests.suite
+    RevisionTests.suite ++ UploadQueueTests.suite ++ AccessTests.suite
 
 
 encodeTest : ( String, Bool ) -> Encode.Value

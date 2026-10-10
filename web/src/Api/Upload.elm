@@ -9,6 +9,7 @@ thumbnail polling. Requests are never retried here: after a lost response
 the post may already exist, so resubmission stays an explicit user decision.
 -}
 
+import Api.Access exposing (authHeaders)
 import Domain.Post exposing (PostDetail, detailDecoder)
 import File exposing (File)
 import Http
@@ -58,13 +59,15 @@ multipartBody file metadata =
         )
 
 
-{-| Upload one file with transfer progress visible under `tracker`.
+{-| Upload one file with transfer progress visible under `tracker`. The
+unlocked credential travels as an `Authorization` header, never in the
+multipart body or the URL.
 -}
-request : String -> String -> File -> Metadata -> (Result Http.Error PostDetail -> msg) -> Cmd msg
-request apiBase tracker file metadata toMsg =
+request : String -> Maybe String -> String -> File -> Metadata -> (Result Http.Error PostDetail -> msg) -> Cmd msg
+request apiBase credential tracker file metadata toMsg =
     Http.request
         { method = "POST"
-        , headers = []
+        , headers = authHeaders credential
         , url = endpoint apiBase
         , body = multipartBody file metadata
         , expect = Http.expectJson toMsg detailDecoder

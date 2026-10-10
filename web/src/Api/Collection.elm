@@ -1,5 +1,11 @@
 module Api.Collection exposing (addPosts, create, list, posts, removePost, reorder)
 
+{-| Collection reads (`list`, `posts`) are public and never credentialed.
+Mutations (`create`, `addPosts`, `removePost`, `reorder`) take the unlocked
+credential and send it as an `Authorization` header.
+-}
+
+import Api.Access exposing (authHeaders)
 import Domain.Collection exposing (Collection, PostsResponse, decoder, responseDecoder)
 import Domain.Post
 import Http
@@ -21,29 +27,37 @@ posts apiBase collectionId limit toMsg =
         }
 
 
-create : String -> String -> (Result Http.Error Collection -> msg) -> Cmd msg
-create apiBase name toMsg =
-    Http.post
-        { url = endpoint apiBase [ "api", "collections" ]
+create : String -> Maybe String -> String -> (Result Http.Error Collection -> msg) -> Cmd msg
+create apiBase credential name toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = endpoint apiBase [ "api", "collections" ]
         , body = Http.jsonBody (Encode.object [ ( "name", Encode.string name ) ])
         , expect = Http.expectJson toMsg decoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 
-addPosts : String -> String -> List String -> (Result Http.Error Collection -> msg) -> Cmd msg
-addPosts apiBase collectionId postIds toMsg =
-    Http.post
-        { url = endpoint apiBase [ "api", "collections", collectionId, "posts" ]
+addPosts : String -> Maybe String -> String -> List String -> (Result Http.Error Collection -> msg) -> Cmd msg
+addPosts apiBase credential collectionId postIds toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = endpoint apiBase [ "api", "collections", collectionId, "posts" ]
         , body = Http.jsonBody (Encode.object [ ( "post_ids", Encode.list Encode.string postIds ) ])
         , expect = Http.expectJson toMsg decoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 
-removePost : String -> String -> String -> (Result Http.Error () -> msg) -> Cmd msg
-removePost apiBase collectionId postId toMsg =
+removePost : String -> Maybe String -> String -> String -> (Result Http.Error () -> msg) -> Cmd msg
+removePost apiBase credential collectionId postId toMsg =
     Http.request
         { method = "DELETE"
-        , headers = []
+        , headers = authHeaders credential
         , url = endpoint apiBase [ "api", "collections", collectionId, "posts", postId ]
         , body = Http.emptyBody
         , expect = Http.expectWhatever toMsg
@@ -52,12 +66,16 @@ removePost apiBase collectionId postId toMsg =
         }
 
 
-reorder : String -> String -> List String -> (Result Http.Error Collection -> msg) -> Cmd msg
-reorder apiBase collectionId postIds toMsg =
-    Http.post
-        { url = endpoint apiBase [ "api", "collections", collectionId, "order" ]
+reorder : String -> Maybe String -> String -> List String -> (Result Http.Error Collection -> msg) -> Cmd msg
+reorder apiBase credential collectionId postIds toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = endpoint apiBase [ "api", "collections", collectionId, "order" ]
         , body = Http.jsonBody (Encode.object [ ( "post_ids", Encode.list Encode.string postIds ) ])
         , expect = Http.expectJson toMsg decoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 

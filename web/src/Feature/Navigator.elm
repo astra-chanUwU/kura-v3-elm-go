@@ -40,6 +40,7 @@ type alias Config msg =
     , onSave : msg
     , onRemove : String -> msg
     , onClose : msg
+    , writesEnabled : Bool
     }
 
 
@@ -101,7 +102,7 @@ view config =
                 ]
             , Panel.section "Collections"
                 [ input [ class "nav-input", type_ "text", placeholder "New collection", value config.collectionDraft, onInput config.onCollectionDraft ] []
-                , button [ class "button button-quiet nav-save", type_ "button", onClick (config.onCreateCollection config.collectionDraft), disabled (String.trim config.collectionDraft == "") ]
+                , button [ class "button button-quiet nav-save", type_ "button", onClick (config.onCreateCollection config.collectionDraft), disabled (String.trim config.collectionDraft == "" || not config.writesEnabled), title "Unlock to create collections." ]
                     [ text "Create collection" ]
                 , button [ class "button button-quiet nav-save", type_ "button", onClick config.onAllPosts ]
                     [ text "All posts" ]
@@ -155,9 +156,9 @@ view config =
                                             li [ class "nav-row collection-order-row" ]
                                                 [ span [ class "collection-order-id", title postId ] [ text ("#" ++ postId) ]
                                                 , span [ class "collection-order-spacer" ] []
-                                                , button [ class "collection-move", type_ "button", disabled isFirst, onClick (config.onMoveCollectionPost postId -1), attribute "aria-label" ("Move #" ++ postId ++ " up") ] [ text "↑" ]
-                                                , button [ class "collection-move", type_ "button", disabled isLast, onClick (config.onMoveCollectionPost postId 1), attribute "aria-label" ("Move #" ++ postId ++ " down") ] [ text "↓" ]
-                                                , button [ class "collection-remove", type_ "button", disabled (Set.member postId config.removingPosts), onClick (config.onRemoveCollectionPost postId), attribute "aria-label" ("Remove #" ++ postId ++ " from collection") ] [ text "×" ]
+                                                , button [ class "collection-move", type_ "button", disabled (isFirst || not config.writesEnabled), onClick (config.onMoveCollectionPost postId -1), attribute "aria-label" ("Move #" ++ postId ++ " up") ] [ text "↑" ]
+                                                , button [ class "collection-move", type_ "button", disabled (isLast || not config.writesEnabled), onClick (config.onMoveCollectionPost postId 1), attribute "aria-label" ("Move #" ++ postId ++ " down") ] [ text "↓" ]
+                                                , button [ class "collection-remove", type_ "button", disabled (not config.writesEnabled || Set.member postId config.removingPosts), onClick (config.onRemoveCollectionPost postId), attribute "aria-label" ("Remove #" ++ postId ++ " from collection") ] [ text "×" ]
                                                 ]
                                         )
                                         collection.postIds

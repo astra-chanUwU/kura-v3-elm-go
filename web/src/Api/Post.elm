@@ -1,5 +1,6 @@
 module Api.Post exposing (detail, editTags, revertTags, editReactions, search, mediaUrl)
 
+import Api.Access exposing (authHeaders)
 import Domain.Post exposing (PostDetail, SearchResponse, TagEditResponse, TagEditTarget, ReactionResponse, ReactionTarget, detailDecoder, responseDecoder, tagEditResponseDecoder, reactionResponseDecoder)
 import Http
 import Json.Encode as Encode
@@ -23,10 +24,16 @@ detail apiBase postId toMsg =
         }
 
 
-editTags : String -> List TagEditTarget -> List String -> List String -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
-editTags apiBase targets add remove toMsg =
-    Http.post
-        { url = tagsEndpoint apiBase
+{-| Mutations take the unlocked credential (`Nothing` while open-local or
+locked) and send it as an `Authorization` header. Public `search`/`detail`
+never take credentials.
+-}
+editTags : String -> Maybe String -> List TagEditTarget -> List String -> List String -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
+editTags apiBase credential targets add remove toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = tagsEndpoint apiBase
         , body =
             Http.jsonBody
                 (Encode.object
@@ -36,13 +43,17 @@ editTags apiBase targets add remove toMsg =
                     ]
                 )
         , expect = Http.expectJson toMsg tagEditResponseDecoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 
-revertTags : String -> List TagEditTarget -> Int -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
-revertTags apiBase targets targetVersion toMsg =
-    Http.post
-        { url = tagsRevertEndpoint apiBase
+revertTags : String -> Maybe String -> List TagEditTarget -> Int -> (Result Http.Error TagEditResponse -> msg) -> Cmd msg
+revertTags apiBase credential targets targetVersion toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = tagsRevertEndpoint apiBase
         , body =
             Http.jsonBody
                 (Encode.object
@@ -51,13 +62,17 @@ revertTags apiBase targets targetVersion toMsg =
                     ]
                 )
         , expect = Http.expectJson toMsg tagEditResponseDecoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 
-editReactions : String -> List ReactionTarget -> Maybe Bool -> Maybe Int -> (Result Http.Error ReactionResponse -> msg) -> Cmd msg
-editReactions apiBase targets favorite score toMsg =
-    Http.post
-        { url = reactionsEndpoint apiBase
+editReactions : String -> Maybe String -> List ReactionTarget -> Maybe Bool -> Maybe Int -> (Result Http.Error ReactionResponse -> msg) -> Cmd msg
+editReactions apiBase credential targets favorite score toMsg =
+    Http.request
+        { method = "POST"
+        , headers = authHeaders credential
+        , url = reactionsEndpoint apiBase
         , body =
             Http.jsonBody
                 (Encode.object
@@ -79,6 +94,8 @@ editReactions apiBase targets favorite score toMsg =
                     )
                 )
         , expect = Http.expectJson toMsg reactionResponseDecoder
+        , timeout = Nothing
+        , tracker = Nothing
         }
 
 

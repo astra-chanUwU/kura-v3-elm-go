@@ -12,6 +12,7 @@ type alias Config msg =
     , onApiPending : String -> msg
     , onFavorite : msg
     , onAddToCollection : msg
+    , writesEnabled : Bool
     }
 
 
@@ -39,16 +40,36 @@ view config =
                     , Ui.Button.view []
                         { label = "Add to collection"
                         , key = Just "B"
-                        , onPress = Just config.onAddToCollection
+                        , onPress =
+                            if config.writesEnabled then
+                                Just config.onAddToCollection
+
+                            else
+                                Nothing
                         , pressed = Nothing
-                        , hint = Just "Add selected posts to the active collection"
+                        , hint =
+                            if config.writesEnabled then
+                                Just "Add selected posts to the active collection"
+
+                            else
+                                Just "Unlock to add to a collection"
                         }
                     , Ui.Button.view []
                         { label = "Favorite"
                         , key = Just "F"
-                        , onPress = Just config.onFavorite
+                        , onPress =
+                            if config.writesEnabled then
+                                Just config.onFavorite
+
+                            else
+                                Nothing
                         , pressed = Nothing
-                        , hint = Just "Toggle favorite"
+                        , hint =
+                            if config.writesEnabled then
+                                Just "Toggle favorite"
+
+                            else
+                                Just "Unlock to change favorites"
                         }
                     , Ui.Button.view []
                         { label = "Clear selection"
