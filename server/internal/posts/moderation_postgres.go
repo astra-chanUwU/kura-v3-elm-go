@@ -13,7 +13,7 @@ import (
 // key recorded on each immutable audit row. Deleted posts are
 // indistinguishable from missing posts; targets already in the requested
 // state return unchanged without recording an audit row.
-func (s *PostgresSearcher) ModeratePosts(ctx context.Context, actor string, request ModerationRequest) (ModerationResponse, error) {
+func (s *PostgresBackend) ModeratePosts(ctx context.Context, actor string, request ModerationRequest) (ModerationResponse, error) {
 	if s == nil || s.pool == nil {
 		return ModerationResponse{}, ErrUnavailable
 	}
@@ -66,7 +66,7 @@ func (s *PostgresSearcher) ModeratePosts(ctx context.Context, actor string, requ
 
 // ListModerationActions returns the newest audit entries for one non-deleted
 // post. It is served only to capability-checked readers by the HTTP layer.
-func (s *PostgresSearcher) ListModerationActions(ctx context.Context, postID string) ([]ModerationAction, error) {
+func (s *PostgresBackend) ListModerationActions(ctx context.Context, postID string) ([]ModerationAction, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrUnavailable
 	}
@@ -100,7 +100,7 @@ func (s *PostgresSearcher) ListModerationActions(ctx context.Context, postID str
 // ListModerationQueue returns at most limit non-deleted posts in the
 // requested moderation state, newest first. It is served only to
 // capability-checked readers by the HTTP layer.
-func (s *PostgresSearcher) ListModerationQueue(ctx context.Context, state string, limit int) (ModerationQueuePage, error) {
+func (s *PostgresBackend) ListModerationQueue(ctx context.Context, state string, limit int) (ModerationQueuePage, error) {
 	if s == nil || s.pool == nil {
 		return ModerationQueuePage{}, ErrUnavailable
 	}
@@ -132,7 +132,7 @@ func (s *PostgresSearcher) ListModerationQueue(ctx context.Context, state string
 // media. Paths no post references are not post media and stay servable;
 // otherwise the path is visible only when a non-deleted referencing post is
 // published.
-func (s *PostgresSearcher) LookupMediaVisibility(ctx context.Context, mediaPath string) (MediaVisibility, error) {
+func (s *PostgresBackend) LookupMediaVisibility(ctx context.Context, mediaPath string) (MediaVisibility, error) {
 	if s == nil || s.pool == nil {
 		return MediaVisibility{}, ErrUnavailable
 	}

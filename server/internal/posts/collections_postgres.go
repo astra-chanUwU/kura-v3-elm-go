@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *PostgresSearcher) ListCollections(ctx context.Context) ([]Collection, error) {
+func (s *PostgresBackend) ListCollections(ctx context.Context) ([]Collection, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrUnavailable
 	}
@@ -40,7 +40,7 @@ func (s *PostgresSearcher) ListCollections(ctx context.Context) ([]Collection, e
 // cannot slip between the version check and the page. A cursor issued for
 // an older version fails with ErrCollectionChanged; callers answer 409 and
 // the client restarts from the first page.
-func (s *PostgresSearcher) SearchCollectionPosts(ctx context.Context, collectionID string, cursor *CollectionCursor, limit int) (CollectionPostsPage, error) {
+func (s *PostgresBackend) SearchCollectionPosts(ctx context.Context, collectionID string, cursor *CollectionCursor, limit int) (CollectionPostsPage, error) {
 	if s == nil || s.pool == nil {
 		return CollectionPostsPage{}, ErrUnavailable
 	}
@@ -123,7 +123,7 @@ func (s *PostgresSearcher) SearchCollectionPosts(ctx context.Context, collection
 	return page, nil
 }
 
-func (s *PostgresSearcher) CreateCollection(ctx context.Context, request CreateCollectionRequest) (Collection, error) {
+func (s *PostgresBackend) CreateCollection(ctx context.Context, request CreateCollectionRequest) (Collection, error) {
 	if s == nil || s.pool == nil {
 		return Collection{}, ErrUnavailable
 	}
@@ -140,7 +140,7 @@ func (s *PostgresSearcher) CreateCollection(ctx context.Context, request CreateC
 	return collection, nil
 }
 
-func (s *PostgresSearcher) AddCollectionPosts(ctx context.Context, collectionID string, request AddCollectionPostsRequest) (Collection, error) {
+func (s *PostgresBackend) AddCollectionPosts(ctx context.Context, collectionID string, request AddCollectionPostsRequest) (Collection, error) {
 	if s == nil || s.pool == nil {
 		return Collection{}, ErrUnavailable
 	}
@@ -182,7 +182,7 @@ func (s *PostgresSearcher) AddCollectionPosts(ctx context.Context, collectionID 
 	return s.collectionByID(ctx, collectionID)
 }
 
-func (s *PostgresSearcher) RemoveCollectionPost(ctx context.Context, collectionID string, postID string) error {
+func (s *PostgresBackend) RemoveCollectionPost(ctx context.Context, collectionID string, postID string) error {
 	if s == nil || s.pool == nil {
 		return ErrUnavailable
 	}
@@ -217,7 +217,7 @@ func (s *PostgresSearcher) RemoveCollectionPost(ctx context.Context, collectionI
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresSearcher) ReorderCollection(ctx context.Context, collectionID string, request ReorderCollectionRequest) (Collection, error) {
+func (s *PostgresBackend) ReorderCollection(ctx context.Context, collectionID string, request ReorderCollectionRequest) (Collection, error) {
 	if s == nil || s.pool == nil {
 		return Collection{}, ErrUnavailable
 	}
@@ -294,7 +294,7 @@ func (s *PostgresSearcher) ReorderCollection(ctx context.Context, collectionID s
 	return s.collectionByID(ctx, collectionID)
 }
 
-func (s *PostgresSearcher) collectionByID(ctx context.Context, id string) (Collection, error) {
+func (s *PostgresBackend) collectionByID(ctx context.Context, id string) (Collection, error) {
 	collections, err := s.ListCollections(ctx)
 	if err != nil {
 		return Collection{}, err

@@ -1,6 +1,13 @@
 # Kura
 
-An imageboard and media library built with Elm, Go, and PostgreSQL.
+An imageboard and media library built with Elm, Go + Chi, and PostgreSQL.
+
+Elm owns browser interaction state. The Go server uses Chi to route ordinary
+`net/http` handlers; domain packages own library operations, media storage,
+and durable jobs. The browser and CLI share the HTTP API.
+
+Start with the [architecture and request flow](docs/architecture.md) for the
+code map, boundaries, and reasons behind the stack.
 
 The current milestone is: **I can safely manage my actual image library here
 every day.** See the [daily library plan](docs/daily-library-plan.md) for verified
@@ -136,6 +143,12 @@ KURA_TEST_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_test?sslmod
 ```
 
 ## Code
+
+The server entry point is `server/cmd/kura-server/main.go`. Its dependency
+wiring leads to `server/internal/httpapi/router.go`, the Chi route and
+middleware map. HTTP handlers live in that package's feature files; domain
+contracts and PostgreSQL operations live in `server/internal/posts`, with
+separate `auth`, `media`, and `jobs` packages.
 
 ```text
 web/       Elm frontend and CSS

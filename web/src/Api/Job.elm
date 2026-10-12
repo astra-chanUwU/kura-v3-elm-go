@@ -8,6 +8,7 @@ saved. Polling is bounded by the caller: requests stop at terminal states
 finished upload.
 -}
 
+import Domain.JobStatus as JobStatus
 import Http
 import Json.Decode as Decode exposing (Decoder)
 import Url.Builder
@@ -36,18 +37,7 @@ decoder =
 -}
 isTerminal : String -> Bool
 isTerminal status =
-    case status of
-        "succeeded" ->
-            True
-
-        "failed" ->
-            True
-
-        "cancelled" ->
-            True
-
-        _ ->
-            False
+    JobStatus.isTerminal status
 
 
 endpoint : String -> String -> String

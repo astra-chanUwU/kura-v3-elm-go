@@ -1,111 +1,192 @@
-# Kura V3 architecture
+# Kura architecture
 
-Kura uses a browser application and one Go server around durable PostgreSQL records. The browser owns interaction state; the server owns authentication, authorization, domain mutations, and query execution. PostgreSQL remains the source of durable truth, while object storage owns large media derivatives and originals behind an abstraction. Redis may be added later for shared ephemeral state and must never be required to recover durable records.
+Kura is a modular monolith with explicit HTTP and domain boundaries. Elm owns
+browser interaction state; the Go API owns authorization and library operations;
+PostgreSQL owns durable records. Media bytes live behind a storage interface,
+and a worker in the API process executes durable derivative jobs.
+
+## Stack and reasons
+
+- **Elm** gives the browser a consistent Model / Update / View structure.
+  Selection, navigation, editing, and upload phases are explicit state rather
+  than behavior scattered across event handlers. Pure rules can be tested
+  separately from rendering and HTTP.
+- **Go + Chi** provides explicit routes and middleware while retaining ordinary
+  `net/http` handlers. Chi is the HTTP router, rather than the architecture of
+  the entire application.
+- **PostgreSQL + pgx** provides transactions, optimistic revision checks,
+  ordered memberships, and durable job leases. SQL is currently handwritten;
+  sqlc generation is not part of the current build.
+- **HTTP and JSON** connect Elm and the CLI to the same application boundary.
+  The API returns display-oriented contracts such as `PostSummary` and
+  `PostDetail`, rather than exposing database rows directly. Elm decoders check
+  responses at runtime; the two languages do not share a compiler or types.
+
+Elm's state model is useful for this interactive library, with the cost of
+learning Elm and using ports when browser integration requires JavaScript.
+These choices serve Kura's current needs; they are not a requirement for every
+application of this kind.
+
+Official references: [Elm Architecture](https://guide.elm-lang.org/architecture/),
+[Elm interoperability](https://guide.elm-lang.org/interop/),
+[Chi](https://github.com/go-chi/chi), [Go](https://go.dev/doc/),
+[pgx](https://github.com/jackc/pgx),
+[PostgreSQL](https://www.postgresql.org/docs/).
+
+## Where to start
+
+```text
+server/cmd/kura-server/main.go     Construct dependencies and manage lifecycle
+server/internal/httpapi/router.go Chi routes and middleware, grouped by feature
+server/internal/httpapi/          HTTP handlers, parsing, and response mapping
+server/internal/posts/            Library contracts, rules, and pgx operations
+server/internal/auth/             Actor identity and capability rules
+server/internal/media/            Storage providers and derivative processing
+server/internal/jobs/             Durable job store, leases, retries, and worker
+
+db/migrations/                    PostgreSQL schema changes
+web/src/Main.elm                  Browser application entry point
+web/src/Page/Library.elm          Workspace state and feature coordination
+web/src/Api/                      HTTP requests
+web/src/Domain/                   Pure library types and rules
+web/src/Feature/                  Feature state, updates, and views
+web/src/App/                      Routes, access, preferences, and keyboard logic
+web/src/Ui/                       Shared view helpers
+cli/internal/client/              HTTP client used by the CLI
+```
+
+`main.go` is the server's composition root: it creates one PostgreSQL-backed
+library adapter, shares its pool with the job store and derivative processor,
+starts the worker, and passes the adapter into the HTTP router. Construction
+uses ordinary Go constructors. Shutdown and a fatal worker exit are handled
+there too.
+
+Development uses two servers: the API on `:8080` and the static frontend server
+on `127.0.0.1:8000` (`server/cmd/kura-web`). The frontend is not currently
+embedded in the API binary. See the README for startup and configuration.
 
 ## Request flow
 
-The first serious vertical slice has this boundary:
-
 ```text
-Elm search page
-    ↓
-GET /api/posts?q=...
-    ↓
-Go HTTP handler and query service
-    ↓
-PostgreSQL
-    ↓
-post summaries
-    ↓
-Elm MediaGrid
+Elm Api.* or CLI client
+    → HTTP request
+    → Chi router and middleware
+    → httpapi feature handler
+    → posts contract and operation
+    → PostgreSQL / media storage / durable jobs
+    → API response
+    → Elm message → update → view, or CLI output
 ```
 
-The Go adapter now executes this boundary against PostgreSQL. `db/migrations/001_posts.sql` defines the small searchable `posts` table, and `db/seed.sql` provides deterministic local rows for development. Twelve matching demo files live under `web/static/media/demo`; the server exposes them at `/media/...` from `MEDIA_ROOT` (defaulting to `../web/static/media` for `go -C server run`).
+For example, `Api.Post.search` calls `GET /api/posts`. `router.go` maps that
+endpoint to `searchPosts` in `httpapi/posts.go`. The handler parses the query,
+limit, and cursor, then calls `posts.Searcher.SearchPosts`. The PostgreSQL
+adapter executes a parameterized query and returns post summaries. Elm decodes
+those summaries into the library's result sequence.
 
-The API response keeps the browser contract independent from PostgreSQL
-rows. Search uses an opaque, query-bound keyset cursor and accepts
-`limit=1..60` (default 60); the adapter fetches one extra row to decide whether
-to emit `next_cursor`. The default order is `id DESC`; `order:score` uses
-`score DESC, id DESC` and carries both values in the cursor.
+`GET /api/posts/{id}` loads detail for the Inspector. Tag and reaction writes
+use expected versions; stale updates return `409`. A tag revert creates a new
+revision rather than rewriting history. Collections use the same library
+contracts and keep ordered membership in PostgreSQL.
 
-```http
-GET /api/posts?q=cat
-```
+## Server boundaries
 
-```json
-{
-  "posts": [
-    {
-      "id": "post-123",
-      "preview_url": "/media/post-123/preview.jpg",
-      "original_url": "/media/post-123/original.jpg",
-      "media_type": "image/jpeg",
-      "width": 640,
-      "height": 480
-    }
-  ]
-}
-```
+The HTTP package owns request decoding, transport-level validation, status
+codes, and response encoding. `router.go` contains route registration and
+middleware assembly only; feature files contain the handlers:
 
-The HTTP layer depends on a `posts.Searcher` interface. The PostgreSQL adapter
-binds the search string to the handwritten query and maps selected columns to
-`PostSummary`; it does not expose database rows directly. Empty queries browse
-newest visible rows through the same keyset cursor, while an unconfigured
-adapter returns `503` and storage failures return `500`. Overlong queries,
-invalid limits, and malformed or query-mismatched cursors return `400`.
-KuraQL is parsed into a typed AST before planning. It supports ordinary and
-unary-excluded terms, `tag:` and `-tag:` predicates, `favorite`, numeric
-comparisons for score, width, height, file size, and id, exact media/source/
-artist predicates, and `order:score`. The planner compiles these predicates
-into fixed parameterized SQL slots. Unknown or malformed expressions return
-`400`; cursors are bound to the complete query and sort order.
+- `posts.go`: search and detail.
+- `tags.go`, `reactions.go`: edits and tag reverts.
+- `collections.go`, `saved_searches.go`: library organization.
+- `uploads.go`, `jobs.go`: ingestion and processing status.
+- `moderation.go`, `media.go`: moderation and local media visibility.
+- `auth.go`, `capabilities.go`, `cors.go`: HTTP access policy and metadata.
+- `json.go`: shared JSON decoding and response helpers.
 
-The Inspector loads read-only metadata on demand from `GET /api/posts/{id}`.
-The detail response extends `PostSummary` with source, artist, hash, file size,
-creation time, and tags; deleted rows return `404` and an unconfigured detail
-adapter returns `503`.
+Domain contracts and library rules live in `posts`, with PostgreSQL operations
+in its `postgres*`, `*_postgres`, and related SQL files. This package currently
+contains both business behavior and persistence. Kura does not introduce a
+service, repository, and DAO wrapper for every operation. A new layer should
+have a distinct responsibility before it is added.
 
-Uploads use `POST /api/uploads` with a multipart `file` plus optional repeated
-or comma-separated `tags`, `source`, and `artist` fields. The adapter bounds
-input to 25 MiB, accepts JPEG, PNG, and GIF images, and extracts dimensions
-with Go's image decoders. Durable bytes are written through
-`server/internal/media.Store`, which returns a provider-relative key, public
-URL, content type, size, and whether the request created the object. The
-default `media.LocalStore` writes an idempotent content-addressed original
-below `MEDIA_ROOT/uploads` using an atomic temp-file handoff; it is the local
-provider, not the long-term storage contract. A failed database transaction
-deletes an object created by that request, while an existing content-addressed
-object is preserved. Remote object storage, derivative processing,
-moderation, and durable jobs remain separate product slices.
+Keep these boundaries when changing the server:
 
-The first capability boundary is an optional bearer token. When
-`KURA_API_TOKEN` is set, the HTTP layer compares `Authorization: Bearer ...`
-with a constant-time comparison and requires it for every API mutation. Read
-endpoints, health, media, and CORS preflight remain public. The CLI forwards
-the same token on mutation requests from its `KURA_API_TOKEN` environment
-variable. This is an explicit single-capability deployment boundary; durable
-users, sessions, roles, and per-resource authorization remain a later identity
-slice.
+- Register endpoints centrally so the route and middleware map stays readable.
+- HTTP handlers call domain contracts; they do not execute SQL or own database
+  pools. Domain packages do not depend on Chi or HTTP request contexts.
+- Keep library validation and durable invariants in the domain operations;
+  browser checks are conveniences, not authorization.
+- Keep storage providers behind `media.Store` and job lifecycle rules in `jobs`.
+- Keep dependency construction in the executable. The CLI uses the HTTP API
+  instead of importing server internals.
 
-Tag edits use `POST /api/posts/tags` with selected post ids, their expected
-tag versions, and add/remove lists. The server locks all targets in one
-transaction, rejects stale versions with `409`, updates the generated search
-text, increments each changed post's version, and records an immutable tag
-revision. `POST /api/posts/tags/revert` restores a stored target state under
-the same optimistic version check and records a new `tag_revert` revision;
-history is never rewritten. The detail response includes the current version
-and the latest 50 tag revisions.
+Production constructs `posts.PostgresBackend` and supplies each narrow
+capability through `httpapi.Dependencies` to `NewRouterWithDependencies`.
+Handlers receive their required interfaces directly. The older Searcher-based
+constructors retain capability discovery in a compatibility adapter only.
+Absent capabilities retain their `503` responses.
 
-## Server shape
+## Middleware and access
 
-`server/cmd/kura-server` is the executable. Reusable HTTP and domain packages belong under `server/internal/`, so the future CLI can call the public HTTP API instead of importing server implementation details. The intended database path is handwritten SQL, sqlc-generated types, and pgx; no ORM is planned.
+`router.go` makes the order explicit: local-development CORS runs first, then
+`requireWriteCapability`, then route dispatch. CORS handles preflight without
+requiring credentials. The capability middleware resolves the actor for both
+reads and writes and requires the configured bearer token for API mutations,
+including unknown API write paths. Keeping it at the root preserves that policy.
 
-Domain mutations create immutable revisions. A revert creates another revision that records what it reverses, preserving the complete history.
+An empty `KURA_API_TOKEN` enables local mode. A configured token represents the
+system capability; it is not a multi-user login system. Public reads, health,
+and preflight remain available. Capability discovery reports whether the
+current request may write, and moderation handlers make their additional actor
+checks through `auth`.
 
-## Frontend shape
+Local `/media/*` requests also check post visibility: referenced media for
+hidden, rejected, or deleted posts is unavailable to public browsing. Remote
+object URLs need access controls at the storage provider; the local HTTP gate
+does not protect them.
 
-Elm code is organized by application, domain, API, page, feature, and UI boundaries. `Page.Library` owns the workspace state (result sequence, active post and selection, mode, scroll return point, panels); `Domain.Sequence` and `Domain.Selection` hold the pure rules; `Feature.*` modules render the MediaGrid, Quick Look, Compare, Survey, Filmstrip, Inspector, Navigator, and query editor; `Ui.*` holds small shared view helpers. Styles live in plain CSS at `web/kura.css`, and workspace preferences persist in `localStorage` through the `savePrefs` port. The grid is virtualized; cursor-based result loading appends deduplicated pages while preserving active selection, mode, and scroll; tag edits, favorites, and scores use optimistic versions and immutable revisions. Collections are ordered memberships with selection-driven add, compact Navigator reordering/removal, and browsing into the same grid. See `docs/frontend-design.md`.
+## Upload and worker flow
 
-## Deferred infrastructure
+An upload passes bounded multipart input to the library operation. Originals
+are written through `media.Store`; post and derivative-job records are saved
+in PostgreSQL. Local storage is content-addressed and uses an atomic file
+handoff. Failed database writes clean up bytes created by that request without
+deleting a pre-existing object.
 
-The foundation does not add Docker, Kubernetes, CI, Redis configuration, S3 configuration, authentication libraries, CSS or component frameworks, queues, realtime transports, or Rust crates. Add one only when a concrete Kura requirement and a bounded interface justify it. PostgreSQL setup is intentionally limited to `make db-migrate` and the explicit `make db-seed` development command, which require a local `psql` client and `DATABASE_URL`; no deployment workflow is implied.
+The worker claims durable jobs, maintains leases, processes derivatives, and
+records completion or failure. Startup recovery reclaims expired work. The API
+and worker share one pool; the browser polls job status through the HTTP API.
+
+## Frontend boundaries
+
+`Main` installs `Page.Library` into `Browser.application`. The page coordinates
+workspace state: search results, selection, active post, mode, panels, and scroll
+return. Search, Tags, Reactions, and Collections own their request lifecycles
+and report page-owned effects through output messages. The upload queue
+separates pure transitions in `Feature.UploadQueue.Queue`, browser and HTTP
+effects in its coordinator, and rendering in `Feature.UploadQueue.View`.
+`Domain.*` holds pure types and rules, including shared upload limits and job
+status facts. `Api.*` handles requests, response decoding, and shared HTTP-error
+classification; feature-specific error wording stays with each feature.
+`Ui.*` supplies small shared view helpers. CSS lives in `web/kura.css`.
+
+Keep pure domain rules independent of rendering and HTTP. Coordinate features
+through the page's messages and updates, and put new endpoint calls in `Api.*`.
+Browser integrations such as preference persistence use ports with the hosting
+page. See [frontend design](frontend-design.md) for the interaction model.
+
+## Adding behavior and checking it
+
+Start with the domain contract and durable invariant, implement the operation,
+then add the HTTP handler in the matching feature file and register its route
+in `router.go`. Add Elm API decoding and feature/page updates when the browser
+needs the behavior; the CLI can consume the same endpoint.
+
+Run `make server-check` for server tests and vet. HTTP tests use `httptest` and
+fake domain implementations; they check routing, parsing, access, and error
+mapping without a database. PostgreSQL integration tests require a disposable
+`KURA_TEST_DATABASE_URL` and otherwise skip. Use `make web-test` for Elm logic
+changes and `make check` for changes spanning the server, browser, and CLI.
+Server and frontend tests enforce import boundaries. The frontend checker also
+protects the pure upload queue and separates views from API effects.
+Automated checks do not establish browser or storage-provider interoperability.

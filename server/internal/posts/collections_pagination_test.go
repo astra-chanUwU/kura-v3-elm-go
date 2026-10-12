@@ -60,19 +60,19 @@ func pgxIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-func newCollectionPaginationSearcher(t *testing.T, ctx context.Context, url string) *PostgresSearcher {
+func newCollectionPaginationBackend(t *testing.T, ctx context.Context, url string) *PostgresBackend {
 	t.Helper()
-	return newCollectionPaginationSearcherWithPoolURL(t, ctx, url, url)
+	return newCollectionPaginationBackendWithPoolURL(t, ctx, url, url)
 }
 
-func newCollectionPaginationSearcherWithPoolURL(t *testing.T, ctx context.Context, ensureURL string, poolURL string) *PostgresSearcher {
+func newCollectionPaginationBackendWithPoolURL(t *testing.T, ctx context.Context, ensureURL string, poolURL string) *PostgresBackend {
 	t.Helper()
 	ensureCollectionTestDatabase(t, ctx, ensureURL)
-	searcher, err := NewPostgresSearcher(ctx, poolURL)
+	backend, err := NewPostgresBackend(ctx, poolURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(searcher.Close)
+	t.Cleanup(backend.Close)
 	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "db", "migrations"))
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -89,21 +89,21 @@ func newCollectionPaginationSearcherWithPoolURL(t *testing.T, ctx context.Contex
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := searcher.pool.Exec(ctx, string(sql)); err != nil {
+		if _, err := backend.pool.Exec(ctx, string(sql)); err != nil {
 			t.Fatalf("apply %s: %v", file, err)
 		}
 	}
-	if _, err := searcher.pool.Exec(ctx, "TRUNCATE posts, collections CASCADE"); err != nil {
+	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, collections CASCADE"); err != nil {
 		t.Fatal(err)
 	}
-	return searcher
+	return backend
 }
 
 // seedPublishedPosts inserts n visible posts and returns their IDs in
 // insertion order. Defaults keep every row published and non-deleted.
-func seedPublishedPosts(t *testing.T, ctx context.Context, searcher *PostgresSearcher, n int) []string {
+func seedPublishedPosts(t *testing.T, ctx context.Context, backend *PostgresBackend, n int) []string {
 	t.Helper()
-	rows, err := searcher.pool.Query(ctx, `
+	rows, err := backend.pool.Query(ctx, `
 INSERT INTO posts (preview_url, original_url, media_type, width, height, search_text, tags)
 SELECT '/media/seed/' || g || '.jpg', '/media/seed/' || g || '-orig.jpg', 'image/jpeg', 640, 480, 'seed', '{}'
 FROM generate_series(1, $1) g
@@ -129,7 +129,7 @@ RETURNING id::text`, n)
 	return ids
 }
 
-func addCollectionPostsInChunks(t *testing.T, ctx context.Context, searcher *PostgresSearcher, collectionID string, ids []string, chunk int) Collection {
+func addCollectionPostsInChunks(t *testing.T, ctx context.Context, backend *PostgresBackend, collectionID string, ids []string, chunk int) Collection {
 	t.Helper()
 	var collection Collection
 	for start := 0; start < len(ids); start += chunk {
@@ -138,7 +138,7 @@ func addCollectionPostsInChunks(t *testing.T, ctx context.Context, searcher *Pos
 			end = len(ids)
 		}
 		var err error
-		collection, err = searcher.AddCollectionPosts(ctx, collectionID, AddCollectionPostsRequest{PostIDs: ids[start:end]})
+		collection, err = backend.AddCollectionPosts(ctx, collectionID, AddCollectionPostsRequest{PostIDs: ids[start:end]})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -146,9 +146,9 @@ func addCollectionPostsInChunks(t *testing.T, ctx context.Context, searcher *Pos
 	return collection
 }
 
-func collectionVersion(t *testing.T, ctx context.Context, searcher *PostgresSearcher, collectionID string) (Collection, int64) {
+func collectionVersion(t *testing.T, ctx context.Context, backend *PostgresBackend, collectionID string) (Collection, int64) {
 	t.Helper()
-	collection, err := searcher.collectionByID(ctx, collectionID)
+	collection, err := backend.collectionByID(ctx, collectionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func collectionVersion(t *testing.T, ctx context.Context, searcher *PostgresSear
 // traverseCollection walks every page at the given limit, decoding the
 // opaque cursor between pages exactly like an HTTP client would. It
 // returns the visited IDs in order and every page's observed version.
-func traverseCollection(t *testing.T, ctx context.Context, searcher *PostgresSearcher, collectionID string, limit int) ([]string, []int64) {
+func traverseCollection(t *testing.T, ctx context.Context, backend *PostgresBackend, collectionID string, limit int) ([]string, []int64) {
 	t.Helper()
 	parsed, err := strconv.ParseInt(collectionID, 10, 64)
 	if err != nil {
@@ -168,7 +168,7 @@ func traverseCollection(t *testing.T, ctx context.Context, searcher *PostgresSea
 	var versions []int64
 	var cursor *CollectionCursor
 	for {
-		page, err := searcher.SearchCollectionPosts(ctx, collectionID, cursor, limit)
+		page, err := backend.SearchCollectionPosts(ctx, collectionID, cursor, limit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -222,29 +222,29 @@ func assertStableVersion(t *testing.T, versions []int64) int64 {
 
 func TestCollectionPaginationTraverses150Members(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 150)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Large"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 150)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Large"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if created.Version != 0 {
 		t.Fatalf("new collection version=%d want 0", created.Version)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
 
-	visited, versions := traverseCollection(t, ctx, searcher, created.ID, 60)
+	visited, versions := traverseCollection(t, ctx, backend, created.ID, 60)
 	assertTraversal(t, visited, ids)
 	version := assertStableVersion(t, versions)
 	if len(versions) != 3 {
 		t.Fatalf("150 members at limit 60 took %d pages, want 3", len(versions))
 	}
-	if _, current := collectionVersion(t, ctx, searcher, created.ID); current != version {
+	if _, current := collectionVersion(t, ctx, backend, created.ID); current != version {
 		t.Fatalf("traversal version=%d differs from current=%d", version, current)
 	}
 
 	// A small page size walks the same total order with more round trips.
-	visited, versions = traverseCollection(t, ctx, searcher, created.ID, 7)
+	visited, versions = traverseCollection(t, ctx, backend, created.ID, 7)
 	assertTraversal(t, visited, ids)
 	assertStableVersion(t, versions)
 	if len(versions) != 22 {
@@ -254,17 +254,17 @@ func TestCollectionPaginationTraverses150Members(t *testing.T) {
 
 func TestCollectionPaginationTraverses1000Members(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 1000)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Huge"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 1000)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Huge"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The 200-ID bound is per request: five requests grow one collection
 	// far past any single-request size.
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
 
-	visited, versions := traverseCollection(t, ctx, searcher, created.ID, 60)
+	visited, versions := traverseCollection(t, ctx, backend, created.ID, 60)
 	assertTraversal(t, visited, ids)
 	assertStableVersion(t, versions)
 	if len(versions) != 17 {
@@ -277,25 +277,25 @@ func TestCollectionPaginationTraverses1000Members(t *testing.T) {
 	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
-	if _, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: reversed}); err != nil {
+	if _, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: reversed}); err != nil {
 		t.Fatalf("reorder 1000: %v", err)
 	}
-	visited, _ = traverseCollection(t, ctx, searcher, created.ID, 60)
+	visited, _ = traverseCollection(t, ctx, backend, created.ID, 60)
 	assertTraversal(t, visited, reversed)
 }
 
 func TestCollectionPaginationPositionTies(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 10)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Ties"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 10)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Ties"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
 	// Tie a middle block so the expected order differs from insertion.
 	tied := append([]string(nil), ids[2:8]...)
-	if _, err := searcher.pool.Exec(ctx, `UPDATE collection_posts SET position = 0 WHERE collection_id = $1::bigint AND post_id = ANY($2::bigint[])`, created.ID, postIDInts(t, tied)); err != nil {
+	if _, err := backend.pool.Exec(ctx, `UPDATE collection_posts SET position = 0 WHERE collection_id = $1::bigint AND post_id = ANY($2::bigint[])`, created.ID, postIDInts(t, tied)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -317,12 +317,12 @@ func TestCollectionPaginationPositionTies(t *testing.T) {
 			want = append(want, id)
 		}
 	}
-	visited, versions := traverseCollection(t, ctx, searcher, created.ID, 3)
+	visited, versions := traverseCollection(t, ctx, backend, created.ID, 3)
 	assertTraversal(t, visited, want)
 	assertStableVersion(t, versions)
 
 	// The tie order is deterministic across traversals.
-	again, _ := traverseCollection(t, ctx, searcher, created.ID, 4)
+	again, _ := traverseCollection(t, ctx, backend, created.ID, 4)
 	assertTraversal(t, again, want)
 }
 
@@ -341,14 +341,14 @@ func postIDInts(t *testing.T, ids []string) []int64 {
 
 func TestCollectionPaginationRejectsStaleVersion(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 5)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Stale"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 5)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Stale"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
-	first, err := searcher.SearchCollectionPosts(ctx, created.ID, nil, 2)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
+	first, err := backend.SearchCollectionPosts(ctx, created.ID, nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,16 +361,16 @@ func TestCollectionPaginationRejectsStaleVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	extra := seedPublishedPosts(t, ctx, searcher, 1)
-	if _, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: extra}); err != nil {
+	extra := seedPublishedPosts(t, ctx, backend, 1)
+	if _, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: extra}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := searcher.SearchCollectionPosts(ctx, created.ID, &stale, 2); err != ErrCollectionChanged {
+	if _, err := backend.SearchCollectionPosts(ctx, created.ID, &stale, 2); err != ErrCollectionChanged {
 		t.Fatalf("stale cursor: expected ErrCollectionChanged, got %v", err)
 	}
 
 	// A fresh first page at the new version resumes traversal.
-	fresh, err := searcher.SearchCollectionPosts(ctx, created.ID, nil, 60)
+	fresh, err := backend.SearchCollectionPosts(ctx, created.ID, nil, 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,13 +384,13 @@ func TestCollectionPaginationRejectsStaleVersion(t *testing.T) {
 
 func TestCollectionSearcherRejectsCrossCollectionCursor(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	seedPublishedPosts(t, ctx, searcher, 2)
-	first, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "First"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	seedPublishedPosts(t, ctx, backend, 2)
+	first, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "First"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Second"})
+	second, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Second"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,16 +404,16 @@ func TestCollectionSearcherRejectsCrossCollectionCursor(t *testing.T) {
 		t.Fatalf("cross-collection token: expected ErrInvalidCursor, got %v", err)
 	}
 	foreign := CollectionCursor{CollectionID: otherID, Version: 0, Position: 0, PostID: 1}
-	if _, err := searcher.SearchCollectionPosts(ctx, first.ID, &foreign, 60); err != ErrInvalidCursor {
+	if _, err := backend.SearchCollectionPosts(ctx, first.ID, &foreign, 60); err != ErrInvalidCursor {
 		t.Fatalf("foreign cursor struct: expected ErrInvalidCursor, got %v", err)
 	}
 }
 
 func TestCollectionVersionOnlyEffectiveChanges(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 6)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Versions"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 6)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Versions"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestCollectionVersionOnlyEffectiveChanges(t *testing.T) {
 		if err := action(); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if _, current := collectionVersion(t, ctx, searcher, created.ID); current != want {
+		if _, current := collectionVersion(t, ctx, backend, created.ID); current != want {
 			t.Fatalf("%s: version=%d want %d", name, current, want)
 		}
 		version = want
@@ -432,42 +432,42 @@ func TestCollectionVersionOnlyEffectiveChanges(t *testing.T) {
 
 	// Effective add bumps once per request, not per row.
 	bump("add two", version+1, func() error {
-		_, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: ids[:2]})
+		_, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: ids[:2]})
 		return err
 	})
 	// Re-adding current members is a no-op: the version stays stable.
 	bump("add duplicates", version, func() error {
-		_, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: ids[:2]})
+		_, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: ids[:2]})
 		return err
 	})
 	// A partially new request still bumps exactly once.
 	bump("add mixed", version+1, func() error {
-		_, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{ids[1], ids[2]}})
+		_, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{ids[1], ids[2]}})
 		return err
 	})
 	// Removing a non-member succeeds without touching the version.
 	bump("remove absent", version, func() error {
-		return searcher.RemoveCollectionPost(ctx, created.ID, ids[5])
+		return backend.RemoveCollectionPost(ctx, created.ID, ids[5])
 	})
 	bump("remove member", version+1, func() error {
-		return searcher.RemoveCollectionPost(ctx, created.ID, ids[0])
+		return backend.RemoveCollectionPost(ctx, created.ID, ids[0])
 	})
 	// Reordering into the current order is a no-op.
 	bump("reorder same", version, func() error {
-		_, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[1], ids[2]}})
+		_, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[1], ids[2]}})
 		return err
 	})
 	bump("reorder changed", version+1, func() error {
-		_, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[2], ids[1]}})
+		_, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[2], ids[1]}})
 		return err
 	})
 	// Hiding a member is a moderation change, not a collection change: the
 	// membership version stays stable while the page hides the row.
-	page, err := searcher.SearchCollectionPosts(ctx, created.ID, nil, 1)
+	page, err := backend.SearchCollectionPosts(ctx, created.ID, nil, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := searcher.ModeratePosts(ctx, "test", ModerationRequest{Posts: []ModerationTarget{{ID: ids[1]}}, Action: ModerationActionHide}); err != nil {
+	if _, err := backend.ModeratePosts(ctx, "test", ModerationRequest{Posts: []ModerationTarget{{ID: ids[1]}}, Action: ModerationActionHide}); err != nil {
 		t.Fatal(err)
 	}
 	bump("hide member", version, func() error { return nil })
@@ -476,21 +476,21 @@ func TestCollectionVersionOnlyEffectiveChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := searcher.SearchCollectionPosts(ctx, created.ID, &cursor, 1); err != nil {
+	if _, err := backend.SearchCollectionPosts(ctx, created.ID, &cursor, 1); err != nil {
 		t.Fatalf("pre-hide cursor after hide: %v", err)
 	}
 }
 
 func TestCollectionConcurrentMutations(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 20)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Racy"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 20)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Racy"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids[:8], 200)
-	_, base := collectionVersion(t, ctx, searcher, created.ID)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids[:8], 200)
+	_, base := collectionVersion(t, ctx, backend, created.ID)
 
 	// Twelve concurrent single-row adds serialize on the collection row:
 	// every insert lands and the version counts every effective call.
@@ -500,7 +500,7 @@ func TestCollectionConcurrentMutations(t *testing.T) {
 		group.Add(1)
 		go func(postID string) {
 			defer group.Done()
-			_, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{postID}})
+			_, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{postID}})
 			if err != nil {
 				failures <- err
 			}
@@ -511,10 +511,10 @@ func TestCollectionConcurrentMutations(t *testing.T) {
 	for err := range failures {
 		t.Fatalf("concurrent add: %v", err)
 	}
-	if _, current := collectionVersion(t, ctx, searcher, created.ID); current != base+12 {
+	if _, current := collectionVersion(t, ctx, backend, created.ID); current != base+12 {
 		t.Fatalf("version=%d want %d after 12 concurrent adds", current, base+12)
 	}
-	visited, _ := traverseCollection(t, ctx, searcher, created.ID, 60)
+	visited, _ := traverseCollection(t, ctx, backend, created.ID, 60)
 	if len(visited) != 20 {
 		t.Fatalf("traversed %d members, want 20 after concurrent adds", len(visited))
 	}
@@ -528,19 +528,19 @@ func TestCollectionConcurrentMutations(t *testing.T) {
 		backward[i], backward[j] = backward[j], backward[i]
 	}
 	forward := rotated
-	_, before := collectionVersion(t, ctx, searcher, created.ID)
+	_, before := collectionVersion(t, ctx, backend, created.ID)
 	group.Add(2)
 	reorderErrs := make(chan error, 2)
 	go func() {
 		defer group.Done()
-		_, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: forward})
+		_, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: forward})
 		if err != nil {
 			reorderErrs <- err
 		}
 	}()
 	go func() {
 		defer group.Done()
-		_, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: backward})
+		_, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: backward})
 		if err != nil {
 			reorderErrs <- err
 		}
@@ -550,7 +550,7 @@ func TestCollectionConcurrentMutations(t *testing.T) {
 	for err := range reorderErrs {
 		t.Fatalf("concurrent reorder: %v", err)
 	}
-	final, after := collectionVersion(t, ctx, searcher, created.ID)
+	final, after := collectionVersion(t, ctx, backend, created.ID)
 	if after != before+2 {
 		t.Fatalf("version=%d want %d after two concurrent reorders", after, before+2)
 	}
@@ -562,19 +562,19 @@ func TestCollectionConcurrentMutations(t *testing.T) {
 
 func TestCollectionPaginationVisibilityAndThumbnails(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 5)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Visible"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 5)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Visible"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
 
 	readyURL := "/media/derivatives/thumb-320/ready.jpg"
-	if _, err := searcher.pool.Exec(ctx, `INSERT INTO asset_variants (post_id, variant, object_key, url, media_type, width, height, file_size, status) VALUES ($1::bigint, 'thumb-320', 'derivatives/thumb-320/ready.jpg', $2, 'image/jpeg', 320, 240, 100, 'ready')`, ids[0], readyURL); err != nil {
+	if _, err := backend.pool.Exec(ctx, `INSERT INTO asset_variants (post_id, variant, object_key, url, media_type, width, height, file_size, status) VALUES ($1::bigint, 'thumb-320', 'derivatives/thumb-320/ready.jpg', $2, 'image/jpeg', 320, 240, 100, 'ready')`, ids[0], readyURL); err != nil {
 		t.Fatal(err)
 	}
-	page, err := searcher.SearchCollectionPosts(ctx, created.ID, nil, 60)
+	page, err := backend.SearchCollectionPosts(ctx, created.ID, nil, 60)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,14 +592,14 @@ func TestCollectionPaginationVisibilityAndThumbnails(t *testing.T) {
 
 	// Hidden and soft-deleted members read as missing while the version and
 	// the remaining traversal stay complete.
-	if _, err := searcher.ModeratePosts(ctx, "test", ModerationRequest{Posts: []ModerationTarget{{ID: ids[1]}}, Action: ModerationActionHide}); err != nil {
+	if _, err := backend.ModeratePosts(ctx, "test", ModerationRequest{Posts: []ModerationTarget{{ID: ids[1]}}, Action: ModerationActionHide}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := searcher.pool.Exec(ctx, `UPDATE posts SET deleted_at = now() WHERE id = $1::bigint`, ids[2]); err != nil {
+	if _, err := backend.pool.Exec(ctx, `UPDATE posts SET deleted_at = now() WHERE id = $1::bigint`, ids[2]); err != nil {
 		t.Fatal(err)
 	}
-	_, version := collectionVersion(t, ctx, searcher, created.ID)
-	visited, versions := traverseCollection(t, ctx, searcher, created.ID, 2)
+	_, version := collectionVersion(t, ctx, backend, created.ID)
+	visited, versions := traverseCollection(t, ctx, backend, created.ID, 2)
 	assertStableVersion(t, versions)
 	if versions[0] != version {
 		t.Fatalf("moderation moved collection version to %d", versions[0])
@@ -612,35 +612,35 @@ func TestCollectionPaginationVisibilityAndThumbnails(t *testing.T) {
 
 func TestCollectionMutationFailuresLeaveNoPartialState(t *testing.T) {
 	ctx := context.Background()
-	searcher := newCollectionPaginationSearcher(t, ctx, collectionPaginationTestURL(t))
-	ids := seedPublishedPosts(t, ctx, searcher, 4)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "Atomic"})
+	backend := newCollectionPaginationBackend(t, ctx, collectionPaginationTestURL(t))
+	ids := seedPublishedPosts(t, ctx, backend, 4)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "Atomic"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids[:3], 200)
-	before, version := collectionVersion(t, ctx, searcher, created.ID)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids[:3], 200)
+	before, version := collectionVersion(t, ctx, backend, created.ID)
 
 	// A reorder missing one member aborts before writing any position.
-	if _, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: ids[:2]}); err != ErrInvalidCollections {
+	if _, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: ids[:2]}); err != ErrInvalidCollections {
 		t.Fatalf("short reorder: expected ErrInvalidCollections, got %v", err)
 	}
 	// A reorder naming an unknown member aborts the same way.
-	if _, err := searcher.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[0], ids[1], ids[3]}}); err != ErrInvalidCollections {
+	if _, err := backend.ReorderCollection(ctx, created.ID, ReorderCollectionRequest{PostIDs: []string{ids[0], ids[1], ids[3]}}); err != ErrInvalidCollections {
 		t.Fatalf("foreign reorder: expected ErrInvalidCollections, got %v", err)
 	}
 	// Malformed input never reaches the database.
-	if _, err := searcher.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{"0"}}); err == nil {
+	if _, err := backend.AddCollectionPosts(ctx, created.ID, AddCollectionPostsRequest{PostIDs: []string{"0"}}); err == nil {
 		t.Fatal("invalid add accepted")
 	}
-	if err := searcher.RemoveCollectionPost(ctx, "999999999", ids[0]); err != ErrNotFound {
+	if err := backend.RemoveCollectionPost(ctx, "999999999", ids[0]); err != ErrNotFound {
 		t.Fatalf("remove from missing collection: expected ErrNotFound, got %v", err)
 	}
-	after, current := collectionVersion(t, ctx, searcher, created.ID)
+	after, current := collectionVersion(t, ctx, backend, created.ID)
 	if current != version || strings.Join(after.PostIDs, ",") != strings.Join(before.PostIDs, ",") {
 		t.Fatalf("failed mutations changed the collection: %#v", after)
 	}
-	visited, _ := traverseCollection(t, ctx, searcher, created.ID, 60)
+	visited, _ := traverseCollection(t, ctx, backend, created.ID, 60)
 	assertTraversal(t, visited, ids[:3])
 }
 
@@ -658,19 +658,19 @@ func TestCollectionPageSucceedsWithSingleConnection(t *testing.T) {
 	config.MaxConns = 1
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	searcher := newCollectionPaginationSearcherWithPoolURL(t, ctx, url, config.ConnString())
-	ids := seedPublishedPosts(t, ctx, searcher, 3)
-	created, err := searcher.CreateCollection(ctx, CreateCollectionRequest{Name: "SingleConn"})
+	backend := newCollectionPaginationBackendWithPoolURL(t, ctx, url, config.ConnString())
+	ids := seedPublishedPosts(t, ctx, backend, 3)
+	created, err := backend.CreateCollection(ctx, CreateCollectionRequest{Name: "SingleConn"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	addCollectionPostsInChunks(t, ctx, searcher, created.ID, ids, 200)
+	addCollectionPostsInChunks(t, ctx, backend, created.ID, ids, 200)
 
 	readyURL := "/media/derivatives/thumb-320/single-conn.jpg"
-	if _, err := searcher.pool.Exec(ctx, `INSERT INTO asset_variants (post_id, variant, object_key, url, media_type, width, height, file_size, status) VALUES ($1::bigint, 'thumb-320', 'derivatives/thumb-320/single-conn.jpg', $2, 'image/jpeg', 320, 240, 100, 'ready')`, ids[0], readyURL); err != nil {
+	if _, err := backend.pool.Exec(ctx, `INSERT INTO asset_variants (post_id, variant, object_key, url, media_type, width, height, file_size, status) VALUES ($1::bigint, 'thumb-320', 'derivatives/thumb-320/single-conn.jpg', $2, 'image/jpeg', 320, 240, 100, 'ready')`, ids[0], readyURL); err != nil {
 		t.Fatal(err)
 	}
-	page, err := searcher.SearchCollectionPosts(ctx, created.ID, nil, 60)
+	page, err := backend.SearchCollectionPosts(ctx, created.ID, nil, 60)
 	if err != nil {
 		t.Fatalf("single-connection page read failed: %v", err)
 	}

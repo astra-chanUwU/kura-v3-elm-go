@@ -14,14 +14,13 @@ module Domain.CollectionLogic exposing
     , refreshPageCount
     , shouldRetryRefresh
     , needsMoreRefreshPages
-    , classifyCollectionError
+    , classifyCollectionStatus
     , staleMutationRecovery
     , clampScrollTop
     )
 
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
-import Http
 import Set
 
 
@@ -58,7 +57,8 @@ previously loaded prefix from the start. `InvalidCursor` (HTTP 400)
 means the cursor itself is unusable: rebuild from the first page too,
 but it is reported distinctly because a cursor should never be
 malformed when echoed opaquely. Anything else keeps the old results
-with a manual retry.
+with a manual retry. The caller translates HTTP errors before passing
+their status here.
 -}
 type CollectionFailure
     = CollectionChanged
@@ -66,13 +66,13 @@ type CollectionFailure
     | TransportError
 
 
-classifyCollectionError : Http.Error -> CollectionFailure
-classifyCollectionError error =
-    case error of
-        Http.BadStatus 409 ->
+classifyCollectionStatus : Int -> CollectionFailure
+classifyCollectionStatus status =
+    case status of
+        409 ->
             CollectionChanged
 
-        Http.BadStatus 400 ->
+        400 ->
             InvalidCursor
 
         _ ->

@@ -16,7 +16,7 @@ const (
 	maxSearchLimit       = 60
 )
 
-func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
+func searchPosts(searcher posts.Searcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		limit, err := parseLimit(r.URL.Query().Get("limit"), r.URL.Query().Has("limit"))
@@ -45,12 +45,12 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid search query")
 			return
 		}
-		if len(searchers) == 0 || searchers[0] == nil {
+		if searcher == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "post search unavailable")
 			return
 		}
 
-		result, err := searchers[0].SearchPosts(r.Context(), query, cursor, limit)
+		result, err := searcher.SearchPosts(r.Context(), query, cursor, limit)
 		if err != nil {
 			if errors.Is(err, posts.ErrInvalidCursor) {
 				writeJSONError(w, http.StatusBadRequest, "invalid search cursor")
@@ -72,7 +72,7 @@ func searchPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func postDetail(searchers ...posts.Searcher) http.HandlerFunc {
+func postDetail(detailer posts.PostDetailer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSpace(chi.URLParam(r, "id"))
 		parsed, err := strconv.ParseInt(id, 10, 64)
@@ -80,12 +80,7 @@ func postDetail(searchers ...posts.Searcher) http.HandlerFunc {
 			writeJSONError(w, http.StatusNotFound, "post not found")
 			return
 		}
-		if len(searchers) == 0 || searchers[0] == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "post detail unavailable")
-			return
-		}
-		detailer, ok := searchers[0].(posts.PostDetailer)
-		if !ok {
+		if detailer == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "post detail unavailable")
 			return
 		}

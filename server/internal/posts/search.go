@@ -140,9 +140,9 @@ type SearchPage struct {
 // envelope. New code should use SearchPage.
 type SearchResponse = SearchPage
 
-// Searcher is the storage boundary used by the HTTP layer. PostgreSQL-backed
-// implementations belong in a separate adapter and must return PostSummary
-// values rather than leaking storage rows into the API.
+// Searcher is the narrow storage boundary for post summary queries. The
+// PostgreSQL backend also implements other capability interfaces, while this
+// contract keeps the HTTP search handler independent of those capabilities.
 type Searcher interface {
 	SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error)
 }

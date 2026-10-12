@@ -23,13 +23,13 @@ func tagRevertTestDatabaseURL(t *testing.T) string {
 	return url
 }
 
-func newTagRevertTestSearcher(t *testing.T, ctx context.Context, url string) *PostgresSearcher {
+func newTagRevertTestBackend(t *testing.T, ctx context.Context, url string) *PostgresBackend {
 	t.Helper()
-	searcher, err := NewPostgresSearcherWithStore(ctx, url, media.NewLocalStore(t.TempDir()))
+	backend, err := NewPostgresBackendWithStore(ctx, url, media.NewLocalStore(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(searcher.Close)
+	t.Cleanup(backend.Close)
 	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "db", "migrations"))
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -46,20 +46,20 @@ func newTagRevertTestSearcher(t *testing.T, ctx context.Context, url string) *Po
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := searcher.pool.Exec(ctx, string(sql)); err != nil {
+		if _, err := backend.pool.Exec(ctx, string(sql)); err != nil {
 			t.Fatalf("apply %s: %v", file, err)
 		}
 	}
-	if _, err := searcher.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants CASCADE"); err != nil {
+	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants CASCADE"); err != nil {
 		t.Fatal(err)
 	}
-	return searcher
+	return backend
 }
 
-func insertTagTestPost(t *testing.T, ctx context.Context, searcher *PostgresSearcher, tags []string) string {
+func insertTagTestPost(t *testing.T, ctx context.Context, backend *PostgresBackend, tags []string) string {
 	t.Helper()
 	var id string
-	if err := searcher.pool.QueryRow(ctx, `
+	if err := backend.pool.QueryRow(ctx, `
 INSERT INTO posts (preview_url, original_url, media_type, width, height, tags)
 VALUES ('/media/tag-test.png', '/media/tag-test.png', 'image/png', 10, 10, $1)
 RETURNING id::text`, tags).Scan(&id); err != nil {
@@ -68,9 +68,9 @@ RETURNING id::text`, tags).Scan(&id); err != nil {
 	return id
 }
 
-func editTagsMust(t *testing.T, ctx context.Context, searcher *PostgresSearcher, id string, version int, add, remove []string) TagEditResult {
+func editTagsMust(t *testing.T, ctx context.Context, backend *PostgresBackend, id string, version int, add, remove []string) TagEditResult {
 	t.Helper()
-	response, err := searcher.EditTags(ctx, TagEditRequest{
+	response, err := backend.EditTags(ctx, TagEditRequest{
 		Posts:  []TagTarget{{ID: id, Version: version}},
 		Add:    add,
 		Remove: remove,
@@ -84,9 +84,9 @@ func editTagsMust(t *testing.T, ctx context.Context, searcher *PostgresSearcher,
 	return response.Posts[0]
 }
 
-func revertTagsMust(t *testing.T, ctx context.Context, searcher *PostgresSearcher, id string, version, target int) TagEditResult {
+func revertTagsMust(t *testing.T, ctx context.Context, backend *PostgresBackend, id string, version, target int) TagEditResult {
 	t.Helper()
-	response, err := searcher.RevertTags(ctx, TagRevertRequest{
+	response, err := backend.RevertTags(ctx, TagRevertRequest{
 		Posts:         []TagTarget{{ID: id, Version: version}},
 		TargetVersion: target,
 	})
@@ -99,10 +99,10 @@ func revertTagsMust(t *testing.T, ctx context.Context, searcher *PostgresSearche
 	return response.Posts[0]
 }
 
-func revisionArraysNonNull(t *testing.T, ctx context.Context, searcher *PostgresSearcher, id string, version int) {
+func revisionArraysNonNull(t *testing.T, ctx context.Context, backend *PostgresBackend, id string, version int) {
 	t.Helper()
 	var addedNull, removedNull, targetNull bool
-	if err := searcher.pool.QueryRow(ctx, `
+	if err := backend.pool.QueryRow(ctx, `
 SELECT added_tags IS NULL, removed_tags IS NULL, target_tags IS NULL
 FROM post_tag_revisions WHERE post_id = $1::bigint AND version = $2`,
 		id, version).Scan(&addedNull, &removedNull, &targetNull); err != nil {
@@ -155,62 +155,62 @@ func TestTagDeltaNeverNil(t *testing.T) {
 // arrays while preserving optimistic-version bumps.
 func TestRevertTagsOneSidedAndUnchanged(t *testing.T) {
 	ctx := context.Background()
-	searcher := newTagRevertTestSearcher(t, ctx, tagRevertTestDatabaseURL(t))
+	backend := newTagRevertTestBackend(t, ctx, tagRevertTestDatabaseURL(t))
 
 	t.Run("add-only", func(t *testing.T) {
-		id := insertTagTestPost(t, ctx, searcher, []string{"a"})
-		editTagsMust(t, ctx, searcher, id, 0, []string{"b"}, nil) // v1 [a b]
-		editTagsMust(t, ctx, searcher, id, 1, nil, []string{"b"}) // v2 [a]
+		id := insertTagTestPost(t, ctx, backend, []string{"a"})
+		editTagsMust(t, ctx, backend, id, 0, []string{"b"}, nil) // v1 [a b]
+		editTagsMust(t, ctx, backend, id, 1, nil, []string{"b"}) // v2 [a]
 		// Revert to v1 target [a b] from v2 [a]: added=[b], removed=[].
-		result := revertTagsMust(t, ctx, searcher, id, 2, 1)
+		result := revertTagsMust(t, ctx, backend, id, 2, 1)
 		if result.Version != 3 || !equalTags(result.Tags, []string{"a", "b"}) || !result.Changed {
 			t.Fatalf("add-only revert wrong: %#v", result)
 		}
-		revisionArraysNonNull(t, ctx, searcher, id, 3)
+		revisionArraysNonNull(t, ctx, backend, id, 3)
 	})
 
 	t.Run("remove-only", func(t *testing.T) {
-		id := insertTagTestPost(t, ctx, searcher, []string{"a"})
-		editTagsMust(t, ctx, searcher, id, 0, []string{"b"}, nil) // v1 [a b]
-		editTagsMust(t, ctx, searcher, id, 1, []string{"c"}, nil) // v2 [a b c]
+		id := insertTagTestPost(t, ctx, backend, []string{"a"})
+		editTagsMust(t, ctx, backend, id, 0, []string{"b"}, nil) // v1 [a b]
+		editTagsMust(t, ctx, backend, id, 1, []string{"c"}, nil) // v2 [a b c]
 		// Revert to v1 target [a b] from v2 [a b c]: removed=[c], added=[].
-		result := revertTagsMust(t, ctx, searcher, id, 2, 1)
+		result := revertTagsMust(t, ctx, backend, id, 2, 1)
 		if result.Version != 3 || !result.Changed {
 			t.Fatalf("remove-only revert wrong: %#v", result)
 		}
 		if !equalTags(result.Tags, []string{"a", "b"}) {
 			t.Fatalf("remove-only revert tags=%v want [a b]", result.Tags)
 		}
-		revisionArraysNonNull(t, ctx, searcher, id, 3)
+		revisionArraysNonNull(t, ctx, backend, id, 3)
 	})
 
 	t.Run("two-sided", func(t *testing.T) {
-		id := insertTagTestPost(t, ctx, searcher, []string{"a", "b"})
-		editTagsMust(t, ctx, searcher, id, 0, []string{"c"}, []string{"a"}) // v1 [b c]
-		editTagsMust(t, ctx, searcher, id, 1, []string{"a"}, []string{"c"}) // v2 [b a]
-		result := revertTagsMust(t, ctx, searcher, id, 2, 1)                // target [b c]
+		id := insertTagTestPost(t, ctx, backend, []string{"a", "b"})
+		editTagsMust(t, ctx, backend, id, 0, []string{"c"}, []string{"a"}) // v1 [b c]
+		editTagsMust(t, ctx, backend, id, 1, []string{"a"}, []string{"c"}) // v2 [b a]
+		result := revertTagsMust(t, ctx, backend, id, 2, 1)                // target [b c]
 		if result.Version != 3 || !result.Changed {
 			t.Fatalf("two-sided revert wrong: %#v", result)
 		}
 		if !equalTags(result.Tags, []string{"b", "c"}) {
 			t.Fatalf("two-sided revert tags=%v want [b c]", result.Tags)
 		}
-		revisionArraysNonNull(t, ctx, searcher, id, 3)
+		revisionArraysNonNull(t, ctx, backend, id, 3)
 	})
 
 	t.Run("unchanged", func(t *testing.T) {
-		id := insertTagTestPost(t, ctx, searcher, []string{"a"})
-		editTagsMust(t, ctx, searcher, id, 0, []string{"b"}, nil) // v1 [a b]
-		result := revertTagsMust(t, ctx, searcher, id, 1, 1)      // target is current state
+		id := insertTagTestPost(t, ctx, backend, []string{"a"})
+		editTagsMust(t, ctx, backend, id, 0, []string{"b"}, nil) // v1 [a b]
+		result := revertTagsMust(t, ctx, backend, id, 1, 1)      // target is current state
 		if result.Version != 2 || result.Changed {
 			t.Fatalf("unchanged revert must bump version without Changed: %#v", result)
 		}
 		if !equalTags(result.Tags, []string{"a", "b"}) {
 			t.Fatalf("unchanged revert tags=%v want [a b]", result.Tags)
 		}
-		revisionArraysNonNull(t, ctx, searcher, id, 2)
+		revisionArraysNonNull(t, ctx, backend, id, 2)
 		// Optimistic version still applies: the same request is now stale.
-		if _, err := searcher.RevertTags(ctx, TagRevertRequest{
+		if _, err := backend.RevertTags(ctx, TagRevertRequest{
 			Posts:         []TagTarget{{ID: id, Version: 1}},
 			TargetVersion: 1,
 		}); err != ErrConflict {

@@ -10,6 +10,7 @@ the post may already exist, so resubmission stays an explicit user decision.
 -}
 
 import Api.Access exposing (authHeaders)
+import Domain.UploadRules as UploadRules
 import Domain.Post exposing (PostDetail, detailDecoder)
 import File exposing (File)
 import Http
@@ -20,7 +21,7 @@ import Url.Builder
 -}
 maxBytes : Int
 maxBytes =
-    25 * 1024 * 1024
+    UploadRules.maxBytes
 
 
 type alias Metadata =

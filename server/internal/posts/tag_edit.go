@@ -81,7 +81,7 @@ func normalizeTags(tags []string) ([]string, error) {
 }
 
 // applyTagEdit updates one row while its transaction lock is held.
-func (s *PostgresSearcher) applyTagEdit(ctx context.Context, tx pgx.Tx, target TagTarget, add, remove []string) (TagEditResult, error) {
+func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target TagTarget, add, remove []string) (TagEditResult, error) {
 	var currentTags []string
 	var searchText string
 	var currentVersion int
@@ -139,7 +139,7 @@ func (s *PostgresSearcher) applyTagEdit(ctx context.Context, tx pgx.Tx, target T
 	return result, nil
 }
 
-func (s *PostgresSearcher) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int) (TagEditResult, error) {
+func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int) (TagEditResult, error) {
 	var currentTags []string
 	var searchText string
 	var currentVersion int

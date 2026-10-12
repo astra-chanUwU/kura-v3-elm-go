@@ -29,29 +29,43 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	var searcher posts.Searcher
-	var closeSearcher func()
+	var dependencies httpapi.Dependencies
+	var closeBackend func()
 	var worker *jobs.Worker
 	workerDone := make(chan error, 1)
 	workerRunning := false
 	if databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); databaseURL != "" {
-		pgSearcher, err := posts.NewPostgresSearcher(ctx, databaseURL)
+		pgBackend, err := posts.NewPostgresBackend(ctx, databaseURL)
 		if err != nil {
-			log.Printf("postgres search unavailable: %v", err)
+			log.Printf("postgres backend unavailable: %v", err)
 		} else {
-			searcher = pgSearcher
-			closeSearcher = pgSearcher.Close
-			// One shared pool: the searcher owns it, and the job store
+			dependencies = httpapi.Dependencies{
+				Posts:           pgBackend,
+				PostDetails:     pgBackend,
+				Uploads:         pgBackend,
+				Tags:            pgBackend,
+				TagRevisions:    pgBackend,
+				Reactions:       pgBackend,
+				SavedSearches:   pgBackend,
+				Collections:     pgBackend,
+				CollectionPosts: pgBackend,
+				Moderation:      pgBackend,
+				ModerationRead:  pgBackend,
+				Jobs:            pgBackend,
+				MediaVisibility: pgBackend,
+			}
+			closeBackend = pgBackend.Close
+			// One shared pool: the backend owns it, and the job store
 			// and variant recorder wrap it. Crash recovery runs before
 			// the worker claims so interrupted thumbnails resume.
-			if recovered, err := pgSearcher.RecoverExpiredJobs(ctx); err != nil {
+			if recovered, err := pgBackend.RecoverExpiredJobs(ctx); err != nil {
 				log.Printf("derivative recovery failed: %v", err)
 			} else if recovered > 0 {
 				log.Printf("recovered %d expired derivative jobs", recovered)
 			}
 			configured, err := jobs.NewWorker(jobs.WorkerConfig{
-				Store:    pgSearcher.JobsStore(),
-				Handler:  pgSearcher.NewDerivativeProcessor().Handle,
+				Store:    pgBackend.JobsStore(),
+				Handler:  pgBackend.NewDerivativeProcessor().Handle,
 				LockedBy: derivativeWorkerID(),
 				Kinds:    []string{media.KindDerivative},
 			})
@@ -66,11 +80,11 @@ func main() {
 			}
 		}
 	}
-	if closeSearcher != nil {
-		defer closeSearcher()
+	if closeBackend != nil {
+		defer closeBackend()
 	}
 
-	server := &http.Server{Addr: addr, Handler: httpapi.NewRouterWithToken(os.Getenv("KURA_API_TOKEN"), searcher)}
+	server := &http.Server{Addr: addr, Handler: httpapi.NewRouterWithDependencies(os.Getenv("KURA_API_TOKEN"), dependencies)}
 	go func() {
 		log.Printf("kura-server listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

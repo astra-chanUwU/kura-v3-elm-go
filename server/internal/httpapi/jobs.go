@@ -6,30 +6,15 @@ import (
 	"strings"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
-	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
 	"github.com/go-chi/chi/v5"
 )
-
-// jobReader serves one job row for GET /api/jobs/{id} polling. Any searcher
-// that also implements jobs.Reader serves job status; routers whose
-// searcher predates jobs answer 503. The PostgreSQL searcher implements the
-// reader over its shared pool, so the endpoint is live once DATABASE_URL is
-// configured.
-func jobReader(searchers ...posts.Searcher) (jobs.Reader, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	reader, ok := searchers[0].(jobs.Reader)
-	return reader, ok
-}
 
 // getJobStatus polls one durable job by id. Reads stay public like other
 // GET endpoints, so local polling works without credentials while the write
 // middleware still guards mutations.
-func getJobStatus(searchers ...posts.Searcher) http.HandlerFunc {
+func getJobStatus(reader jobs.Reader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reader, ok := jobReader(searchers...)
-		if !ok {
+		if reader == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "jobs unavailable")
 			return
 		}

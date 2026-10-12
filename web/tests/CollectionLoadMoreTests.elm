@@ -1,5 +1,6 @@
 module CollectionLoadMoreTests exposing (allPassed, suite)
 
+import Api.Error as ApiError
 import Domain.CollectionLogic as Logic
 import Domain.Post exposing (PostSummary)
 import Domain.Selection as Selection
@@ -41,42 +42,42 @@ appendPages pages =
 
 caseChanged409 : Bool
 caseChanged409 =
-    Logic.classifyCollectionError (Http.BadStatus 409) == Logic.CollectionChanged
+    Logic.classifyCollectionStatus 409 == Logic.CollectionChanged
 
 
 caseInvalidCursor400 : Bool
 caseInvalidCursor400 =
-    Logic.classifyCollectionError (Http.BadStatus 400) == Logic.InvalidCursor
+    Logic.classifyCollectionStatus 400 == Logic.InvalidCursor
 
 
 caseTransport404 : Bool
 caseTransport404 =
-    Logic.classifyCollectionError (Http.BadStatus 404) == Logic.TransportError
+    Logic.classifyCollectionStatus 404 == Logic.TransportError
 
 
 caseTransport500 : Bool
 caseTransport500 =
-    Logic.classifyCollectionError (Http.BadStatus 500) == Logic.TransportError
+    Logic.classifyCollectionStatus 500 == Logic.TransportError
 
 
 caseTransportTimeout : Bool
 caseTransportTimeout =
-    Logic.classifyCollectionError Http.Timeout == Logic.TransportError
+    ApiError.classify Http.Timeout == ApiError.Timeout
 
 
 caseTransportNetwork : Bool
 caseTransportNetwork =
-    Logic.classifyCollectionError Http.NetworkError == Logic.TransportError
+    ApiError.classify Http.NetworkError == ApiError.NetworkError
 
 
 caseTransportBadBody : Bool
 caseTransportBadBody =
-    Logic.classifyCollectionError (Http.BadBody "x") == Logic.TransportError
+    ApiError.classify (Http.BadBody "x") == ApiError.BadBody
 
 
 caseTransportBadUrl : Bool
 caseTransportBadUrl =
-    Logic.classifyCollectionError (Http.BadUrl "x") == Logic.TransportError
+    ApiError.classify (Http.BadUrl "x") == ApiError.BadUrl "x"
 
 
 

@@ -1,34 +1,20 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
 )
 
-func editTags(searchers ...posts.Searcher) http.HandlerFunc {
+func editTags(mutator posts.TagMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if len(searchers) == 0 || searchers[0] == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "tag editing unavailable")
-			return
-		}
-		mutator, ok := searchers[0].(posts.TagMutator)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "tag editing unavailable")
 			return
 		}
 		var request posts.TagEditRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&request); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid tag edit JSON")
-			return
-		}
-		if err := decoder.Decode(&struct{}{}); err != io.EOF {
-			writeJSONError(w, http.StatusBadRequest, "invalid tag edit JSON")
+		if err := decodeJSONBody(w, r, &request, "tag edit"); err != nil {
 			return
 		}
 		validated, err := posts.ValidateTagEdit(request)
@@ -56,14 +42,9 @@ func editTags(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func revertTags(searchers ...posts.Searcher) http.HandlerFunc {
+func revertTags(mutator posts.TagReverter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if len(searchers) == 0 || searchers[0] == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "tag reverting unavailable")
-			return
-		}
-		mutator, ok := searchers[0].(posts.TagReverter)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "tag reverting unavailable")
 			return
 		}

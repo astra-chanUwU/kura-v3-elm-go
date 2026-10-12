@@ -92,7 +92,7 @@ func validateSavedSearchValues(rawName, rawQuery string) (string, string, error)
 	return name, query, nil
 }
 
-func (s *PostgresSearcher) ListSavedSearches(ctx context.Context, owner string) ([]SavedSearch, error) {
+func (s *PostgresBackend) ListSavedSearches(ctx context.Context, owner string) ([]SavedSearch, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrUnavailable
 	}
@@ -118,7 +118,7 @@ func (s *PostgresSearcher) ListSavedSearches(ctx context.Context, owner string) 
 	return result, nil
 }
 
-func (s *PostgresSearcher) CreateSavedSearch(ctx context.Context, owner string, request CreateSavedSearchRequest) (SavedSearch, error) {
+func (s *PostgresBackend) CreateSavedSearch(ctx context.Context, owner string, request CreateSavedSearchRequest) (SavedSearch, error) {
 	if s == nil || s.pool == nil {
 		return SavedSearch{}, ErrUnavailable
 	}
@@ -137,7 +137,7 @@ func (s *PostgresSearcher) CreateSavedSearch(ctx context.Context, owner string, 
 	return result, nil
 }
 
-func (s *PostgresSearcher) UpdateSavedSearch(ctx context.Context, owner, id string, request UpdateSavedSearchRequest) (SavedSearch, error) {
+func (s *PostgresBackend) UpdateSavedSearch(ctx context.Context, owner, id string, request UpdateSavedSearchRequest) (SavedSearch, error) {
 	if s == nil || s.pool == nil {
 		return SavedSearch{}, ErrUnavailable
 	}
@@ -170,7 +170,7 @@ func (s *PostgresSearcher) UpdateSavedSearch(ctx context.Context, owner, id stri
 	return result, nil
 }
 
-func (s *PostgresSearcher) DeleteSavedSearch(ctx context.Context, owner, id string) error {
+func (s *PostgresBackend) DeleteSavedSearch(ctx context.Context, owner, id string) error {
 	if s == nil || s.pool == nil {
 		return ErrUnavailable
 	}

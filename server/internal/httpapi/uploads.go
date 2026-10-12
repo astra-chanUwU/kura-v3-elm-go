@@ -10,14 +10,9 @@ import (
 
 const maxUploadRequestBytes int64 = 26 << 20
 
-func uploadPost(searchers ...posts.Searcher) http.HandlerFunc {
+func uploadPost(uploader posts.UploadCreator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if len(searchers) == 0 || searchers[0] == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "uploads unavailable")
-			return
-		}
-		uploader, ok := searchers[0].(posts.UploadCreator)
-		if !ok {
+		if uploader == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "uploads unavailable")
 			return
 		}

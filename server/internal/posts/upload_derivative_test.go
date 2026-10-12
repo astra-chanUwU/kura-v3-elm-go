@@ -31,13 +31,13 @@ func uploadTestDatabaseURL(t *testing.T) string {
 	return url
 }
 
-func newUploadTestSearcher(t *testing.T, ctx context.Context, url, root string) *PostgresSearcher {
+func newUploadTestBackend(t *testing.T, ctx context.Context, url, root string) *PostgresBackend {
 	t.Helper()
-	searcher, err := NewPostgresSearcherWithStore(ctx, url, media.NewLocalStore(root))
+	backend, err := NewPostgresBackendWithStore(ctx, url, media.NewLocalStore(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(searcher.Close)
+	t.Cleanup(backend.Close)
 	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "db", "migrations"))
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -54,14 +54,14 @@ func newUploadTestSearcher(t *testing.T, ctx context.Context, url, root string) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := searcher.pool.Exec(ctx, string(sql)); err != nil {
+		if _, err := backend.pool.Exec(ctx, string(sql)); err != nil {
 			t.Fatalf("apply %s: %v", file, err)
 		}
 	}
-	if _, err := searcher.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants CASCADE"); err != nil {
+	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants CASCADE"); err != nil {
 		t.Fatal(err)
 	}
-	return searcher
+	return backend
 }
 
 func testPNG(t *testing.T, width, height int) []byte {
@@ -79,11 +79,11 @@ func testPNG(t *testing.T, width, height int) []byte {
 	return encoded.Bytes()
 }
 
-func runDerivativeOnce(t *testing.T, searcher *PostgresSearcher) bool {
+func runDerivativeOnce(t *testing.T, backend *PostgresBackend) bool {
 	t.Helper()
 	worker, err := jobs.NewWorker(jobs.WorkerConfig{
-		Store:    searcher.JobsStore(),
-		Handler:  searcher.NewDerivativeProcessor().Handle,
+		Store:    backend.JobsStore(),
+		Handler:  backend.NewDerivativeProcessor().Handle,
 		LockedBy: "upload-test-worker",
 		Kinds:    []string{media.KindDerivative},
 	})
@@ -106,9 +106,9 @@ func TestCreateUploadEnqueuesDerivativeJob(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", root)
-	searcher := newUploadTestSearcher(t, ctx, uploadTestDatabaseURL(t), root)
+	backend := newUploadTestBackend(t, ctx, uploadTestDatabaseURL(t), root)
 
-	detail, err := searcher.CreateUpload(ctx, UploadRequest{
+	detail, err := backend.CreateUpload(ctx, UploadRequest{
 		File:     bytes.NewReader(testPNG(t, 640, 480)),
 		Filename: "photo.png",
 		Tags:     []string{"demo"},
@@ -127,7 +127,7 @@ func TestCreateUploadEnqueuesDerivativeJob(t *testing.T) {
 	}
 	originalURL, hash := detail.OriginalURL, detail.Hash
 
-	job, err := searcher.GetJob(ctx, detail.DerivativeJobID)
+	job, err := backend.GetJob(ctx, detail.DerivativeJobID)
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
@@ -139,14 +139,14 @@ func TestCreateUploadEnqueuesDerivativeJob(t *testing.T) {
 		t.Fatalf("job not bound to upload: %#v payload=%v", job, payload)
 	}
 
-	if !runDerivativeOnce(t, searcher) {
+	if !runDerivativeOnce(t, backend) {
 		t.Fatal("derivative worker claimed no job")
 	}
-	if job, err = searcher.GetJob(ctx, detail.DerivativeJobID); err != nil || job.Status != jobs.StatusSucceeded {
+	if job, err = backend.GetJob(ctx, detail.DerivativeJobID); err != nil || job.Status != jobs.StatusSucceeded {
 		t.Fatalf("job after work: %#v %v", job, err)
 	}
 
-	ready, err := searcher.GetPostDetail(ctx, detail.ID)
+	ready, err := backend.GetPostDetail(ctx, detail.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestCreateUploadEnqueuesDerivativeJob(t *testing.T) {
 
 	// Retrying the same logical job enqueues no duplicate and records no
 	// second variant row.
-	second, err := searcher.JobsStore().Enqueue(ctx, mustDerivativeRequest(t, detail.ID, originalKeyForURL(t, originalURL)))
+	second, err := backend.JobsStore().Enqueue(ctx, mustDerivativeRequest(t, detail.ID, originalKeyForURL(t, originalURL)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestCreateUploadEnqueuesDerivativeJob(t *testing.T) {
 		t.Fatalf("retry duplicated logical job: %q vs %q", second.ID, detail.DerivativeJobID)
 	}
 	var variants int
-	if err := searcher.pool.QueryRow(ctx, `SELECT count(*) FROM asset_variants WHERE post_id = $1::bigint`, detail.ID).Scan(&variants); err != nil {
+	if err := backend.pool.QueryRow(ctx, `SELECT count(*) FROM asset_variants WHERE post_id = $1::bigint`, detail.ID).Scan(&variants); err != nil {
 		t.Fatal(err)
 	}
 	if variants != 1 {
@@ -202,9 +202,9 @@ func TestUploadTransactionFailureLeavesNoRows(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", root)
-	searcher := newUploadTestSearcher(t, ctx, uploadTestDatabaseURL(t), root)
+	backend := newUploadTestBackend(t, ctx, uploadTestDatabaseURL(t), root)
 
-	tx, err := searcher.pool.Begin(ctx)
+	tx, err := backend.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,10 +229,10 @@ func TestUploadTransactionFailureLeavesNoRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	var posts, queued int
-	if err := searcher.pool.QueryRow(ctx, `SELECT count(*) FROM posts WHERE id = $1::bigint`, id).Scan(&posts); err != nil {
+	if err := backend.pool.QueryRow(ctx, `SELECT count(*) FROM posts WHERE id = $1::bigint`, id).Scan(&posts); err != nil {
 		t.Fatal(err)
 	}
-	if err := searcher.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE idempotency_key = 'derivative:`+id+`:thumb-320'`).Scan(&queued); err != nil {
+	if err := backend.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE idempotency_key = 'derivative:`+id+`:thumb-320'`).Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
 	if posts != 0 || queued != 0 {
@@ -247,9 +247,9 @@ func TestDerivativeMissingOriginalRecordsRetry(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", root)
-	searcher := newUploadTestSearcher(t, ctx, uploadTestDatabaseURL(t), root)
+	backend := newUploadTestBackend(t, ctx, uploadTestDatabaseURL(t), root)
 
-	detail, err := searcher.CreateUpload(ctx, UploadRequest{
+	detail, err := backend.CreateUpload(ctx, UploadRequest{
 		File:     bytes.NewReader(testPNG(t, 200, 200)),
 		Filename: "vanishing.png",
 	})
@@ -259,10 +259,10 @@ func TestDerivativeMissingOriginalRecordsRetry(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, filepath.FromSlash(originalKeyForURL(t, detail.OriginalURL)))); err != nil {
 		t.Fatal(err)
 	}
-	if !runDerivativeOnce(t, searcher) {
+	if !runDerivativeOnce(t, backend) {
 		t.Fatal("derivative worker claimed no job")
 	}
-	job, err := searcher.GetJob(ctx, detail.DerivativeJobID)
+	job, err := backend.GetJob(ctx, detail.DerivativeJobID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,19 +281,19 @@ func TestHiddenPostDeniesOriginalAndThumbnail(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", root)
-	searcher := newUploadTestSearcher(t, ctx, uploadTestDatabaseURL(t), root)
+	backend := newUploadTestBackend(t, ctx, uploadTestDatabaseURL(t), root)
 
-	detail, err := searcher.CreateUpload(ctx, UploadRequest{
+	detail, err := backend.CreateUpload(ctx, UploadRequest{
 		File:     bytes.NewReader(testPNG(t, 640, 480)),
 		Filename: "gated.png",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runDerivativeOnce(t, searcher) {
+	if !runDerivativeOnce(t, backend) {
 		t.Fatal("derivative worker claimed no job")
 	}
-	ready, err := searcher.GetPostDetail(ctx, detail.ID)
+	ready, err := backend.GetPostDetail(ctx, detail.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestHiddenPostDeniesOriginalAndThumbnail(t *testing.T) {
 	}
 
 	visible := func(url string) bool {
-		visibility, err := searcher.LookupMediaVisibility(ctx, url)
+		visibility, err := backend.LookupMediaVisibility(ctx, url)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -312,7 +312,7 @@ func TestHiddenPostDeniesOriginalAndThumbnail(t *testing.T) {
 	if !visible(ready.OriginalURL) || !visible(thumbnailURL) {
 		t.Fatal("published media should be visible")
 	}
-	if _, err := searcher.ModeratePosts(ctx, "test", ModerationRequest{
+	if _, err := backend.ModeratePosts(ctx, "test", ModerationRequest{
 		Posts:  []ModerationTarget{{ID: detail.ID}},
 		Action: ModerationActionHide,
 	}); err != nil {
@@ -321,10 +321,10 @@ func TestHiddenPostDeniesOriginalAndThumbnail(t *testing.T) {
 	if visible(ready.OriginalURL) || visible(thumbnailURL) {
 		t.Fatal("hidden original or thumbnail still visible")
 	}
-	if _, err := searcher.GetPostDetail(ctx, detail.ID); err == nil {
+	if _, err := backend.GetPostDetail(ctx, detail.ID); err == nil {
 		t.Fatal("hidden post detail should be indistinguishable from missing")
 	}
-	if _, err := searcher.ModeratePosts(ctx, "test", ModerationRequest{
+	if _, err := backend.ModeratePosts(ctx, "test", ModerationRequest{
 		Posts:  []ModerationTarget{{ID: detail.ID}},
 		Action: ModerationActionApprove,
 	}); err != nil {
@@ -333,7 +333,7 @@ func TestHiddenPostDeniesOriginalAndThumbnail(t *testing.T) {
 	if !visible(ready.OriginalURL) || !visible(thumbnailURL) {
 		t.Fatal("republished media should be visible again")
 	}
-	restored, err := searcher.GetPostDetail(ctx, detail.ID)
+	restored, err := backend.GetPostDetail(ctx, detail.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,7 +44,7 @@ func ValidateReactionRequest(request ReactionRequest) (ReactionRequest, error) {
 }
 
 // applyReaction updates one row while its transaction lock is held.
-func (s *PostgresSearcher) applyReaction(ctx context.Context, tx pgx.Tx, target ReactionTarget, favorite *bool, score *int) (ReactionResult, error) {
+func (s *PostgresBackend) applyReaction(ctx context.Context, tx pgx.Tx, target ReactionTarget, favorite *bool, score *int) (ReactionResult, error) {
 	var currentFavorite bool
 	var currentScore, currentVersion int
 	err := tx.QueryRow(ctx, lockPostForReactionSQL, target.ID).Scan(&currentFavorite, &currentScore, &currentVersion)

@@ -9,28 +9,19 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func savedSearchStore(searchers ...posts.Searcher) (posts.SavedSearchStore, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	store, ok := searchers[0].(posts.SavedSearchStore)
-	return store, ok
-}
-
 func savedSearchActor(r *http.Request) (string, bool) {
 	actor, ok := actorFromRequest(r)
 	return strings.TrimSpace(actor.ID), ok && strings.TrimSpace(actor.ID) != ""
 }
 
-func listSavedSearches(searchers ...posts.Searcher) http.HandlerFunc {
+func listSavedSearches(store posts.SavedSearchStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := savedSearchActor(r)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		store, ok := savedSearchStore(searchers...)
-		if !ok {
+		if store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "saved searches unavailable")
 			return
 		}
@@ -45,15 +36,14 @@ func listSavedSearches(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func createSavedSearch(searchers ...posts.Searcher) http.HandlerFunc {
+func createSavedSearch(store posts.SavedSearchStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := savedSearchActor(r)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		store, ok := savedSearchStore(searchers...)
-		if !ok {
+		if store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "saved searches unavailable")
 			return
 		}
@@ -75,15 +65,14 @@ func createSavedSearch(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func updateSavedSearch(searchers ...posts.Searcher) http.HandlerFunc {
+func updateSavedSearch(store posts.SavedSearchStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := savedSearchActor(r)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		store, ok := savedSearchStore(searchers...)
-		if !ok {
+		if store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "saved searches unavailable")
 			return
 		}
@@ -105,15 +94,14 @@ func updateSavedSearch(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func deleteSavedSearch(searchers ...posts.Searcher) http.HandlerFunc {
+func deleteSavedSearch(store posts.SavedSearchStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := savedSearchActor(r)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		store, ok := savedSearchStore(searchers...)
-		if !ok {
+		if store == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "saved searches unavailable")
 			return
 		}

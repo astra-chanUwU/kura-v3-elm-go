@@ -10,23 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func collectionMutator(searchers ...posts.Searcher) (posts.CollectionMutator, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	mutator, ok := searchers[0].(posts.CollectionMutator)
-	return mutator, ok
-}
-
-func collectionPostSearcher(searchers ...posts.Searcher) (posts.CollectionPostSearcher, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	reader, ok := searchers[0].(posts.CollectionPostSearcher)
-	return reader, ok
-}
-
-func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
+func searchCollectionPosts(reader posts.CollectionPostSearcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		collectionID := strings.TrimSpace(chi.URLParam(r, "id"))
 		parsedID, parseErr := strconv.ParseInt(collectionID, 10, 64)
@@ -34,8 +18,7 @@ func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid collection id")
 			return
 		}
-		reader, ok := collectionPostSearcher(searchers...)
-		if !ok {
+		if reader == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}
@@ -62,14 +45,13 @@ func searchCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func listCollections(searchers ...posts.Searcher) http.HandlerFunc {
+func listCollections(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reader, ok := collectionMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}
-		result, err := reader.ListCollections(r.Context())
+		result, err := mutator.ListCollections(r.Context())
 		if err != nil {
 			writeCollectionError(w, err)
 			return
@@ -80,10 +62,9 @@ func listCollections(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func createCollection(searchers ...posts.Searcher) http.HandlerFunc {
+func createCollection(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mutator, ok := collectionMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}
@@ -105,10 +86,9 @@ func createCollection(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func addCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
+func addCollectionPosts(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mutator, ok := collectionMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}
@@ -130,10 +110,9 @@ func addCollectionPosts(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func removeCollectionPost(searchers ...posts.Searcher) http.HandlerFunc {
+func removeCollectionPost(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mutator, ok := collectionMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}
@@ -145,10 +124,9 @@ func removeCollectionPost(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func reorderCollection(searchers ...posts.Searcher) http.HandlerFunc {
+func reorderCollection(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mutator, ok := collectionMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
 			return
 		}

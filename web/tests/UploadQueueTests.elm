@@ -1,9 +1,12 @@
 module UploadQueueTests exposing (allPassed, suite)
 
 import Api.Job as Job
+import Api.Upload as Upload
 import Domain.Post as Post
 import Domain.Sequence as Sequence
+import Domain.UploadRules as UploadRules
 import Feature.UploadQueue as UploadQueue exposing (Context, Entry, FileInfo, Model, Msg(..), OutMsg(..))
+import Feature.UploadQueue.Queue as Queue
 import Http
 import Json.Decode as Decode
 
@@ -85,6 +88,12 @@ caseBytesFormatted =
         && UploadQueue.formatBytes (25 * 1024 * 1024) == "25.0 MiB"
 
 
+caseSharedUploadLimit : Bool
+caseSharedUploadLimit =
+    Upload.maxBytes == UploadRules.maxBytes
+        && Queue.maxBytes == UploadRules.maxBytes
+
+
 caseTerminalJobs : Bool
 caseTerminalJobs =
     Job.isTerminal "succeeded"
@@ -97,10 +106,10 @@ caseTerminalJobs =
 
 casePhaseLabels : Bool
 casePhaseLabels =
-    UploadQueue.phaseLabel UploadQueue.Queued == "Queued"
-        && UploadQueue.phaseLabel (UploadQueue.Saving 1) == "Saving"
-        && UploadQueue.thumbLabel (UploadQueue.ThumbWaiting 3) == "Thumbnail: processing…"
-        && UploadQueue.thumbLabel UploadQueue.ThumbReady == "Thumbnail: ready"
+    UploadQueue.phaseLabel Queue.Queued == "Queued"
+        && UploadQueue.phaseLabel (Queue.Saving 1) == "Saving"
+        && UploadQueue.thumbLabel (Queue.ThumbWaiting 3) == "Thumbnail: processing…"
+        && UploadQueue.thumbLabel Queue.ThumbReady == "Thumbnail: ready"
 
 
 summary : String -> String -> Post.PostSummary
@@ -140,7 +149,7 @@ caseRefreshNeverInjects =
         && Sequence.find "9" after == Nothing
 
 
-testEntry : Int -> UploadQueue.Phase -> Entry
+testEntry : Int -> Queue.Phase -> Entry
 testEntry id phase =
     { id = id
     , name = "photo-" ++ String.fromInt id ++ ".jpg"
@@ -218,7 +227,7 @@ caseLockedPumpHoldsQueued : Bool
 caseLockedPumpHoldsQueued =
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Queued, testEntry 1 UploadQueue.Queued ]
+            testModel [ testEntry 0 Queue.Queued, testEntry 1 Queue.Queued ]
 
         ( next, _, outs ) =
             UploadQueue.update lockedCtx (DismissEntry 0) model
@@ -232,7 +241,7 @@ caseUnlockedPumpAttemptsQueued =
     -- stalling; the point is the unlocked queue does not hold still.
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Queued, testEntry 1 UploadQueue.Queued ]
+            testModel [ testEntry 0 Queue.Queued, testEntry 1 Queue.Queued ]
 
         ( next, _, _ ) =
             UploadQueue.update openCtx (DismissEntry 0) model
@@ -244,7 +253,7 @@ caseResumeLockedHolds : Bool
 caseResumeLockedHolds =
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Queued ]
+            testModel [ testEntry 0 Queue.Queued ]
 
         ( next, _, outs ) =
             UploadQueue.resume lockedCtx model
@@ -261,7 +270,7 @@ caseFinishQueuedIgnored =
         Ok detail ->
             let
                 model =
-                    testModel [ testEntry 0 UploadQueue.Queued ]
+                    testModel [ testEntry 0 Queue.Queued ]
 
                 ( next, _, outs ) =
                     UploadQueue.update openCtx (UploadFinished 0 1 (Ok detail)) model
@@ -273,7 +282,7 @@ caseFinishTimeoutHonest : Bool
 caseFinishTimeoutHonest =
     let
         model =
-            testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+            testModel [ testEntry 0 (Queue.Saving 1) ]
 
         ( next, _, outs ) =
             UploadQueue.update openCtx (UploadFinished 0 1 (Err Http.Timeout)) model
@@ -281,7 +290,7 @@ caseFinishTimeoutHonest =
     case next.entries of
         [ entry ] ->
             case entry.phase of
-                UploadQueue.Failed message ->
+                Queue.Failed message ->
                     String.contains "may already exist" message && outs == []
 
                 _ ->
@@ -296,8 +305,8 @@ caseFinishUnauthorizedHoldsQueue =
     let
         model =
             testModel
-                [ testEntry 0 (UploadQueue.Saving 1)
-                , testEntry 1 UploadQueue.Queued
+                [ testEntry 0 (Queue.Saving 1)
+                , testEntry 1 Queue.Queued
                 ]
 
         ( next, _, outs ) =
@@ -314,7 +323,7 @@ caseStaleUnauthorizedCarriesRequestGeneration =
             UploadQueue.context "" Nothing True 2
 
         model =
-            testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+            testModel [ testEntry 0 (Queue.Saving 1) ]
 
         ( _, _, outs ) =
             UploadQueue.update renewedCtx (UploadFinished 0 1 (Err (Http.BadStatus 401))) model
@@ -331,7 +340,7 @@ caseFinishConfirmedStands =
         Ok detail ->
             let
                 model =
-                    testModel [ testEntry 0 (UploadQueue.Saving 1) ]
+                    testModel [ testEntry 0 (Queue.Saving 1) ]
 
                 ( next, _, outs ) =
                     UploadQueue.update lockedCtx (UploadFinished 0 1 (Ok detail)) model
@@ -341,7 +350,7 @@ caseFinishConfirmedStands =
             case next.entries of
                 [ entry ] ->
                     case entry.phase of
-                        UploadQueue.Uploaded uploaded ->
+                        Queue.Uploaded uploaded ->
                             uploaded.postId == "42" && outsOf ( next, Cmd.none, outs ) == [ "UploadConfirmed" ]
 
                         _ ->
@@ -355,7 +364,7 @@ caseDismissUploadingRefused : Bool
 caseDismissUploadingRefused =
     let
         model =
-            testModel [ testEntry 0 (UploadQueue.Uploading { sent = 10, size = 100, accessGeneration = 1 }) ]
+            testModel [ testEntry 0 (Queue.Uploading { sent = 10, size = 100, accessGeneration = 1 }) ]
     in
     dismissEntries model 0 == model.entries
 
@@ -364,7 +373,7 @@ caseDismissSavingRefused : Bool
 caseDismissSavingRefused =
     let
         model =
-            testModel [ testEntry 0 (UploadQueue.Saving 1), testEntry 1 UploadQueue.Queued ]
+            testModel [ testEntry 0 (Queue.Saving 1), testEntry 1 Queue.Queued ]
     in
     dismissEntries model 0 == model.entries
 
@@ -373,7 +382,7 @@ caseDismissQueuedRemoves : Bool
 caseDismissQueuedRemoves =
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Queued, testEntry 1 UploadQueue.Queued ]
+            testModel [ testEntry 0 Queue.Queued, testEntry 1 Queue.Queued ]
     in
     List.map .id (dismissEntries model 0) == [ 1 ]
 
@@ -382,18 +391,18 @@ caseDismissUnknownNoop : Bool
 caseDismissUnknownNoop =
     let
         model =
-            testModel [ testEntry 0 UploadQueue.Queued ]
+            testModel [ testEntry 0 Queue.Queued ]
     in
     dismissEntries model 99 == model.entries
 
 
 caseDismissiblePhases : Bool
 caseDismissiblePhases =
-    UploadQueue.isDismissible (testEntry 0 UploadQueue.Queued)
-        && UploadQueue.isDismissible (testEntry 0 (UploadQueue.Rejected "nope"))
-        && UploadQueue.isDismissible (testEntry 0 (UploadQueue.Failed "nope"))
-        && not (UploadQueue.isDismissible (testEntry 0 (UploadQueue.Uploading { sent = 0, size = 1, accessGeneration = 1 })))
-        && not (UploadQueue.isDismissible (testEntry 0 (UploadQueue.Saving 1)))
+    UploadQueue.isDismissible (testEntry 0 Queue.Queued)
+        && UploadQueue.isDismissible (testEntry 0 (Queue.Rejected "nope"))
+        && UploadQueue.isDismissible (testEntry 0 (Queue.Failed "nope"))
+        && not (UploadQueue.isDismissible (testEntry 0 (Queue.Uploading { sent = 0, size = 1, accessGeneration = 1 })))
+        && not (UploadQueue.isDismissible (testEntry 0 (Queue.Saving 1)))
 
 
 detailJson : String
@@ -452,6 +461,7 @@ suite =
     , ( "empty file rejected", caseEmptyRejected )
     , ( "shared tags parsed and deduplicated", caseTagsParsed )
     , ( "byte sizes formatted", caseBytesFormatted )
+    , ( "API and queue share the upload size limit", caseSharedUploadLimit )
     , ( "terminal job states detected", caseTerminalJobs )
     , ( "phase and thumbnail labels", casePhaseLabels )
     , ( "refresh replaces member previews in place", caseRefreshMemberInPlace )

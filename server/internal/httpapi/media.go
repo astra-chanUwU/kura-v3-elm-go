@@ -18,29 +18,15 @@ func mediaRoot() string {
 	return filepath.Join("..", "web", "static", "media")
 }
 
-func mediaVisibilityChecker(searchers ...posts.Searcher) (posts.MediaVisibilityChecker, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	checker, ok := searchers[0].(posts.MediaVisibilityChecker)
-	return checker, ok
-}
-
-// moderationActor resolves the capability owner for moderation endpoints
-// through the identity contract. The second result reports whether the actor
-// holds the write capability that guards moderation; every resolved actor
-// holds it once authenticated, while unauthenticated requests never do.
-
 // gatedMedia serves /media/* files while enforcing the centralized
 // visibility rule: a path referenced by post media is served only when a
 // non-deleted referencing post is published. Unreferenced paths keep the
 // previous public behavior; without a checker the handler also serves,
 // preserving routers whose searcher predates moderation.
-func gatedMedia(searchers ...posts.Searcher) http.Handler {
+func gatedMedia(checker posts.MediaVisibilityChecker) http.Handler {
 	fileServer := http.StripPrefix("/media/", http.FileServer(http.Dir(mediaRoot())))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		checker, ok := mediaVisibilityChecker(searchers...)
-		if !ok {
+		if checker == nil {
 			fileServer.ServeHTTP(w, r)
 			return
 		}

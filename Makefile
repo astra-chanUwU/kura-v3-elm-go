@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: server-build server-run server-check cli-check web-build web-test web-serve db-migrate db-seed db-setup build check
+.PHONY: server-build server-run server-check cli-check web-build web-test web-import-check web-serve db-migrate db-seed db-setup build check
 
 server-build:
 	go -C server build ./...
@@ -20,7 +20,10 @@ web-build:
 	mkdir -p web/dist
 	cd web && elm make src/Main.elm --output=dist/elm.js
 
-web-test:
+web-import-check:
+	cd web && node scripts/check-import-boundaries.mjs
+
+web-test: web-import-check
 	mkdir -p web/dist
 	cd web && elm make tests/TestRunner.elm --output=dist/elm-tests.js
 	cd web && node tests/run.mjs

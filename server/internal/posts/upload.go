@@ -25,7 +25,7 @@ const maxUploadBytes int64 = 25 << 20
 // searchable post row plus the default thumb-320 derivative job in one
 // transaction. The temp-file and database steps are deliberately ordered
 // so a partially received upload is never visible as a post.
-func (s *PostgresSearcher) CreateUpload(ctx context.Context, request UploadRequest) (PostDetail, error) {
+func (s *PostgresBackend) CreateUpload(ctx context.Context, request UploadRequest) (PostDetail, error) {
 	if s == nil || s.pool == nil {
 		return PostDetail{}, ErrUnavailable
 	}

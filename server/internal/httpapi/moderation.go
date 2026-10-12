@@ -10,22 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func moderationMutator(searchers ...posts.Searcher) (posts.ModerationMutator, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	mutator, ok := searchers[0].(posts.ModerationMutator)
-	return mutator, ok
-}
-
-func moderationReader(searchers ...posts.Searcher) (posts.ModerationReader, bool) {
-	if len(searchers) == 0 || searchers[0] == nil {
-		return nil, false
-	}
-	reader, ok := searchers[0].(posts.ModerationReader)
-	return reader, ok
-}
-
 // moderationActor resolves the capability owner for moderation endpoints
 // through the identity contract. The second result reports whether the actor
 // holds the write capability that guards moderation; every resolved actor
@@ -41,15 +25,14 @@ func moderationActor(r *http.Request) (string, bool) {
 	return strings.TrimSpace(actor.ID), true
 }
 
-func moderatePosts(searchers ...posts.Searcher) http.HandlerFunc {
+func moderatePosts(mutator posts.ModerationMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, ok := moderationActor(r)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "moderation capability required")
 			return
 		}
-		mutator, ok := moderationMutator(searchers...)
-		if !ok {
+		if mutator == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "moderation unavailable")
 			return
 		}
@@ -71,14 +54,13 @@ func moderatePosts(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func listModerationQueue(searchers ...posts.Searcher) http.HandlerFunc {
+func listModerationQueue(reader posts.ModerationReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := moderationActor(r); !ok {
 			writeJSONError(w, http.StatusUnauthorized, "moderation capability required")
 			return
 		}
-		reader, ok := moderationReader(searchers...)
-		if !ok {
+		if reader == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "moderation unavailable")
 			return
 		}
@@ -101,14 +83,13 @@ func listModerationQueue(searchers ...posts.Searcher) http.HandlerFunc {
 	}
 }
 
-func listPostModerationActions(searchers ...posts.Searcher) http.HandlerFunc {
+func listPostModerationActions(reader posts.ModerationReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := moderationActor(r); !ok {
 			writeJSONError(w, http.StatusUnauthorized, "moderation capability required")
 			return
 		}
-		reader, ok := moderationReader(searchers...)
-		if !ok {
+		if reader == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "moderation unavailable")
 			return
 		}

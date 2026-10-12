@@ -13,35 +13,36 @@ import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 )
 
-// PostgresSearcher executes the browser-facing post summary query against
-// PostgreSQL. It keeps the pool behind the Searcher interface used by HTTP.
+// PostgresBackend implements the post storage capabilities against PostgreSQL,
+// including search, details, mutations, collections, moderation, and jobs.
+// HTTP handlers depend on the narrower capability interfaces instead.
 //
-// The searcher owns one shared PostgreSQL pool: the durable job store and
-// the variant recorder wrap that same pool, so uploads, job status reads,
-// and derivative processing never open a second pool per process.
-type PostgresSearcher struct {
+// The backend owns one shared PostgreSQL pool: the durable job store and the
+// variant recorder wrap that same pool, so uploads, job status reads, and
+// derivative processing never open a second pool per process.
+type PostgresBackend struct {
 	pool     *pgxpool.Pool
 	store    media.Store
 	jobStore *jobs.Store
 	variants *media.PostgresVariantStore
 }
 
-// NewPostgresSearcher creates a searcher for databaseURL. The pool connects on
+// NewPostgresBackend creates a backend for databaseURL. The pool connects on
 // demand, so a server can still start and serve /health while PostgreSQL is
-// unavailable. When S3_ENDPOINT and S3_BUCKET are set, the searcher uses an
+// unavailable. When S3_ENDPOINT and S3_BUCKET are set, the backend uses an
 // S3-compatible store; otherwise it falls back to a local filesystem store.
-func NewPostgresSearcher(ctx context.Context, databaseURL string) (*PostgresSearcher, error) {
-	return NewPostgresSearcherWithStore(ctx, databaseURL, media.NewStoreFromEnv(uploadMediaRoot()))
+func NewPostgresBackend(ctx context.Context, databaseURL string) (*PostgresBackend, error) {
+	return NewPostgresBackendWithStore(ctx, databaseURL, media.NewStoreFromEnv(uploadMediaRoot()))
 }
 
-// NewPostgresSearcherWithStore creates a searcher with an explicit media
+// NewPostgresBackendWithStore creates a backend with an explicit media
 // provider. The default constructor keeps local filesystem uploads working.
-func NewPostgresSearcherWithStore(ctx context.Context, databaseURL string, store media.Store) (*PostgresSearcher, error) {
+func NewPostgresBackendWithStore(ctx context.Context, databaseURL string, store media.Store) (*PostgresBackend, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, err
 	}
-	return &PostgresSearcher{
+	return &PostgresBackend{
 		pool:     pool,
 		store:    store,
 		jobStore: jobs.NewStore(pool),
@@ -49,21 +50,21 @@ func NewPostgresSearcherWithStore(ctx context.Context, databaseURL string, store
 	}, nil
 }
 
-// JobsStore exposes the durable job store sharing the searcher's pool. The
+// JobsStore exposes the durable job store sharing the backend's pool. The
 // server wires it into the in-process derivative worker and nowhere else,
 // keeping one pool per process.
-func (s *PostgresSearcher) JobsStore() *jobs.Store {
+func (s *PostgresBackend) JobsStore() *jobs.Store {
 	if s == nil {
 		return nil
 	}
 	return s.jobStore
 }
 
-// NewDerivativeProcessor builds the derivative handler over the searcher's
+// NewDerivativeProcessor builds the derivative handler over the backend's
 // media provider and variant recorder. Uploads fall back to the
 // environment media store when no explicit provider was configured, and the
 // processor mirrors that fallback.
-func (s *PostgresSearcher) NewDerivativeProcessor() *media.DerivativeProcessor {
+func (s *PostgresBackend) NewDerivativeProcessor() *media.DerivativeProcessor {
 	if s == nil {
 		return nil
 	}
@@ -81,7 +82,7 @@ func (s *PostgresSearcher) NewDerivativeProcessor() *media.DerivativeProcessor {
 // RecoverExpiredJobs requeues running derivative jobs whose lease lapsed
 // without renewal, e.g. after a crash. The server runs it once at startup
 // before the worker claims, so interrupted thumbnails resume.
-func (s *PostgresSearcher) RecoverExpiredJobs(ctx context.Context) (int64, error) {
+func (s *PostgresBackend) RecoverExpiredJobs(ctx context.Context) (int64, error) {
 	if s == nil || s.jobStore == nil {
 		return 0, ErrUnavailable
 	}
@@ -90,7 +91,7 @@ func (s *PostgresSearcher) RecoverExpiredJobs(ctx context.Context) (int64, error
 
 // GetJob serves one durable job row for GET /api/jobs/{id} polling,
 // implementing jobs.Reader so the HTTP layer needs no second store.
-func (s *PostgresSearcher) GetJob(ctx context.Context, id string) (jobs.Job, error) {
+func (s *PostgresBackend) GetJob(ctx context.Context, id string) (jobs.Job, error) {
 	if s == nil || s.jobStore == nil {
 		return jobs.Job{}, jobs.ErrUnavailable
 	}
@@ -107,7 +108,7 @@ type previewQuerier interface {
 // overlayReadyPreviews replaces the preview URL with the ready thumb-320
 // variant URL for every post that has one. Posts still processing keep
 // serving their original as the preview; original URLs never change.
-func (s *PostgresSearcher) overlayReadyPreviews(ctx context.Context, summaries []PostSummary) error {
+func (s *PostgresBackend) overlayReadyPreviews(ctx context.Context, summaries []PostSummary) error {
 	if s == nil || s.pool == nil || len(summaries) == 0 {
 		return nil
 	}
@@ -162,7 +163,7 @@ func overlayReadyPreviewsWith(ctx context.Context, q previewQuerier, summaries [
 // enrichPostDetail overlays the ready thumbnail preview and attaches the
 // discoverable derivative job metadata. Missing rows leave the detail
 // untouched: the original stays the preview and no job fields are set.
-func (s *PostgresSearcher) enrichPostDetail(ctx context.Context, detail *PostDetail) error {
+func (s *PostgresBackend) enrichPostDetail(ctx context.Context, detail *PostDetail) error {
 	if s == nil || s.pool == nil || detail == nil {
 		return nil
 	}
@@ -195,8 +196,8 @@ func derivativeJobKey(postID string) string {
 	return "derivative:" + postID + ":" + media.DefaultDerivativeVariant
 }
 
-// Close releases PostgreSQL connections owned by the searcher.
-func (s *PostgresSearcher) Close() {
+// Close releases PostgreSQL connections owned by the backend.
+func (s *PostgresBackend) Close() {
 	if s != nil && s.pool != nil {
 		s.pool.Close()
 	}
@@ -205,7 +206,7 @@ func (s *PostgresSearcher) Close() {
 // SearchPosts returns summaries in the stable API shape and uses keyset
 // pagination. Newest ordering uses id DESC; score ordering uses score DESC
 // then id DESC with a (score,id) cursor that cannot duplicate or skip rows.
-func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error) {
+func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor *Cursor, limit int) (SearchPage, error) {
 	if s == nil || s.pool == nil {
 		return SearchPage{}, ErrUnavailable
 	}
@@ -362,7 +363,7 @@ func (s *PostgresSearcher) SearchPosts(ctx context.Context, query string, cursor
 
 // GetPostDetail returns visible post metadata for the Inspector. Deleted rows
 // are intentionally indistinguishable from missing rows.
-func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDetail, error) {
+func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDetail, error) {
 	if s == nil || s.pool == nil {
 		return PostDetail{}, ErrUnavailable
 	}
@@ -445,7 +446,7 @@ func (s *PostgresSearcher) GetPostDetail(ctx context.Context, id string) (PostDe
 
 // EditTags atomically applies a bounded optimistic tag edit to every target.
 // Row locks keep the version check and revision insert in one transaction.
-func (s *PostgresSearcher) EditTags(ctx context.Context, request TagEditRequest) (TagEditResponse, error) {
+func (s *PostgresBackend) EditTags(ctx context.Context, request TagEditRequest) (TagEditResponse, error) {
 	if s == nil || s.pool == nil {
 		return TagEditResponse{}, ErrUnavailable
 	}
@@ -476,7 +477,7 @@ func (s *PostgresSearcher) EditTags(ctx context.Context, request TagEditRequest)
 // RevertTags restores a previously recorded tag state for every target in one
 // transaction. Each row is locked before its expected current version and
 // target revision are checked, so a stale batch cannot partially apply.
-func (s *PostgresSearcher) RevertTags(ctx context.Context, request TagRevertRequest) (TagRevertResponse, error) {
+func (s *PostgresBackend) RevertTags(ctx context.Context, request TagRevertRequest) (TagRevertResponse, error) {
 	if s == nil || s.pool == nil {
 		return TagRevertResponse{}, ErrUnavailable
 	}
@@ -506,7 +507,7 @@ func (s *PostgresSearcher) RevertTags(ctx context.Context, request TagRevertRequ
 // EditReactions atomically applies a bounded optimistic favorite/score edit
 // to every target. Row locks keep the version check and immutable revision
 // insert in one transaction.
-func (s *PostgresSearcher) EditReactions(ctx context.Context, request ReactionRequest) (ReactionResponse, error) {
+func (s *PostgresBackend) EditReactions(ctx context.Context, request ReactionRequest) (ReactionResponse, error) {
 	if s == nil || s.pool == nil {
 		return ReactionResponse{}, ErrUnavailable
 	}
