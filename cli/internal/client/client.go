@@ -2,170 +2,15 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// PostSummary is the stable browser-facing representation from GET /api/posts.
-type PostSummary struct {
-	ID          string   `json:"id"`
-	PreviewURL  string   `json:"preview_url"`
-	OriginalURL string   `json:"original_url"`
-	MediaType   string   `json:"media_type"`
-	Width       int      `json:"width"`
-	Height      int      `json:"height"`
-	Tags        []string `json:"tags,omitempty"`
-}
-
-// SearchResponse is the envelope for GET /api/posts.
-// next_cursor is optional and forwards pagination when the API adds it.
-// collection_version is present only on collection page responses.
-type SearchResponse struct {
-	Posts             []PostSummary `json:"posts"`
-	NextCursor        *string       `json:"next_cursor,omitempty"`
-	CollectionVersion *int64        `json:"collection_version,omitempty"`
-}
-
-// Collection is the stable browser-facing representation from
-// GET /api/collections. Version is the membership/order version and is
-// zero for responses from servers that predate versioned pagination.
-type Collection struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	PostIDs []string `json:"post_ids"`
-	Version int64    `json:"version,omitempty"`
-}
-
-// CollectionsResponse is the envelope for GET /api/collections.
-type CollectionsResponse struct {
-	Collections []Collection `json:"collections"`
-}
-
-// CreateCollectionRequest is the payload for POST /api/collections.
-type CreateCollectionRequest struct {
-	Name string `json:"name"`
-}
-
-// AddCollectionPostsRequest is the payload for
-// POST /api/collections/{id}/posts.
-type AddCollectionPostsRequest struct {
-	PostIDs []string `json:"post_ids"`
-}
-
-// ReorderCollectionRequest is the payload for
-// POST /api/collections/{id}/order.
-type ReorderCollectionRequest struct {
-	PostIDs []string `json:"post_ids"`
-}
-
-// PostDetail is the stable read-only representation from GET /api/posts/{id}.
-// It extends PostSummary with Inspector metadata and revision histories.
-type PostDetail struct {
-	PostSummary
-	Source          string             `json:"source"`
-	Artist          string             `json:"artist"`
-	Hash            string             `json:"hash"`
-	FileSize        int64              `json:"file_size"`
-	CreatedAt       string             `json:"created_at"`
-	TagVersion      int                `json:"tag_version"`
-	Favorite        bool               `json:"favorite"`
-	Score           int                `json:"score"`
-	ReactionVersion int                `json:"reaction_version"`
-	History         []Revision         `json:"history"`
-	ReactionHistory []ReactionRevision `json:"reaction_history"`
-}
-
-// Revision is an immutable tag-edit entry.
-type Revision struct {
-	Version     int      `json:"version"`
-	Kind        string   `json:"kind"`
-	AddedTags   []string `json:"added_tags"`
-	RemovedTags []string `json:"removed_tags"`
-	TargetTags  []string `json:"target_tags,omitempty"`
-	CreatedAt   string   `json:"created_at"`
-}
-
-// ReactionRevision is an immutable favorite/score entry.
-type ReactionRevision struct {
-	Version   int    `json:"version"`
-	Favorite  bool   `json:"favorite"`
-	Score     int    `json:"score"`
-	CreatedAt string `json:"created_at"`
-}
-
-// TagTarget identifies a post with its expected tag version.
-type TagTarget struct {
-	ID      string `json:"id"`
-	Version int    `json:"version"`
-}
-
-// TagEditRequest is the payload for POST /api/posts/tags.
-type TagEditRequest struct {
-	Posts  []TagTarget `json:"posts"`
-	Add    []string    `json:"add"`
-	Remove []string    `json:"remove"`
-}
-
-// TagEditResult is one post result from a tag mutation.
-type TagEditResult struct {
-	ID      string   `json:"id"`
-	Version int      `json:"version"`
-	Tags    []string `json:"tags"`
-	Changed bool     `json:"changed"`
-}
-
-// TagEditResponse is the envelope for tag mutations.
-type TagEditResponse struct {
-	Posts []TagEditResult `json:"posts"`
-}
-
-// TagRevertRequest is the payload for POST /api/posts/tags/revert.
-type TagRevertRequest struct {
-	Posts         []TagTarget `json:"posts"`
-	TargetVersion int         `json:"target_version"`
-}
-
-// TagRevertResponse is the envelope for tag reverts.
-type TagRevertResponse struct {
-	Posts []TagEditResult `json:"posts"`
-}
-
-// ReactionTarget identifies a post with its expected reaction version.
-type ReactionTarget struct {
-	ID      string `json:"id"`
-	Version int    `json:"version"`
-}
-
-// ReactionRequest is the payload for POST /api/posts/reactions.
-type ReactionRequest struct {
-	Posts    []ReactionTarget `json:"posts"`
-	Favorite *bool            `json:"favorite,omitempty"`
-	Score    *int             `json:"score,omitempty"`
-}
-
-// ReactionResult is one post result from a reaction mutation.
-type ReactionResult struct {
-	ID       string `json:"id"`
-	Version  int    `json:"version"`
-	Favorite bool   `json:"favorite"`
-	Score    int    `json:"score"`
-	Changed  bool   `json:"changed"`
-}
-
-// ReactionResponse is the envelope for reaction mutations.
-type ReactionResponse struct {
-	Posts []ReactionResult `json:"posts"`
-}
-
-// Client talks to the Kura HTTP API. It uses only the public API surface
-// (GET /api/posts, GET /health) and does not import server implementation.
+// Client talks to the public Kura HTTP API without importing server internals.
 type Client struct {
 	BaseURL    string
 	APIToken   string
@@ -197,23 +42,6 @@ func (c *Client) authorize(req *http.Request) {
 	}
 }
 
-// APIError is a readable error derived from the API JSON body or HTTP status.
-type APIError struct {
-	Status  int
-	Message string
-	Body    string
-}
-
-func (e *APIError) Error() string {
-	if e.Message != "" {
-		return fmt.Sprintf("api error %d: %s", e.Status, e.Message)
-	}
-	if e.Body != "" {
-		return fmt.Sprintf("api error %d: %s", e.Status, e.Body)
-	}
-	return fmt.Sprintf("api error %d: %s", e.Status, http.StatusText(e.Status))
-}
-
 // Search executes GET /api/posts?q=query with URL encoding and a request
 // timeout. An empty or whitespace-only query is sent as q= (server returns
 // the newest visible posts). It is a first-page wrapper around
@@ -231,63 +59,9 @@ func (c *Client) SearchPage(ctx context.Context, query, cursor string, limit int
 	if limit != 0 && (limit < 1 || limit > 60) {
 		return SearchResponse{}, fmt.Errorf("limit must be between 1 and 60, got %d", limit)
 	}
-	base := c.BaseURL
-	if base == "" {
-		base = "http://localhost:8080"
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("invalid api url %q: %w", base, err)
-	}
-	// Ensure we request /api/posts.
-	u.Path = strings.TrimRight(u.Path, "/") + "/api/posts"
-	q := u.Query()
-	q.Set("q", query)
-	if cursor != "" {
-		q.Set("cursor", cursor)
-	}
-	if limit != 0 {
-		q.Set("limit", strconv.Itoa(limit))
-	}
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return SearchResponse{}, err
-	}
-	req.Header.Set("Accept", "application/json")
-	c.authorize(req)
-
-	client := c.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return SearchResponse{}, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to extract {"error":"..."}.
-		var apiMsg struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &apiMsg) == nil && apiMsg.Error != "" {
-			return SearchResponse{}, &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(body))}
-		}
-		return SearchResponse{}, &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-
 	var result SearchResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return SearchResponse{}, fmt.Errorf("decode response: %w", err)
+	if err := c.request(ctx, http.MethodGet, "/api/posts", pageQuery(query, cursor, limit), nil, &result); err != nil {
+		return SearchResponse{}, err
 	}
 	if result.Posts == nil {
 		result.Posts = []PostSummary{}
@@ -311,13 +85,23 @@ func (c *Client) ListCollections(ctx context.Context) (CollectionsResponse, erro
 // id is escaped as a path segment; the server remains responsible for
 // validating whether it identifies an existing collection.
 func (c *Client) CollectionPosts(ctx context.Context, collectionID string) (SearchResponse, error) {
+	return c.CollectionPostsPage(ctx, collectionID, "", 0)
+}
+
+// CollectionPostsPage reads one versioned collection page. Cursor values are opaque.
+func (c *Client) CollectionPostsPage(ctx context.Context, collectionID, cursor string, limit int) (SearchResponse, error) {
 	collectionID = strings.TrimSpace(collectionID)
 	if collectionID == "" {
 		return SearchResponse{}, fmt.Errorf("collection id must not be empty")
 	}
+	if limit != 0 && (limit < 1 || limit > 60) {
+		return SearchResponse{}, fmt.Errorf("limit must be between 1 and 60, got %d", limit)
+	}
 	var result SearchResponse
+	query := pageQuery("", cursor, limit)
+	query.Del("q")
 	path := "/api/collections/" + url.PathEscape(collectionID) + "/posts"
-	if err := c.getJSON(ctx, path, &result); err != nil {
+	if err := c.request(ctx, http.MethodGet, path, query, nil, &result); err != nil {
 		return SearchResponse{}, err
 	}
 	if result.Posts == nil {
@@ -452,138 +236,13 @@ func (c *Client) EditReactions(ctx context.Context, req ReactionRequest) (Reacti
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://localhost:8080"
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return fmt.Errorf("invalid api url %q: %w", base, err)
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + path
-	u.RawQuery = ""
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	c.authorize(req)
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiMsg struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &apiMsg) == nil && apiMsg.Error != "" {
-			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(body))}
-		}
-		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	return nil
+	return c.request(ctx, http.MethodGet, path, nil, nil, target)
 }
 
 func (c *Client) postJSON(ctx context.Context, path string, request any, target any) error {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://localhost:8080"
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return fmt.Errorf("invalid api url %q: %w", base, err)
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + path
-	u.RawQuery = ""
-	bodyBytes, err := json.Marshal(request)
-	if err != nil {
-		return fmt.Errorf("encode request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), strings.NewReader(string(bodyBytes)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	c.authorize(req)
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiMsg struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(respBody, &apiMsg) == nil && apiMsg.Error != "" {
-			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(respBody))}
-		}
-		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
-	}
-	if err := json.Unmarshal(respBody, target); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	return nil
+	return c.request(ctx, http.MethodPost, path, nil, request, target)
 }
 
 func (c *Client) deleteNoContent(ctx context.Context, path string) error {
-	base := c.BaseURL
-	if base == "" {
-		base = "http://localhost:8080"
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return fmt.Errorf("invalid api url %q: %w", base, err)
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + path
-	u.RawQuery = ""
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/json")
-	c.authorize(req)
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var apiMsg struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &apiMsg) == nil && apiMsg.Error != "" {
-			return &APIError{Status: resp.StatusCode, Message: apiMsg.Error, Body: strings.TrimSpace(string(body))}
-		}
-		return &APIError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
-	}
-	return nil
+	return c.request(ctx, http.MethodDelete, path, nil, nil, nil)
 }

@@ -91,12 +91,13 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 | `MEDIA_ROOT` | Local media directory; default `web/static/media` when using `make server-run`. |
 | `KURA_API_TOKEN` | Require a bearer token for API writes. Unset means open local mode. |
 | `KURA_API_URL` | CLI API address; default `http://localhost:8080`. |
+| `KURA_HTTP_TIMEOUT` | CLI timeout per HTTP request; default `10s`, accepts durations such as `30s` or `1m`. |
 
 Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
 
 Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
 
-The CLI sends `KURA_API_TOKEN` on writes. The browser currently has no token-entry or user-login screen, so browser uploads and edits use open local mode. There is no password, OAuth, or passkey login flow yet.
+The CLI sends `KURA_API_TOKEN` on writes. In protected mode, use **Unlock** in the browser's top bar to enter that token; **Lock** or a reload clears it. Open local mode needs no token. There is no password, OAuth, or passkey login flow yet.
 
 ## Import local test images
 
@@ -116,13 +117,18 @@ continuing; unresolved results stop the import rather than resending a file.
 
 ```sh
 go -C cli run ./cmd/kura search --json 'tag:cat score:>=5'
+go -C cli run ./cmd/kura search --all --jsonl 'tag:cat'
 go -C cli run ./cmd/kura post show 2004
 go -C cli run ./cmd/kura collection list
-go -C cli run ./cmd/kura collection posts 1
+go -C cli run ./cmd/kura collection posts --all --jsonl 1
 go -C cli run ./cmd/kura --help
 ```
 
-Commands support `--json`, `--jsonl`, and `--api-url`. Search also supports `--limit` and `--cursor`. Run a command with `--help` for tag, favorite, score, and collection mutations.
+Commands support `--json`, `--jsonl`, and `--api-url`. Put flags before positional arguments. Search and collection posts support `--limit`, `--cursor`, and `--all`. Without `--all`, each reads one page. With it, human and JSON Lines output stream completed pages; a later failure returns a nonzero exit status, so check the status before treating that output as complete. `--all --json` is rejected because it would buffer every page in memory; use `--all --jsonl` for streaming output.
+
+Pagination stops on duplicate posts, repeated cursors, collection version changes, API errors, or the 1,000-page limit. It never silently restarts under a changed collection. Search pagination does not freeze a changing library. Ctrl-C cancels active requests. Writes are never automatically retried; if a write response is lost or invalid, inspect the resource before retrying. API addresses must be absolute HTTP(S) URLs without embedded credentials, query strings, or fragments; reverse-proxy path prefixes are supported and redirects are reported as errors.
+
+Run a command with `--help` for tag, favorite, score, and collection mutations. `post get` is an alias for `post show`. Collection add/reorder requests retain the API's 200-ID limit.
 
 ## Checks
 

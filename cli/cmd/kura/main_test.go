@@ -475,13 +475,12 @@ func TestCollectionMutations_ValidationAndHelp(t *testing.T) {
 	}
 }
 
-func TestPostGet_NotInvented(t *testing.T) {
-	code, _, errOut := runWithEnv([]string{"post", "get", "123"}, nil)
-	if code == 0 {
-		t.Fatal("expected non-zero for post get (no endpoint)")
-	}
-	if !strings.Contains(errOut, "not available") {
-		t.Fatalf("expected not available, got %q", errOut)
+func TestPostGetIsShowAlias(t *testing.T) {
+	srv := postDetailServer(t)
+	defer srv.Close()
+	code, out, errOut := runWithEnv([]string{"post", "get", "--json", "2004"}, map[string]string{"KURA_API_URL": srv.URL})
+	if code != 0 || errOut != "" || !strings.Contains(out, `"id": "2004"`) {
+		t.Fatalf("get alias code=%d out=%q err=%q", code, out, errOut)
 	}
 }
 
