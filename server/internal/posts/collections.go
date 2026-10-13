@@ -31,6 +31,24 @@ type ReorderCollectionRequest struct {
 	PostIDs []string `json:"post_ids"`
 }
 
+// MoveCollectionPostRequest moves one member before BeforePostID, or to
+// the end when BeforePostID is null. ExpectedVersion is the collection
+// version the caller observed; a mismatch fails with ErrCollectionChanged.
+type MoveCollectionPostRequest struct {
+	PostID          string  `json:"post_id"`
+	BeforePostID    *string `json:"before_post_id"`
+	ExpectedVersion int64   `json:"expected_version"`
+}
+
+// MoveCollectionPostResult is the compact move response: it never echoes
+// the full member list, so large collections stay cheap to reorder.
+type MoveCollectionPostResult struct {
+	ID           string `json:"id"`
+	CollectionID string `json:"collection_id"`
+	Version      int64  `json:"version"`
+	Changed      bool   `json:"changed"`
+}
+
 type CollectionReader interface {
 	ListCollections(context.Context) ([]Collection, error)
 }
@@ -63,6 +81,14 @@ type CollectionMutator interface {
 	ReorderCollection(context.Context, string, ReorderCollectionRequest) (Collection, error)
 }
 
+// CollectionPostMover is the narrow, independent capability for moving a
+// single collection member. It is deliberately not part of
+// CollectionMutator so backends predating the move endpoint keep serving
+// the existing collection routes and only the move route is unavailable.
+type CollectionPostMover interface {
+	MoveCollectionPost(context.Context, string, MoveCollectionPostRequest) (MoveCollectionPostResult, error)
+}
+
 func ValidateCreateCollection(request CreateCollectionRequest) (CreateCollectionRequest, error) {
 	name := strings.TrimSpace(request.Name)
 	if name == "" || len([]rune(name)) > maxCollectionNameLength {
@@ -89,6 +115,84 @@ func ValidateAddCollectionPosts(request AddCollectionPostsRequest) (AddCollectio
 		ids[i] = raw
 	}
 	return AddCollectionPostsRequest{PostIDs: ids}, nil
+}
+
+func ValidateMoveCollectionPostRequest(request MoveCollectionPostRequest) (MoveCollectionPostRequest, error) {
+	if request.ExpectedVersion < 0 {
+		return MoveCollectionPostRequest{}, fmt.Errorf("%w: expected_version must be non-negative", ErrInvalidCollections)
+	}
+	parsed, err := strconv.ParseInt(request.PostID, 10, 64)
+	if err != nil || parsed <= 0 || request.PostID != strconv.FormatInt(parsed, 10) {
+		return MoveCollectionPostRequest{}, fmt.Errorf("%w: post_id must be a positive integer", ErrInvalidCollections)
+	}
+	validated := MoveCollectionPostRequest{PostID: request.PostID, ExpectedVersion: request.ExpectedVersion}
+	if request.BeforePostID != nil {
+		before := *request.BeforePostID
+		parsedBefore, err := strconv.ParseInt(before, 10, 64)
+		if err != nil || parsedBefore <= 0 || before != strconv.FormatInt(parsedBefore, 10) {
+			return MoveCollectionPostRequest{}, fmt.Errorf("%w: before_post_id must be a positive integer or null", ErrInvalidCollections)
+		}
+		validated.BeforePostID = &before
+	}
+	return validated, nil
+}
+
+// moveCollectionOrder computes the full new order for a single-post move
+// over existing, which must already be in deterministic (position,
+// post_id) order and must include every member, visible or not. It
+// returns the new order and whether it differs from existing. A missing
+// post or neighbor fails with ErrNotFound; moving a post before itself
+// or to its current place returns the existing order unchanged.
+func moveCollectionOrder(existing []int64, postID int64, beforePostID *int64) ([]int64, bool, error) {
+	from := -1
+	for i, id := range existing {
+		if id == postID {
+			from = i
+			break
+		}
+	}
+	if from < 0 {
+		return nil, false, ErrNotFound
+	}
+	if beforePostID != nil && *beforePostID == postID {
+		return append([]int64(nil), existing...), false, nil
+	}
+	if beforePostID != nil {
+		found := false
+		for _, id := range existing {
+			if id == *beforePostID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, false, ErrNotFound
+		}
+	}
+	rest := make([]int64, 0, len(existing)-1)
+	rest = append(rest, existing[:from]...)
+	rest = append(rest, existing[from+1:]...)
+	insertAt := len(rest)
+	if beforePostID != nil {
+		for i, id := range rest {
+			if id == *beforePostID {
+				insertAt = i
+				break
+			}
+		}
+	}
+	next := make([]int64, 0, len(existing))
+	next = append(next, rest[:insertAt]...)
+	next = append(next, postID)
+	next = append(next, rest[insertAt:]...)
+	changed := false
+	for i := range next {
+		if next[i] != existing[i] {
+			changed = true
+			break
+		}
+	}
+	return next, changed, nil
 }
 
 func ValidateReorderCollection(request ReorderCollectionRequest) (ReorderCollectionRequest, error) {

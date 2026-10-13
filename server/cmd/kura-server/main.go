@@ -40,19 +40,20 @@ func main() {
 			log.Printf("postgres backend unavailable: %v", err)
 		} else {
 			dependencies = httpapi.Dependencies{
-				Posts:           pgBackend,
-				PostDetails:     pgBackend,
-				Uploads:         pgBackend,
-				Tags:            pgBackend,
-				TagRevisions:    pgBackend,
-				Reactions:       pgBackend,
-				SavedSearches:   pgBackend,
-				Collections:     pgBackend,
-				CollectionPosts: pgBackend,
-				Moderation:      pgBackend,
-				ModerationRead:  pgBackend,
-				Jobs:            pgBackend,
-				MediaVisibility: pgBackend,
+				Posts:               pgBackend,
+				PostDetails:         pgBackend,
+				Uploads:             pgBackend,
+				Tags:                pgBackend,
+				TagRevisions:        pgBackend,
+				Reactions:           pgBackend,
+				SavedSearches:       pgBackend,
+				Collections:         pgBackend,
+				CollectionPosts:     pgBackend,
+				CollectionPostMover: pgBackend,
+				Moderation:          pgBackend,
+				ModerationRead:      pgBackend,
+				Jobs:                pgBackend,
+				MediaVisibility:     pgBackend,
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store

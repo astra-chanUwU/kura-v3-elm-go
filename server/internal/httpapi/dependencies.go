@@ -9,19 +9,20 @@ import (
 // each HTTP surface. This lets partial backends serve only the routes they
 // implement without requiring a Searcher implementation.
 type Dependencies struct {
-	Posts           posts.Searcher
-	PostDetails     posts.PostDetailer
-	Uploads         posts.UploadCreator
-	Tags            posts.TagMutator
-	TagRevisions    posts.TagReverter
-	Reactions       posts.ReactionMutator
-	SavedSearches   posts.SavedSearchStore
-	Collections     posts.CollectionMutator
-	CollectionPosts posts.CollectionPostSearcher
-	Moderation      posts.ModerationMutator
-	ModerationRead  posts.ModerationReader
-	Jobs            jobs.Reader
-	MediaVisibility posts.MediaVisibilityChecker
+	Posts               posts.Searcher
+	PostDetails         posts.PostDetailer
+	Uploads             posts.UploadCreator
+	Tags                posts.TagMutator
+	TagRevisions        posts.TagReverter
+	Reactions           posts.ReactionMutator
+	SavedSearches       posts.SavedSearchStore
+	Collections         posts.CollectionMutator
+	CollectionPosts     posts.CollectionPostSearcher
+	CollectionPostMover posts.CollectionPostMover
+	Moderation          posts.ModerationMutator
+	ModerationRead      posts.ModerationReader
+	Jobs                jobs.Reader
+	MediaVisibility     posts.MediaVisibilityChecker
 }
 
 // legacyDependencies preserves the historical Searcher-based constructors.
@@ -40,6 +41,7 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.SavedSearches, _ = backend.(posts.SavedSearchStore)
 	deps.Collections, _ = backend.(posts.CollectionMutator)
 	deps.CollectionPosts, _ = backend.(posts.CollectionPostSearcher)
+	deps.CollectionPostMover, _ = backend.(posts.CollectionPostMover)
 	deps.Moderation, _ = backend.(posts.ModerationMutator)
 	deps.ModerationRead, _ = backend.(posts.ModerationReader)
 	deps.Jobs, _ = backend.(jobs.Reader)

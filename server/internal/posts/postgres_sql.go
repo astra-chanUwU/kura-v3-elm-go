@@ -316,6 +316,23 @@ WHERE cp.collection_id = $1::bigint
 ORDER BY cp.position, cp.post_id
 `
 
+// collectionAllMembersSQL returns every member in deterministic
+// (position, post_id) order with no visibility join, so a move preserves
+// hidden and soft-deleted members instead of silently dropping them.
+const collectionAllMembersSQL = `
+SELECT post_id FROM collection_posts
+WHERE collection_id = $1::bigint
+ORDER BY position, post_id
+`
+
+// updateCollectionPositionsSQL renumbers members to dense positions
+// 0..n-1 in the order given by $2, touching only rows that move.
+const updateCollectionPositionsSQL = `
+UPDATE collection_posts cp SET position = u.ord - 1
+FROM unnest($2::bigint[]) WITH ORDINALITY AS u(post_id, ord)
+WHERE cp.collection_id = $1::bigint AND cp.post_id = u.post_id AND cp.position <> u.ord - 1
+`
+
 const deleteCollectionPostSQL = `
 DELETE FROM collection_posts cp USING posts p
 WHERE cp.collection_id = $1::bigint AND cp.post_id = $2::bigint AND p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'

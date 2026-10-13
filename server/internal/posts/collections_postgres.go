@@ -294,6 +294,79 @@ func (s *PostgresBackend) ReorderCollection(ctx context.Context, collectionID st
 	return s.collectionByID(ctx, collectionID)
 }
 
+// MoveCollectionPost moves one member before the neighbor (or to the
+// end) under the collection-row lock. It checks expected_version first,
+// operates on every member including hidden and deleted posts, and bumps
+// the version only when the order effectively changes.
+func (s *PostgresBackend) MoveCollectionPost(ctx context.Context, collectionID string, request MoveCollectionPostRequest) (MoveCollectionPostResult, error) {
+	if s == nil || s.pool == nil {
+		return MoveCollectionPostResult{}, ErrUnavailable
+	}
+	validated, err := ValidateMoveCollectionPostRequest(request)
+	if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	cid, err := collectionIDValue(collectionID)
+	if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	pid, _ := strconv.ParseInt(validated.PostID, 10, 64)
+	var before *int64
+	if validated.BeforePostID != nil {
+		parsed, _ := strconv.ParseInt(*validated.BeforePostID, 10, 64)
+		before = &parsed
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var version int64
+	if err := tx.QueryRow(ctx, lockCollectionSQL, cid).Scan(&version); errors.Is(err, pgx.ErrNoRows) {
+		return MoveCollectionPostResult{}, ErrNotFound
+	} else if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	if version != validated.ExpectedVersion {
+		return MoveCollectionPostResult{}, ErrCollectionChanged
+	}
+	rows, err := tx.Query(ctx, collectionAllMembersSQL, cid)
+	if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	existing := []int64{}
+	for rows.Next() {
+		var member int64
+		if err := rows.Scan(&member); err != nil {
+			rows.Close()
+			return MoveCollectionPostResult{}, err
+		}
+		existing = append(existing, member)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	next, changed, err := moveCollectionOrder(existing, pid, before)
+	if err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	result := MoveCollectionPostResult{ID: collectionID, CollectionID: collectionID, Version: version, Changed: changed}
+	if changed {
+		if _, err := tx.Exec(ctx, updateCollectionPositionsSQL, cid, next); err != nil {
+			return MoveCollectionPostResult{}, err
+		}
+		if _, err := tx.Exec(ctx, bumpCollectionVersionSQL, cid); err != nil {
+			return MoveCollectionPostResult{}, err
+		}
+		result.Version = version + 1
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	return result, nil
+}
+
 func (s *PostgresBackend) collectionByID(ctx context.Context, id string) (Collection, error) {
 	collections, err := s.ListCollections(ctx)
 	if err != nil {

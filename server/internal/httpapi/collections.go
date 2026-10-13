@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -140,6 +142,63 @@ func reorderCollection(mutator posts.CollectionMutator) http.HandlerFunc {
 			return
 		}
 		result, err := mutator.ReorderCollection(r.Context(), chi.URLParam(r, "id"), validated)
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+// moveCollectionPostBody is the thin HTTP wire shape for a move. It keeps
+// field presence observable: ExpectedVersion is a pointer so omitted or
+// null is distinguishable from an explicit 0, and BeforePostID is raw so
+// an omitted field is distinguishable from an explicit null (move to end)
+// and from a non-string value.
+type moveCollectionPostBody struct {
+	PostID          string          `json:"post_id"`
+	BeforePostID    json.RawMessage `json:"before_post_id"`
+	ExpectedVersion *int64          `json:"expected_version"`
+}
+
+func moveCollectionPost(mover posts.CollectionPostMover) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if mover == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		var body moveCollectionPostBody
+		if err := decodeJSONBody(w, r, &body, "collection move"); err != nil {
+			return
+		}
+		if body.ExpectedVersion == nil {
+			writeJSONError(w, http.StatusBadRequest, "expected_version is required")
+			return
+		}
+		if body.BeforePostID == nil {
+			writeJSONError(w, http.StatusBadRequest, "before_post_id is required")
+			return
+		}
+		var beforePostID *string
+		if trimmed := bytes.TrimSpace(body.BeforePostID); !bytes.Equal(trimmed, []byte("null")) {
+			var before string
+			if err := json.Unmarshal(body.BeforePostID, &before); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "before_post_id must be a positive integer or null")
+				return
+			}
+			beforePostID = &before
+		}
+		request := posts.MoveCollectionPostRequest{
+			PostID:          body.PostID,
+			BeforePostID:    beforePostID,
+			ExpectedVersion: *body.ExpectedVersion,
+		}
+		validated, err := posts.ValidateMoveCollectionPostRequest(request)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := mover.MoveCollectionPost(r.Context(), chi.URLParam(r, "id"), validated)
 		if err != nil {
 			writeCollectionError(w, err)
 			return

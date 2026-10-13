@@ -71,6 +71,7 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Post("/collections/{id}/posts", addCollectionPosts(deps.Collections))
 		api.Delete("/collections/{id}/posts/{postID}", removeCollectionPost(deps.Collections))
 		api.Post("/collections/{id}/order", reorderCollection(deps.Collections))
+		api.Post("/collections/{id}/move", moveCollectionPost(deps.CollectionPostMover))
 	})
 	return r
 }
