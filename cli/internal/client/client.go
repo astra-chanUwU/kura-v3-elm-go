@@ -81,6 +81,57 @@ func (c *Client) ListCollections(ctx context.Context) (CollectionsResponse, erro
 	return result, nil
 }
 
+func (c *Client) ListCollectionSummaries(ctx context.Context) (CollectionSummariesResponse, error) {
+	var result CollectionSummariesResponse
+	if err := c.getJSON(ctx, "/api/collections/summaries", &result); err != nil {
+		return CollectionSummariesResponse{}, err
+	}
+	if result.Collections == nil {
+		result.Collections = []CollectionSummary{}
+	}
+	return result, nil
+}
+
+func (c *Client) MoveCollectionPost(ctx context.Context, collectionID string, request MoveCollectionPostRequest) (MoveCollectionPostResult, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return MoveCollectionPostResult{}, fmt.Errorf("collection id must not be empty")
+	}
+	var result MoveCollectionPostResult
+	path := "/api/collections/" + url.PathEscape(collectionID) + "/move"
+	if err := c.postJSON(ctx, path, request, &result); err != nil {
+		return MoveCollectionPostResult{}, err
+	}
+	if result.ID != collectionID {
+		return MoveCollectionPostResult{}, &RequestError{Err: fmt.Errorf("move response identifies another collection"), Uncertain: true}
+	}
+	return result, nil
+}
+
+func (c *Client) RenameCollection(ctx context.Context, collectionID string, request CollectionManageRequest) (CollectionManageResult, error) {
+	return c.collectionManage(ctx, http.MethodPatch, collectionID, request)
+}
+
+func (c *Client) DeleteCollection(ctx context.Context, collectionID string, expectedVersion int64) (CollectionManageResult, error) {
+	return c.collectionManage(ctx, http.MethodDelete, collectionID, CollectionManageRequest{ExpectedVersion: expectedVersion})
+}
+
+func (c *Client) collectionManage(ctx context.Context, method, collectionID string, request CollectionManageRequest) (CollectionManageResult, error) {
+	collectionID = strings.TrimSpace(collectionID)
+	if collectionID == "" {
+		return CollectionManageResult{}, fmt.Errorf("collection id must not be empty")
+	}
+	var result CollectionManageResult
+	path := "/api/collections/" + url.PathEscape(collectionID)
+	if err := c.request(ctx, method, path, nil, request, &result); err != nil {
+		return CollectionManageResult{}, err
+	}
+	if result.ID != collectionID {
+		return CollectionManageResult{}, &RequestError{Err: fmt.Errorf("management response identifies another collection"), Uncertain: true}
+	}
+	return result, nil
+}
+
 // CollectionPosts executes GET /api/collections/{id}/posts. The collection
 // id is escaped as a path segment; the server remains responsible for
 // validating whether it identifies an existing collection.

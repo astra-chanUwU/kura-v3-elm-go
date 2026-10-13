@@ -173,15 +173,58 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	}
 	// A different JSON service must not silently look like an empty library.
 	field := "posts"
+	required := []string(nil)
 	switch target.(type) {
 	case *CollectionsResponse:
 		field = "collections"
+	case *CollectionSummariesResponse:
+		field = "collections"
 	case *Collection, *PostDetail:
 		field = "id"
+	case *CollectionManageResult:
+		field = "id"
+		required = []string{"id", "name", "version", "changed"}
+	case *MoveCollectionPostResult:
+		field = "id"
+		required = []string{"id", "collection_id", "version", "changed"}
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return responseError(fmt.Errorf("decode response: %w", err))
+	}
+	for _, name := range required {
+		if raw, exists := fields[name]; !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return responseError(fmt.Errorf("API response is missing %q; check --api-url", name))
+		}
+	}
+	switch result := target.(type) {
+	case *MoveCollectionPostResult:
+		if result.CollectionID != result.ID || result.Version < 0 {
+			return responseError(fmt.Errorf("invalid collection move acknowledgement; check --api-url"))
+		}
+	case *CollectionManageResult:
+		if strings.TrimSpace(result.Name) == "" || result.Version < 0 {
+			return responseError(fmt.Errorf("invalid collection management acknowledgement; check --api-url"))
+		}
+	case *CollectionSummariesResponse:
+		var entries []map[string]json.RawMessage
+		if err := json.Unmarshal(fields["collections"], &entries); err != nil {
+			return responseError(fmt.Errorf("invalid collection summaries; check --api-url"))
+		}
+		seen := map[string]bool{}
+		for i, entry := range entries {
+			for _, name := range []string{"id", "name", "version", "member_count", "visible_post_count"} {
+				if raw, exists := entry[name]; !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+					return responseError(fmt.Errorf("collection summary is missing %q; check --api-url", name))
+				}
+			}
+			item := result.Collections[i]
+			n, err := strconv.ParseInt(item.ID, 10, 64)
+			if err != nil || n < 1 || strconv.FormatInt(n, 10) != item.ID || seen[item.ID] || strings.TrimSpace(item.Name) == "" || item.Version < 0 || item.MemberCount < 0 || item.VisiblePostCount < 0 || item.VisiblePostCount > item.MemberCount {
+				return responseError(fmt.Errorf("invalid collection summary; check --api-url"))
+			}
+			seen[item.ID] = true
+		}
 	}
 	raw, ok := fields[field]
 	if !ok {

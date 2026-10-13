@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -388,6 +389,65 @@ func TestCollectionMutations_RequestPathsAndBodies(t *testing.T) {
 	}
 	if err := c.RemoveCollectionPost(ctx, "9", "11"); err != nil {
 		t.Fatalf("remove error: %v", err)
+	}
+}
+
+func TestCollectionManagement_RequestsAndCompactValidation(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/api/collections/summaries":
+			if r.Method != http.MethodGet {
+				t.Errorf("summary method=%s", r.Method)
+			}
+			fmt.Fprint(w, `{"collections":[{"id":"7","name":"Favorites","version":0,"member_count":2,"visible_post_count":1}]}`)
+		case "/api/collections/7":
+			var request CollectionManageRequest
+			if err := json.Unmarshal(body, &request); err != nil {
+				t.Errorf("request json: %v", err)
+			}
+			if request.ExpectedVersion != 0 {
+				t.Errorf("expected version 0, got %d", request.ExpectedVersion)
+			}
+			if r.Method == http.MethodPatch && request.Name != "Renamed" {
+				t.Errorf("rename body=%s", body)
+			}
+			fmt.Fprint(w, `{"id":"7","name":"Renamed","version":1,"changed":true}`)
+		case "/api/collections/7/move":
+			if r.Method != http.MethodPost {
+				t.Errorf("move method=%s", r.Method)
+			}
+			fmt.Fprint(w, `{"id":"7","collection_id":"7","version":1,"changed":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := New(srv.URL)
+	if got, err := c.ListCollectionSummaries(context.Background()); err != nil || len(got.Collections) != 1 || got.Collections[0].MemberCount != 2 {
+		t.Fatalf("summaries=%#v err=%v", got, err)
+	}
+	if got, err := c.RenameCollection(context.Background(), "7", CollectionManageRequest{Name: "Renamed", ExpectedVersion: 0}); err != nil || got.Version != 1 || !got.Changed {
+		t.Fatalf("rename=%#v err=%v", got, err)
+	}
+	if got, err := c.DeleteCollection(context.Background(), "7", 0); err != nil || got.ID != "7" {
+		t.Fatalf("delete=%#v err=%v", got, err)
+	}
+	if got, err := c.MoveCollectionPost(context.Background(), "7", MoveCollectionPostRequest{PostID: "11", ExpectedVersion: 0}); err != nil || got.CollectionID != "7" {
+		t.Fatalf("move=%#v err=%v", got, err)
+	}
+	if calls != 4 {
+		t.Fatalf("calls=%d", calls)
+	}
+}
+
+func TestCollectionManagementRejectsIncompleteCompactResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"id":"7","name":"X","version":1}`) }))
+	defer srv.Close()
+	if _, err := New(srv.URL).RenameCollection(context.Background(), "7", CollectionManageRequest{Name: "X", ExpectedVersion: 0}); err == nil || !strings.Contains(err.Error(), `missing "changed"`) {
+		t.Fatalf("expected compact result validation error, got %v", err)
 	}
 }
 

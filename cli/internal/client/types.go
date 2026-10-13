@@ -35,6 +35,43 @@ type CollectionsResponse struct {
 	Collections []Collection `json:"collections"`
 }
 
+type CollectionSummary struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Version          int64  `json:"version"`
+	MemberCount      int64  `json:"member_count"`
+	VisiblePostCount int64  `json:"visible_post_count"`
+}
+
+type CollectionSummariesResponse struct {
+	Collections []CollectionSummary `json:"collections"`
+}
+
+type CollectionManageRequest struct {
+	Name            string `json:"name,omitempty"`
+	ExpectedVersion int64  `json:"expected_version"`
+}
+
+type CollectionManageResult struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version int64  `json:"version"`
+	Changed bool   `json:"changed"`
+}
+
+type MoveCollectionPostRequest struct {
+	PostID          string  `json:"post_id"`
+	BeforePostID    *string `json:"before_post_id"`
+	ExpectedVersion int64   `json:"expected_version"`
+}
+
+type MoveCollectionPostResult struct {
+	ID           string `json:"id"`
+	CollectionID string `json:"collection_id"`
+	Version      int64  `json:"version"`
+	Changed      bool   `json:"changed"`
+}
+
 // CreateCollectionRequest is the payload for POST /api/collections.
 type CreateCollectionRequest struct {
 	Name string `json:"name"`

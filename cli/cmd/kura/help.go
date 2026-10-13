@@ -81,36 +81,103 @@ const collectionHelp = `kura collection - list, browse, and mutate collections
 
 Usage:
   kura collection list [flags]
+  kura collection summaries [flags]
   kura collection posts [flags] COLLECTION_ID
   kura collection create [flags] NAME
   kura collection add [flags] COLLECTION_ID POST_ID...
   kura collection remove [flags] COLLECTION_ID POST_ID
   kura collection reorder [flags] COLLECTION_ID [POST_ID...]
+  kura collection move [flags] COLLECTION_ID POST_ID
+  kura collection rename [flags] COLLECTION_ID NAME
+  kura collection delete [flags] COLLECTION_ID
 
 Commands:
   list     List collections via GET /api/collections
+  summaries List compact counts via GET /api/collections/summaries
   posts    List posts in a collection via GET /api/collections/{id}/posts
   create   Create a collection via POST /api/collections
   add      Add posts via POST /api/collections/{id}/posts
   remove   Remove one post via DELETE /api/collections/{id}/posts/{postID}
   reorder  Replace collection order via POST /api/collections/{id}/order
+  move     Move one post via POST /api/collections/{id}/move
+  rename   Rename a collection via PATCH /api/collections/{id}
+  delete   Delete a collection via DELETE /api/collections/{id}
 
 Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
   --json            Output the response as JSON (pretty-printed)
   --jsonl           Output one JSON object per collection, post, or mutation
                     (JSON Lines)
+  --expected-version N  Required observed version for move, rename, and delete
+  --before POST_ID   Move before a post (use exactly one of --before or --end)
+  --end              Move to the end (use exactly one of --before or --end)
+  --yes              Confirm collection delete
   -h, --help        Show this help
 
 Examples:
   kura collection list
   kura collection list --json
+  kura collection summaries
   kura collection posts 7
   kura collection posts --jsonl 7
   kura collection create "Reference set"
   kura collection add 7 11 10
   kura collection remove 7 11
   kura collection reorder 7 10 11
+  kura collection move --expected-version 4 --before 11 7 10
+  kura collection rename --expected-version 4 7 "Reference set"
+  kura collection delete --expected-version 4 --yes 7
+`
+
+const collectionSummariesHelp = `kura collection summaries - list compact collection counts
+
+Usage:
+  kura collection summaries [flags]
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the response as JSON
+  --jsonl           Output one summary per line
+  -h, --help        Show this help
+`
+
+const collectionMoveHelp = `kura collection move - move one post within a collection
+
+Usage:
+  kura collection move --expected-version N (--before POST_ID | --end) COLLECTION_ID POST_ID
+
+Flags:
+  --expected-version N  Required observed collection version (zero is valid)
+  --before POST_ID      Move before this member
+  --end                 Move to the end
+  --api-url URL         Base API URL
+  --json | --jsonl      Output compact result
+  -h, --help            Show this help
+`
+
+const collectionRenameHelp = `kura collection rename - rename a collection
+
+Usage:
+  kura collection rename --expected-version N [flags] COLLECTION_ID NAME
+
+Flags:
+  --expected-version N  Required observed collection version (zero is valid)
+  --api-url URL         Base API URL
+  --json | --jsonl      Output compact result
+  -h, --help            Show this help
+`
+
+const collectionDeleteHelp = `kura collection delete - delete a collection and its memberships
+
+Usage:
+  kura collection delete --expected-version N --yes [flags] COLLECTION_ID
+
+Flags:
+  --expected-version N  Required observed collection version (zero is valid)
+  --yes                 Confirm deletion
+  --api-url URL         Base API URL
+  --json | --jsonl      Output compact result
+  -h, --help            Show this help
 `
 
 const collectionListHelp = `kura collection list - list collections via the HTTP API
@@ -182,7 +249,8 @@ Usage:
   kura collection reorder [flags] COLLECTION_ID [POST_ID...]
 
 Pass no POST_ID values to clear a collection. A non-empty order must contain
-every current member exactly once. The API accepts at most 200 IDs per request.
+every current visible member exactly once. Use collection move for a compact,
+version-checked request instead of sending the entire order.
 
 Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)

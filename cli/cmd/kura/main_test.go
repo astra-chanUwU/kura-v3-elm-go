@@ -475,6 +475,60 @@ func TestCollectionMutations_ValidationAndHelp(t *testing.T) {
 	}
 }
 
+func TestCollectionManagementCommandsAndGuards(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body := new(bytes.Buffer)
+		_, _ = body.ReadFrom(r.Body)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/collections/summaries":
+			fmt.Fprint(w, `{"collections":[{"id":"7","name":"Set","version":0,"member_count":1,"visible_post_count":1}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/collections/7/move":
+			if !strings.Contains(body.String(), `"expected_version":0`) || !strings.Contains(body.String(), `"before_post_id":"11"`) {
+				t.Errorf("move body=%s", body)
+			}
+			fmt.Fprint(w, `{"id":"7","collection_id":"7","version":1,"changed":true}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/collections/7":
+			fmt.Fprint(w, `{"id":"7","name":"Renamed","version":1,"changed":true}`)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/collections/7":
+			fmt.Fprint(w, `{"id":"7","name":"Renamed","version":1,"changed":true}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	env := map[string]string{"KURA_API_URL": srv.URL}
+	code, out, errOut := runWithEnv([]string{"collection", "summaries"}, env)
+	if code != 0 || !strings.Contains(out, "7\tSet\t1/1\tv0") || errOut != "" {
+		t.Fatalf("summaries: code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "move", "--expected-version", "0", "--before", "11", "7", "10"}, env)
+	if code != 0 || !strings.Contains(out, "7\t10\tv1") || errOut != "" {
+		t.Fatalf("move: code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"collection", "rename", "7", "Name"}, env)
+	if code == 0 || !strings.Contains(errOut, "expected-version") {
+		t.Fatalf("missing version accepted: code=%d err=%q", code, errOut)
+	}
+	code, _, errOut = runWithEnv([]string{"collection", "delete", "--expected-version", "0", "7"}, env)
+	if code == 0 || !strings.Contains(errOut, "--yes") {
+		t.Fatalf("unconfirmed delete accepted: code=%d err=%q", code, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "rename", "--expected-version=0", "7", "Renamed"}, env)
+	if code != 0 || !strings.Contains(out, "Renamed") || errOut != "" {
+		t.Fatalf("rename: code=%d out=%q err=%q", code, out, errOut)
+	}
+	code, out, errOut = runWithEnv([]string{"collection", "delete", "--expected-version", "0", "--yes", "7"}, env)
+	if code != 0 || !strings.Contains(out, "changed=true") || errOut != "" {
+		t.Fatalf("delete: code=%d out=%q err=%q", code, out, errOut)
+	}
+	if calls != 4 {
+		t.Fatalf("expected four API calls, got %d", calls)
+	}
+}
+
 func TestPostGetIsShowAlias(t *testing.T) {
 	srv := postDetailServer(t)
 	defer srv.Close()
@@ -665,5 +719,28 @@ func TestPostHelpAndValidation(t *testing.T) {
 	code, _, errOut = runWithEnv([]string{"post", "unknown"}, nil)
 	if code == 0 || !strings.Contains(errOut, "unknown post command") {
 		t.Fatalf("expected unknown command err=%q", errOut)
+	}
+}
+
+func TestNewCollectionHelpStopsBeforeRequest(t *testing.T) {
+	for _, sub := range []string{"summaries", "move", "rename", "delete"} {
+		code, out, errOut := runWithEnv([]string{"collection", sub, "--help"}, map[string]string{"KURA_API_URL": "invalid-url"})
+		if code != 0 || errOut != "" || !strings.Contains(out, "Usage:") {
+			t.Fatalf("%s help code=%d out=%s err=%s", sub, code, out, errOut)
+		}
+	}
+}
+
+func TestCollectionManagementRejectsIrrelevantFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"collection", "move", "--expected-version", "0", "--before=", "--end", "7", "10"},
+		{"collection", "move", "--expected-version", "0", "--before=", "7", "10"},
+		{"collection", "rename", "--expected-version", "0", "--end", "7", "Name"},
+		{"collection", "delete", "--expected-version", "0", "--yes", "--before", "10", "7"},
+	} {
+		code, _, errOut := runWithEnv(args, map[string]string{"KURA_API_URL": "invalid-url"})
+		if code == 0 || strings.Contains(errOut, "invalid api url") {
+			t.Fatalf("accepted %v", args)
+		}
 	}
 }
