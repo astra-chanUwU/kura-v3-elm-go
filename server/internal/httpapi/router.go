@@ -46,6 +46,11 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		// Post browsing (posts.go), edits (tags.go, reactions.go), and
 		// moderation (moderation.go). Static paths precede the id routes.
 		api.Get("/posts", searchPosts(deps.Posts))
+		api.Get("/tags/suggestions", suggestTags(deps.TagSuggestions))
+		api.Get("/posts/export", exportLibrary(deps.Exports, false))
+		api.Get("/posts/trash", listTrash(deps.Trash))
+		api.Post("/posts/trash", trashPosts(deps.Trash))
+		api.Post("/posts/restore", restorePosts(deps.Trash))
 		api.Get("/posts/moderation", listModerationQueue(deps.ModerationRead))
 		api.Post("/posts/moderation", moderatePosts(deps.Moderation))
 		api.Post("/posts/tags", editTags(deps.Tags))
@@ -73,6 +78,9 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Delete("/collections/{id}/posts/{postID}", removeCollectionPost(deps.Collections))
 		api.Post("/collections/{id}/order", reorderCollection(deps.Collections))
 		api.Post("/collections/{id}/move", moveCollectionPost(deps.CollectionPostMover))
+		api.Patch("/collections/{id}", RenameCollection(deps.CollectionManager))
+		api.Delete("/collections/{id}", DeleteCollection(deps.CollectionManager))
+		api.Get("/collections/{id}/export", exportLibrary(deps.Exports, true))
 	})
 	return r
 }

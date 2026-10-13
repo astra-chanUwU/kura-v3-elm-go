@@ -20,6 +20,10 @@ type Dependencies struct {
 	CollectionSummaries posts.CollectionSummaryReader
 	CollectionPosts     posts.CollectionPostSearcher
 	CollectionPostMover posts.CollectionPostMover
+	CollectionManager   posts.CollectionManager
+	Trash               posts.PostTrashStore
+	TagSuggestions      posts.TagSuggester
+	Exports             posts.LibraryExporter
 	Moderation          posts.ModerationMutator
 	ModerationRead      posts.ModerationReader
 	Jobs                jobs.Reader
@@ -44,6 +48,10 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.CollectionSummaries, _ = backend.(posts.CollectionSummaryReader)
 	deps.CollectionPosts, _ = backend.(posts.CollectionPostSearcher)
 	deps.CollectionPostMover, _ = backend.(posts.CollectionPostMover)
+	deps.CollectionManager, _ = backend.(posts.CollectionManager)
+	deps.Trash, _ = backend.(posts.PostTrashStore)
+	deps.TagSuggestions, _ = backend.(posts.TagSuggester)
+	deps.Exports, _ = backend.(posts.LibraryExporter)
 	deps.Moderation, _ = backend.(posts.ModerationMutator)
 	deps.ModerationRead, _ = backend.(posts.ModerationReader)
 	deps.Jobs, _ = backend.(jobs.Reader)

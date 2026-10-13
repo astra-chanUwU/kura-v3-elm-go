@@ -3,6 +3,7 @@ package posts
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -189,6 +190,25 @@ func (s *PostgresBackend) AddCollectionPosts(ctx context.Context, collectionID s
 	postIDs := make([]int64, len(validated.PostIDs))
 	for i, postID := range validated.PostIDs {
 		postIDs[i], _ = strconv.ParseInt(postID, 10, 64)
+	}
+	// Match trash's collection-then-post lock order. The shared row locks
+	// serialize the visibility check with deleted_at changes, so a concurrent
+	// add cannot insert a stale membership after trash has committed.
+	lockPostIDs := append([]int64(nil), postIDs...)
+	sort.Slice(lockPostIDs, func(i, j int) bool { return lockPostIDs[i] < lockPostIDs[j] })
+	for _, postID := range lockPostIDs {
+		var locked int64
+		err := tx.QueryRow(ctx, `
+SELECT id FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL AND moderation_state = 'published'
+FOR SHARE
+`, postID).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return Collection{}, err
+		}
 	}
 	tag, err := tx.Exec(ctx, addCollectionPostSQL, id, postIDs)
 	if err != nil {

@@ -237,11 +237,10 @@ VALUES ($1::bigint, $2, $3, $4)
 `
 
 const listCollectionsSQL = `
-SELECT c.id::text, c.name, c.version, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE cp.post_id IS NOT NULL), ARRAY[]::text[])
+SELECT c.id::text, c.name, c.version, COALESCE(array_agg(cp.post_id::text ORDER BY cp.position, cp.post_id) FILTER (WHERE p.id IS NOT NULL), ARRAY[]::text[])
 FROM collections c
 LEFT JOIN collection_posts cp ON cp.collection_id = c.id
 LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
-WHERE cp.post_id IS NULL OR p.id IS NOT NULL
 GROUP BY c.id, c.name, c.version
 ORDER BY c.created_at, c.id
 `
