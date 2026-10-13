@@ -246,6 +246,19 @@ GROUP BY c.id, c.name, c.version
 ORDER BY c.created_at, c.id
 `
 
+// listCollectionSummariesSQL derives id, name, version, and both counts in
+// one statement. member_count counts every membership row; visible counts
+// only rows joining a published, non-deleted post, matching public
+// collection browsing. No member IDs are materialized.
+const listCollectionSummariesSQL = `
+SELECT c.id::text, c.name, c.version, COUNT(cp.post_id), COUNT(p.id)
+FROM collections c
+LEFT JOIN collection_posts cp ON cp.collection_id = c.id
+LEFT JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
+GROUP BY c.id, c.name, c.version, c.created_at
+ORDER BY c.created_at, c.id
+`
+
 const insertCollectionSQL = `
 INSERT INTO collections (name) VALUES ($1)
 RETURNING id::text, name, version

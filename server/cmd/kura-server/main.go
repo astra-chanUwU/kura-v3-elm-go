@@ -48,6 +48,7 @@ func main() {
 				Reactions:           pgBackend,
 				SavedSearches:       pgBackend,
 				Collections:         pgBackend,
+				CollectionSummaries: pgBackend,
 				CollectionPosts:     pgBackend,
 				CollectionPostMover: pgBackend,
 				Moderation:          pgBackend,

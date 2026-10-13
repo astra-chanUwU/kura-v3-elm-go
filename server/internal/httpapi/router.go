@@ -66,6 +66,7 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 
 		// Ordered collections (collections.go).
 		api.Get("/collections", listCollections(deps.Collections))
+		api.Get("/collections/summaries", listCollectionSummaries(deps.CollectionSummaries))
 		api.Post("/collections", createCollection(deps.Collections))
 		api.Get("/collections/{id}/posts", searchCollectionPosts(deps.CollectionPosts))
 		api.Post("/collections/{id}/posts", addCollectionPosts(deps.Collections))

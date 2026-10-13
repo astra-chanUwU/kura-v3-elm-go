@@ -81,6 +81,28 @@ type CollectionMutator interface {
 	ReorderCollection(context.Context, string, ReorderCollectionRequest) (Collection, error)
 }
 
+// CollectionSummary is the compact Navigator metadata for one collection:
+// it carries counts only, never member IDs or full member objects, so its
+// response cost is bounded per collection regardless of membership size.
+type CollectionSummary struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Version          int64  `json:"version"`
+	MemberCount      int64  `json:"member_count"`
+	VisiblePostCount int64  `json:"visible_post_count"`
+}
+
+// CollectionSummaryReader is the narrow, independent capability for
+// lightweight collection summaries. It is deliberately not part of
+// CollectionMutator so backends predating the summaries endpoint keep
+// serving the existing collection routes and only the summaries route is
+// unavailable. MemberCount counts every membership row including hidden
+// and soft-deleted posts; VisiblePostCount counts only published,
+// non-deleted members that appear in public collection browsing.
+type CollectionSummaryReader interface {
+	ListCollectionSummaries(context.Context) ([]CollectionSummary, error)
+}
+
 // CollectionPostMover is the narrow, independent capability for moving a
 // single collection member. It is deliberately not part of
 // CollectionMutator so backends predating the move endpoint keep serving

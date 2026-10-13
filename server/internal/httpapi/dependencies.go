@@ -17,6 +17,7 @@ type Dependencies struct {
 	Reactions           posts.ReactionMutator
 	SavedSearches       posts.SavedSearchStore
 	Collections         posts.CollectionMutator
+	CollectionSummaries posts.CollectionSummaryReader
 	CollectionPosts     posts.CollectionPostSearcher
 	CollectionPostMover posts.CollectionPostMover
 	Moderation          posts.ModerationMutator
@@ -40,6 +41,7 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.Reactions, _ = backend.(posts.ReactionMutator)
 	deps.SavedSearches, _ = backend.(posts.SavedSearchStore)
 	deps.Collections, _ = backend.(posts.CollectionMutator)
+	deps.CollectionSummaries, _ = backend.(posts.CollectionSummaryReader)
 	deps.CollectionPosts, _ = backend.(posts.CollectionPostSearcher)
 	deps.CollectionPostMover, _ = backend.(posts.CollectionPostMover)
 	deps.Moderation, _ = backend.(posts.ModerationMutator)

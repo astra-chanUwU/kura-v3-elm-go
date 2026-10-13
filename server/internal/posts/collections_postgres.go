@@ -34,6 +34,29 @@ func (s *PostgresBackend) ListCollections(ctx context.Context) ([]Collection, er
 	return collections, nil
 }
 
+func (s *PostgresBackend) ListCollectionSummaries(ctx context.Context) ([]CollectionSummary, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	rows, err := s.pool.Query(ctx, listCollectionSummariesSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	summaries := make([]CollectionSummary, 0)
+	for rows.Next() {
+		var summary CollectionSummary
+		if err := rows.Scan(&summary.ID, &summary.Name, &summary.Version, &summary.MemberCount, &summary.VisiblePostCount); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return summaries, nil
+}
+
 // SearchCollectionPosts returns at most limit visible members in collection
 // order with the version observed by the same snapshot. The version and the
 // rows come from one repeatable-read transaction, so a concurrent mutation

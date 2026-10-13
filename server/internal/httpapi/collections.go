@@ -64,6 +64,26 @@ func listCollections(mutator posts.CollectionMutator) http.HandlerFunc {
 	}
 }
 
+func listCollectionSummaries(reader posts.CollectionSummaryReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reader == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "collections unavailable")
+			return
+		}
+		result, err := reader.ListCollectionSummaries(r.Context())
+		if err != nil {
+			writeCollectionError(w, err)
+			return
+		}
+		if result == nil {
+			result = []posts.CollectionSummary{}
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Collections []posts.CollectionSummary `json:"collections"`
+		}{Collections: result})
+	}
+}
+
 func createCollection(mutator posts.CollectionMutator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if mutator == nil {
