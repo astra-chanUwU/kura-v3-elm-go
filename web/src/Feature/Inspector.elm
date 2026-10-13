@@ -1,7 +1,7 @@
 module Feature.Inspector exposing (Config, view)
 
 import Api.Post
-import Domain.Collection exposing (Collection)
+import Domain.Collection exposing (CollectionSummary)
 import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
 import Html exposing (Html, a, aside, button, dd, details, div, dl, dt, form, input, label, li, option, p, select, span, summary, text, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, selected, style, target, title, type_, value)
@@ -28,7 +28,7 @@ type alias Config msg =
     , onTag : String -> Bool -> msg
     , onClear : msg
     , onClose : msg
-    , collections : List Collection
+    , collections : List CollectionSummary
     , activeCollection : Maybe String
     , onSelectCollection : String -> msg
     , onFavorite : msg
@@ -48,6 +48,8 @@ type alias Config msg =
     , onScoreDraft : String -> msg
     , onStepScore : Int -> msg
     , onSaveScore : msg
+    , tagSuggestions : List { tag : String, count : Int }
+    , onTagSuggestion : String -> msg
     , onRevert : Int -> msg
     , onConfirmRevert : Int -> msg
     , onCancelRevert : msg
@@ -293,6 +295,15 @@ tagEditor config =
             , disabled (not config.writesEnabled || config.tagSaving)
             ]
             []
+        , if List.isEmpty config.tagSuggestions then
+            text ""
+
+          else
+            ul [ class "tag-list tag-suggestions", attribute "aria-label" "Tag suggestions" ]
+                (List.map
+                    (\s -> li [] [ button [ class "button button-quiet", type_ "button", onClick (config.onTagSuggestion s.tag) ] [ text (s.tag ++ " (" ++ String.fromInt s.count ++ ")") ] ])
+                    config.tagSuggestions
+                )
         , details [ class "tag-remove-disclosure" ]
             [ summary [] [ text "Remove tags" ]
             , input

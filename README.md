@@ -10,10 +10,8 @@ Start with the [architecture and request flow](docs/architecture.md) for the
 code map, boundaries, and reasons behind the stack.
 
 The current milestone is: **I can safely manage my actual image library here
-every day.** See the [daily library plan](docs/daily-library-plan.md) for verified
-status and the next browser-write and collection slices. The
-[Muse slice prompts](docs/muse-slices/README.md) are ready to run sequentially
-under supervising Codex review.
+every day.** The [daily library plan](docs/daily-library-plan.md) records the
+milestone's original scope and historical acceptance checks.
 
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
@@ -66,6 +64,17 @@ Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe 
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
 
+Navigator shows collection counts and offers paged ordering, rename, and delete.
+First/last and neighbor moves send one post at a time. Deleting a collection
+leaves its images in the library.
+
+Use **Move selected to Trash** to review a confirmation before hiding up to 100
+selected posts. Open **Trash** to restore them; its recovery list uses metadata
+instead of publicly exposing hidden originals. **Export selection (ZIP)** or
+**Export collection (ZIP)** downloads originals with optional metadata. Tag
+suggestions appear after two characters in the Inspector's Add tags field;
+choosing a suggestion edits the draft, and **Save tags** applies it.
+
 Type a query into the search bar and press Enter. Leave it blank to browse all visible posts, newest first.
 
 Plain words search the post's text. Use `tag:` to match a specific tag. Put filters together with spaces to narrow the results:
@@ -101,6 +110,24 @@ The CLI sends `KURA_API_TOKEN` on writes. In protected mode, use **Unlock** in t
 
 ## Import local test images
 
+For ordinary library imports, use the importer without test labels:
+
+```sh
+python3 scripts/import-media.py "SOURCE_FOLDER" --dry-run
+python3 scripts/import-media.py "SOURCE_FOLDER" --tag reference --artist "ARTIST" --collection 7
+```
+
+Preview first to see supported files, duplicates, and exclusions without
+uploading or writing a resume manifest. Tags, artist, source prefix, destination
+collection, and duplicate policy are explicit options. `--duplicate-policy skip`
+is the default; `error` stops on duplicates. Deduplication covers browse-visible
+posts. The importer leaves source files unchanged and stores its resume state
+in ignored `.local/import-media-manifest.json`; use `--manifest` for another
+folder. Resume with the same options. An uncertain upload or collection
+attachment is checked before continuing rather than blindly repeated.
+
+For demo/testing imports with `test-data` and `folder-test` labels, use:
+
 To add a folder of local test images without changing the source files, run:
 
 ```sh
@@ -128,7 +155,43 @@ Commands support `--json`, `--jsonl`, and `--api-url`. Put flags before position
 
 Pagination stops on duplicate posts, repeated cursors, collection version changes, API errors, or the 1,000-page limit. It never silently restarts under a changed collection. Search pagination does not freeze a changing library. Ctrl-C cancels active requests. Writes are never automatically retried; if a write response is lost or invalid, inspect the resource before retrying. API addresses must be absolute HTTP(S) URLs without embedded credentials, query strings, or fragments; reverse-proxy path prefixes are supported and redirects are reported as errors.
 
-Run a command with `--help` for tag, favorite, score, and collection mutations. `post get` is an alias for `post show`. Collection add/reorder requests retain the API's 200-ID limit.
+Run a command with `--help` for tag, favorite, score, and collection mutations. `post get` is an alias for `post show`. Collection add requests accept at most 200 IDs. Use single-post moves for ordering; legacy whole-array reorder remains available for compatible clients.
+
+Collection summaries avoid downloading every member ID. Single-post moves,
+renames, and deletion require the version you observed; a stale version returns
+a conflict. Deleting a collection removes its organization, leaving posts and
+media intact:
+
+```sh
+go -C cli run ./cmd/kura collection summaries --json
+go -C cli run ./cmd/kura collection move --expected-version 3 --before 12 7 10
+go -C cli run ./cmd/kura collection rename --expected-version 4 7 "Reference set"
+go -C cli run ./cmd/kura collection delete --expected-version 5 --yes 7
+```
+
+## Recovery and exports
+
+Trash retains originals, tags, ratings, history, and collection membership.
+Restoring a post preserves its moderation state: a previously hidden post stays
+hidden. Trash listing and recovery require write access. There is no permanent
+delete action.
+
+Selection and collection exports contain original files and optional
+`metadata.json`. Each export is limited to 1,000 visible posts and 250 MiB of
+original bytes. Hidden or trashed posts are excluded, and collection exports
+check the observed version. Original hashes and sizes are verified before the
+archive is sent.
+
+For a complete local backup, stop the API, workers, and other writers first:
+
+```sh
+python3 scripts/library-backup.py create --offline --output /ABSOLUTE/BACKUP_PATH --media-root /ABSOLUTE/MEDIA_ROOT
+python3 scripts/library-backup.py verify --input /ABSOLUTE/BACKUP_PATH
+```
+
+Restore requires an empty target database in `DATABASE_URL` and a new media
+destination. The utility supports local media; configured S3 storage is outside
+this backup workflow.
 
 ## Checks
 
@@ -139,7 +202,13 @@ go -C server vet ./...
 curl http://localhost:8080/health
 ```
 
-`make check` builds the server and frontend, runs server tests and vet, tests and builds the CLI, and runs the Elm revision and upload-queue suites. Run the Elm suites directly with `make web-test`.
+`make check` builds the server and frontend, runs server tests and vet, tests and builds the CLI, runs the Elm suites, and checks the Python backup/import tools. Run the Elm suites directly with `make web-test` and Python tests with `make script-check`.
+
+`make library-drill` runs API/database/media round trips using generated fixtures.
+It requires `KURA_BACKUP_TEST_ADMIN_URL` pointing to an explicitly disposable
+local PostgreSQL instance, plus compatible `psql`, `pg_dump`, and `pg_restore`.
+The drills create and remove uniquely named databases; they never use the
+development library or real source media.
 
 PostgreSQL-backed server tests require `KURA_TEST_DATABASE_URL` pointing to a disposable database; they truncate test tables. Without that variable, those tests skip. `make check` runs server packages serially; to run the integration tests directly:
 

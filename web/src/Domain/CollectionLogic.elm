@@ -1,6 +1,12 @@
 module Domain.CollectionLogic exposing
     ( CollectionFailure(..)
     , StaleMutationRecovery(..)
+    , clampManagePage
+    , managePageCount
+    , maxManagePages
+    , planFirst
+    , planLast
+    , planMove
     , shouldRefresh
     , isStaleRequest
     , isStaleGeneration
@@ -160,6 +166,117 @@ staleMutationRecovery collectionBrowse affectedId =
 
     else
         RefreshMetadataOnly
+
+
+{-| Overall guard on membership pages fetched for one management
+window: 1000 pages (60000 rows at 60 per page). This supports a
+1000-member collection across 17 pages with room to spare. The
+ordering UI renders at most one 60-row page and fetches single pages
+on demand; hitting this guard is reported, never a silent no-op.
+-}
+maxManagePages : Int
+maxManagePages =
+    1000
+
+
+{-| How many 60-row management pages a fetched window spans.
+-}
+managePageCount : Int -> Int
+managePageCount rowCount =
+    max 1 ((rowCount + collectionPageSize - 1) // collectionPageSize)
+
+
+{-| Clamp a management page index into the pages a fetched window spans.
+-}
+clampManagePage : Int -> Int -> Int
+clampManagePage rowCount page =
+    clamp 0 (managePageCount rowCount - 1) page
+
+
+{-| Plan a one-step visible move inside a fetched ordering window. The
+result is the `before_post_id` for the single-post move endpoint: `Just
+(Just id)` inserts before that real visible neighbor, `Just Nothing`
+moves to the very end, and `Nothing` means no move is possible yet —
+either the post already sits at that edge, or (moving down past the
+window end while more members exist) the next neighbor is unfetched.
+Hidden members are server-owned: the plan names only visible neighbors
+or the end, never a whole-array order.
+-}
+planMove : List String -> Bool -> String -> Int -> Maybe (Maybe String)
+planMove ids hasMore postId delta =
+    case indexOf postId ids of
+        Nothing ->
+            Nothing
+
+        Just idx ->
+            if delta == -1 then
+                if idx == 0 then
+                    Nothing
+
+                else
+                    Just (List.drop (idx - 1) ids |> List.head)
+
+            else if delta == 1 then
+                if idx + 1 >= List.length ids then
+                    Nothing
+
+                else if idx + 2 < List.length ids then
+                    Just (List.drop (idx + 2) ids |> List.head)
+
+                else if hasMore then
+                    Nothing
+
+                else
+                    Just Nothing
+
+            else
+                Nothing
+
+
+{-| Plan a move to the first visible position: insert before the first
+fetched member, which starts at the collection's visible start. `Nothing`
+when the post is already first or unknown.
+-}
+planFirst : List String -> String -> Maybe (Maybe String)
+planFirst ids postId =
+    case ( List.head ids, indexOf postId ids ) of
+        ( Just first, Just idx ) ->
+            if idx == 0 then
+                Nothing
+
+            else
+                Just (Just first)
+
+        _ ->
+            Nothing
+
+
+{-| Plan a move to the very end. `before_post_id = null` is the real end
+regardless of unfetched or hidden members, so this never needs the whole
+collection; it is a no-op only for the known last visible member when
+nothing follows it.
+-}
+planLast : List String -> Bool -> String -> Maybe (Maybe String)
+planLast ids hasMore postId =
+    case indexOf postId ids of
+        Nothing ->
+            Nothing
+
+        Just idx ->
+            if idx == List.length ids - 1 && not hasMore then
+                Nothing
+
+            else
+                Just Nothing
+
+
+indexOf : String -> List String -> Maybe Int
+indexOf postId ids =
+    ids
+        |> List.indexedMap Tuple.pair
+        |> List.filter (\( _, candidate ) -> candidate == postId)
+        |> List.head
+        |> Maybe.map Tuple.first
 
 
 {-| Clamp a desired grid scroll offset into the bounds of rebuilt

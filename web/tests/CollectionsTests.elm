@@ -1,6 +1,6 @@
 module CollectionsTests exposing (allPassed, suite)
 
-import Domain.Collection exposing (Collection)
+import Domain.Collection exposing (CollectionAck, CollectionSummary)
 import Domain.Sequence as Sequence
 import Feature.Collections as Collections
 import Http
@@ -26,14 +26,19 @@ run msg model =
     ( settled, outs )
 
 
-collection : String -> List String -> Collection
-collection id postIds =
-    { id = id, name = "Collection " ++ id, postIds = postIds }
+summary : String -> CollectionSummary
+summary id =
+    { id = id, name = "Collection " ++ id, version = 3, memberCount = 3, visiblePostCount = 3 }
+
+
+ack : String -> CollectionAck
+ack id =
+    { id = id, name = "Collection " ++ id, version = 4 }
 
 
 withItems : Collections.Model
 withItems =
-    run (Collections.ListCompleted (Ok [ collection "c1" [ "p1", "p2", "p3" ], collection "c2" [ "p9" ] ])) Collections.init
+    run (Collections.SummariesCompleted 0 (Ok [ summary "c1", summary "c2" ])) Collections.init
         |> Tuple.first
 
 
@@ -205,7 +210,7 @@ caseRefreshChainsPages : Bool
 caseRefreshChainsPages =
     let
         added =
-            run (Collections.Added 7 "c1" (Ok (collection "c1" [ "p1", "p2", "p3", "p0" ]))) browsed |> Tuple.first
+            run (Collections.Added 7 "c1" (Ok (ack "c1"))) browsed |> Tuple.first
 
         ( chained, outs ) =
             run (Collections.RefreshCompleted (Collections.requestId added) "c1" (Ok (page [ "p1" ] (Just "cur1")))) added
@@ -217,7 +222,7 @@ caseRefreshFinalizesWindow : Bool
 caseRefreshFinalizesWindow =
     let
         added =
-            run (Collections.Added 7 "c1" (Ok (collection "c1" [ "p1", "p2", "p3", "p0" ]))) browsed |> Tuple.first
+            run (Collections.Added 7 "c1" (Ok (ack "c1"))) browsed |> Tuple.first
 
         ( settled, outs ) =
             run (Collections.RefreshCompleted (Collections.requestId added) "c1" (Ok (page [ "p0", "p1", "p2" ] Nothing))) added
@@ -237,7 +242,7 @@ caseRefreshRestartsBounded : Bool
 caseRefreshRestartsBounded =
     let
         added =
-            run (Collections.Added 7 "c1" (Ok (collection "c1" [ "p1" ]))) browsed |> Tuple.first
+            run (Collections.Added 7 "c1" (Ok (ack "c1"))) browsed |> Tuple.first
 
         ( restarted, _ ) =
             run (Collections.RefreshCompleted (Collections.requestId added) "c1" (Err (Http.BadStatus 409))) added
@@ -250,7 +255,7 @@ caseStaleMutationRefreshesBrowsed : Bool
 caseStaleMutationRefreshesBrowsed =
     let
         ( settled, outs ) =
-            run (Collections.Added 3 "c1" (Ok (collection "c1" [ "p1" ]))) browsed
+            run (Collections.Added 3 "c1" (Ok (ack "c1"))) browsed
     in
     outs == [] && Collections.state settled == Collections.LoadingMore
 
@@ -262,9 +267,12 @@ caseStaleMutationListsOnly =
             Collections.abandonBrowse browsed
 
         ( settled, outs ) =
-            run (Collections.Added 3 "c1" (Ok (collection "c1" [ "p1" ]))) unbrowsed
+            run (Collections.Added 3 "c1" (Ok (ack "c1"))) unbrowsed
     in
-    outs == [] && settled == unbrowsed
+    outs == []
+        && Collections.browse settled == Nothing
+        && Collections.state settled == Collections.Idle
+        && Collections.items settled == Collections.items unbrowsed
 
 
 caseStaleRemovalClearsMarker : Bool
@@ -294,7 +302,7 @@ caseAddedRefreshesWhileBrowsed : Bool
 caseAddedRefreshesWhileBrowsed =
     let
         ( settled, outs ) =
-            run (Collections.Added 7 "c1" (Ok (collection "c1" [ "p1", "p2", "p3", "p0" ]))) browsed
+            run (Collections.Added 7 "c1" (Ok (ack "c1"))) browsed
     in
     outs == []
         && Collections.state settled == Collections.LoadingMore
@@ -308,11 +316,22 @@ caseAddedListsWhenAway =
             Collections.abandonBrowse browsed
 
         ( settled, outs ) =
-            run (Collections.Added 7 "c1" (Ok (collection "c1" [ "p1", "p2", "p3", "p0" ]))) unbrowsed
+            run (Collections.Added 7 "c1" (Ok (ack "c1"))) unbrowsed
     in
     outs == []
         && Collections.status settled == Just "Posts added to collection."
-        && List.any (\c -> c.id == "c1" && List.member "p0" c.postIds) (Collections.items settled)
+        && List.any (\c -> c.id == "c1") (Collections.items settled)
+
+
+caseAddedWrongResourceRejected : Bool
+caseAddedWrongResourceRejected =
+    let
+        ( settled, outs ) =
+            run (Collections.Added 7 "c1" (Ok (ack "c2"))) browsed
+    in
+    outs == []
+        && Collections.status settled == Just "The add response was invalid."
+        && Collections.state settled /= Collections.LoadingMore
 
 
 caseCreateGuards : Bool
@@ -337,13 +356,13 @@ caseCreateSuccessActivates =
             run (Collections.CreateRequested "fresh") withItems
 
         ( settled, outs ) =
-            run (Collections.Created 7 (Ok (collection "c9" []))) creating
+            run (Collections.Created 7 (Ok { id = "c9", name = "fresh", version = 0 })) creating
     in
     outs == []
         && Collections.activeId settled == Just "c9"
         && Collections.draft settled == ""
         && Collections.status settled == Just "Collection created."
-        && List.any (\c -> c.id == "c9") (Collections.items settled)
+        && List.any (\c -> c.id == "c9" && c.version == 0 && c.memberCount == 0) (Collections.items settled)
 
 
 caseCreateStaleListsOnly : Bool
@@ -353,9 +372,11 @@ caseCreateStaleListsOnly =
             run (Collections.CreateRequested "fresh") withItems
 
         ( settled, outs ) =
-            run (Collections.Created 3 (Ok (collection "c9" []))) creating
+            run (Collections.Created 3 (Ok (ack "c9"))) creating
     in
-    outs == [] && settled == creating
+    outs == []
+        && Collections.items settled == Collections.items creating
+        && Collections.activeId settled == Collections.activeId creating
 
 
 caseMoveGuards : Bool
@@ -368,22 +389,12 @@ caseMoveGuards =
         ( unknown, _ ) =
             run (Collections.MoveRequested "p1" 1) Collections.init
 
-        ( stuck, stuckOuts ) =
+        ( unmanaged, _ ) =
             run (Collections.MoveRequested "p1" -1) { withItems | activeId = Just "c1" }
     in
     Collections.status locked == Just "Unlock to reorder collections."
         && Collections.status unknown == Just "Select a collection first."
-        && stuckOuts == []
-        && stuck == { withItems | activeId = Just "c1" }
-
-
-caseMoveFiresReorder : Bool
-caseMoveFiresReorder =
-    let
-        ( settled, outs ) =
-            run (Collections.MoveRequested "p1" 1) { withItems | activeId = Just "c1" }
-    in
-    outs == [] && Collections.status settled == Just "Reordering…"
+        && Collections.status unmanaged == Just "Open ordering to move posts."
 
 
 caseRemoveGuards : Bool
@@ -395,20 +406,16 @@ caseRemoveGuards =
         ( duplicate, _ ) =
             run (Collections.RemoveRequested "p1") { active | removals = Set.singleton "p1" }
 
-        ( stranger, _ ) =
-            run (Collections.RemoveRequested "zzz") active
-
         ( marked, _ ) =
             run (Collections.RemoveRequested "p1") active
     in
     duplicate == { active | removals = Set.singleton "p1" }
-        && stranger == active
         && Collections.removals marked == Set.singleton "p1"
         && Collections.status marked == Just "Removing…"
 
 
-caseRemoveSuccessFilters : Bool
-caseRemoveSuccessFilters =
+caseRemoveSuccessClearsMarker : Bool
+caseRemoveSuccessClearsMarker =
     let
         active =
             { withItems | activeId = Just "c1" }
@@ -422,7 +429,7 @@ caseRemoveSuccessFilters =
     outs == []
         && Collections.removals settled == Set.empty
         && Collections.status settled == Just "Removed from collection."
-        && List.all (\c -> c.id /= "c1" || not (List.member "p1" c.postIds)) (Collections.items settled)
+        && List.any (\c -> c.id == "c1") (Collections.items settled)
 
 
 caseRetryNeedsBrowse : Bool
@@ -486,8 +493,8 @@ caseSelectActivates =
     Collections.activeId settled == Just "c2" && Collections.status settled == Nothing
 
 
-caseListKeepsActive : Bool
-caseListKeepsActive =
+caseSummariesKeepActive : Bool
+caseSummariesKeepActive =
     let
         fresh =
             Collections.init
@@ -496,17 +503,19 @@ caseListKeepsActive =
             { fresh | activeId = Just "c2" }
 
         ( settled, _ ) =
-            run (Collections.ListCompleted (Ok [ collection "c1" [], collection "c2" [] ])) current
+            run (Collections.SummariesCompleted 0 (Ok [ summary "c1", summary "c2" ])) current
 
         ( fallen, _ ) =
-            run (Collections.ListCompleted (Ok [ collection "c1" [] ])) current
+            run (Collections.SummariesCompleted 0 (Ok [ summary "c1" ])) current
 
         ( failed, _ ) =
-            run (Collections.ListCompleted (Err Http.Timeout)) current
+            run (Collections.SummariesCompleted 0 (Err Http.Timeout)) current
     in
     Collections.activeId settled == Just "c2"
         && Collections.activeId fallen == Just "c1"
-        && Collections.status failed == Just "The search timed out."
+        && Collections.summariesUnavailable failed == Just "The search timed out."
+        && Collections.status failed == Just "Collections are unavailable."
+        && Collections.items failed == []
 
 
 allPassed : Bool
@@ -536,17 +545,17 @@ suite =
     , ( "mutation 401 revokes access", caseMutationUnauthorizedRevokes )
     , ( "added posts refresh while browsed", caseAddedRefreshesWhileBrowsed )
     , ( "added posts list when away", caseAddedListsWhenAway )
+    , ( "added wrong-resource response rejected", caseAddedWrongResourceRejected )
     , ( "create guards name and access", caseCreateGuards )
     , ( "create success activates", caseCreateSuccessActivates )
     , ( "stale create lists only", caseCreateStaleListsOnly )
-    , ( "move guards access and range", caseMoveGuards )
-    , ( "move fires the reorder", caseMoveFiresReorder )
-    , ( "remove guards duplicates and members", caseRemoveGuards )
-    , ( "remove success filters the member", caseRemoveSuccessFilters )
+    , ( "move guards access and selection", caseMoveGuards )
+    , ( "remove guards duplicates", caseRemoveGuards )
+    , ( "remove success clears the marker", caseRemoveSuccessClearsMarker )
     , ( "retry needs a browsed collection", caseRetryNeedsBrowse )
     , ( "abandon keeps the list", caseAbandonKeepsList )
     , ( "lock keeps browsing", caseLockedKeepsBrowse )
     , ( "draft edits clear the notice", caseDraftClearsNotice )
     , ( "select activates", caseSelectActivates )
-    , ( "list keeps the active collection", caseListKeepsActive )
+    , ( "summaries keep the active collection", caseSummariesKeepActive )
     ]

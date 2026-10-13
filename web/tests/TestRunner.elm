@@ -2,6 +2,8 @@ port module TestRunner exposing (main)
 
 import AccessTests
 import ApiErrorTests
+import CollectionBoundedTests
+import DailyUseTests
 import CollectionLoadMoreTests
 import CollectionRefreshTests
 import Json.Encode as Encode
@@ -28,7 +30,7 @@ type Msg
 
 allTests : List ( String, Bool )
 allTests =
-    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite
+    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ CollectionBoundedTests.suite ++ DailyUseTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite
 
 
 encodeTest : ( String, Bool ) -> Encode.Value

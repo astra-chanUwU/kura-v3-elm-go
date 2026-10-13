@@ -1,6 +1,6 @@
-module Feature.Navigator exposing (Config, SavedItem, view)
+module Feature.Navigator exposing (Config, ManageConfig, ManageRow, SavedItem, view)
 
-import Domain.Collection exposing (Collection)
+import Domain.Collection exposing (CollectionSummary)
 import Html exposing (Html, aside, button, details, div, form, h3, input, li, p, span, summary, text, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, placeholder, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
@@ -18,6 +18,38 @@ type alias SavedItem =
     }
 
 
+{-| One visible ordering row. At most one 60-row page is passed in; the
+edge flags already account for unfetched following pages.
+-}
+type alias ManageRow =
+    { id : String
+    , canUp : Bool
+    , canDown : Bool
+    , canFirst : Bool
+    , canLast : Bool
+    }
+
+
+type alias ManageConfig msg =
+    { collectionId : String
+    , name : String
+    , rows : List ManageRow
+    , page : Int
+    , pageCount : Int
+    , hasPrev : Bool
+    , hasNext : Bool
+    , loading : Bool
+    , busy : Bool
+    , onMove : String -> Int -> msg
+    , onMoveFirst : String -> msg
+    , onMoveLast : String -> msg
+    , onRemove : String -> msg
+    , onPrev : msg
+    , onNext : msg
+    , onClose : msg
+    }
+
+
 type alias Config msg =
     { presentation : Presentation
     , current : String
@@ -26,7 +58,7 @@ type alias Config msg =
     , savedSaving : Bool
     , localFallback : Bool
     , recent : List String
-    , collections : List Collection
+    , collections : List CollectionSummary
     , activeCollection : Maybe String
     , collectionBrowse : Maybe String
     , collectionStatus : Maybe String
@@ -35,7 +67,21 @@ type alias Config msg =
     , onCreateCollection : String -> msg
     , onOpenCollection : String -> msg
     , onAllPosts : msg
-    , onMoveCollectionPost : String -> Int -> msg
+    , summariesUnavailable : Maybe String
+    , onRetrySummaries : msg
+    , manage : Maybe (ManageConfig msg)
+    , onManageCollection : String -> msg
+    , renamingId : Maybe String
+    , renameDraft : String
+    , onRenameDraft : String -> msg
+    , onStartRename : String -> msg
+    , onSubmitRename : msg
+    , onCancelRename : msg
+    , deleteConfirmId : Maybe String
+    , onRequestDelete : String -> msg
+    , onConfirmDelete : msg
+    , onCancelDelete : msg
+    , manageBusy : Bool
     , onRemoveCollectionPost : String -> msg
     , removingPosts : Set String
     , onRun : String -> msg
@@ -112,6 +158,15 @@ view config =
                     ]
             , div [ class "panel-section nav-section" ]
                 [ h3 [ class "panel-section-title" ] [ text "Collections" ]
+                , case config.summariesUnavailable of
+                    Just message ->
+                        div []
+                            [ p [ class "panel-note status-error" ] [ text ("Collections are unavailable: " ++ message) ]
+                            , button [ class "button button-quiet", type_ "button", onClick config.onRetrySummaries ] [ text "Retry" ]
+                            ]
+
+                    Nothing ->
+                        text ""
                 , ul [ class "nav-list" ]
                     (List.map
                         (\collection ->
@@ -124,7 +179,11 @@ view config =
                                     ]
                                     [ Ui.Icon.view "folder"
                                     , span [ class "nav-name" ] [ text collection.name ]
-                                    , span [ class "nav-count" ] [ text (String.fromInt (List.length collection.postIds)) ]
+                                    , span
+                                        [ class "nav-count"
+                                        , title (String.fromInt collection.memberCount ++ " members")
+                                        ]
+                                        [ text (String.fromInt collection.visiblePostCount) ]
                                     ]
                                 ]
                         )
@@ -148,26 +207,148 @@ view config =
                         text ""
 
                     Just collection ->
-                        if List.isEmpty collection.postIds then
-                            text ""
+                        div []
+                            [ manageControls config collection
+                            , renameControls config collection
+                            , deleteControls config collection
+                            , case config.manage of
+                                Nothing ->
+                                    text ""
 
-                        else
-                            details [ class "collection-order" ]
-                                [ summary [] [ text ("Manage " ++ collection.name) ]
-                                , ul [ class "nav-list collection-order-list" ]
-                                    (List.indexedMap
-                                        (\idx postId ->
-                                            li [ class "nav-row collection-order-row" ]
-                                                [ span [ class "collection-order-id", title postId ] [ text ("#" ++ postId) ]
-                                                , button [ class "collection-move", type_ "button", disabled (idx == 0 || not config.writesEnabled), onClick (config.onMoveCollectionPost postId -1), attribute "aria-label" ("Move #" ++ postId ++ " up") ] [ text "↑" ]
-                                                , button [ class "collection-move", type_ "button", disabled (idx == List.length collection.postIds - 1 || not config.writesEnabled), onClick (config.onMoveCollectionPost postId 1), attribute "aria-label" ("Move #" ++ postId ++ " down") ] [ text "↓" ]
-                                                , button [ class "collection-remove", type_ "button", disabled (not config.writesEnabled || Set.member postId config.removingPosts), onClick (config.onRemoveCollectionPost postId), attribute "aria-label" ("Remove #" ++ postId ++ " from collection") ] [ text "×" ]
-                                                ]
-                                        )
-                                        collection.postIds
-                                    )
-                                ]
+                                Just manage ->
+                                    if manage.collectionId == collection.id then
+                                        manageSection config manage
+
+                                    else
+                                        text ""
+                            ]
                 ]
+            ]
+        ]
+
+
+manageControls : Config msg -> CollectionSummary -> Html msg
+manageControls config collection =
+    case config.manage of
+        Just manage ->
+            if manage.collectionId == collection.id then
+                text ""
+
+            else
+                openManageButton config collection
+
+        Nothing ->
+            openManageButton config collection
+
+
+openManageButton : Config msg -> CollectionSummary -> Html msg
+openManageButton config collection =
+    if collection.visiblePostCount == 0 then
+        text ""
+
+    else
+        p []
+            [ button
+                [ class "button button-quiet"
+                , type_ "button"
+                , onClick (config.onManageCollection collection.id)
+                ]
+                [ text ("Manage order in " ++ collection.name) ]
+            ]
+
+
+renameControls : Config msg -> CollectionSummary -> Html msg
+renameControls config collection =
+    if config.renamingId == Just collection.id then
+        form [ class "compact-form", onSubmit config.onSubmitRename ]
+            [ input
+                [ class "nav-input"
+                , type_ "text"
+                , placeholder "Collection name"
+                , value config.renameDraft
+                , onInput config.onRenameDraft
+                , attribute "aria-label" "Rename collection"
+                , disabled (not config.writesEnabled || config.manageBusy)
+                ]
+                []
+            , button [ class "button", type_ "submit", disabled (String.trim config.renameDraft == "" || not config.writesEnabled || config.manageBusy) ] [ text "Save name" ]
+            , button [ class "button button-quiet", type_ "button", onClick config.onCancelRename ] [ text "Cancel" ]
+            ]
+
+    else
+        p []
+            [ button
+                [ class "button button-quiet"
+                , type_ "button"
+                , onClick (config.onStartRename collection.id)
+                , disabled (not config.writesEnabled || config.manageBusy)
+                , attribute "aria-label" ("Rename " ++ collection.name)
+                ]
+                [ text "Rename" ]
+            ]
+
+
+deleteControls : Config msg -> CollectionSummary -> Html msg
+deleteControls config collection =
+    if config.deleteConfirmId == Just collection.id then
+        div []
+            [ p [ class "panel-note status-error" ]
+                [ text ("Delete “" ++ collection.name ++ "”? This deletes the collection and its memberships only; its posts stay in the library.") ]
+            , p []
+                [ button
+                    [ class "button"
+                    , type_ "button"
+                    , onClick config.onConfirmDelete
+                    , disabled (not config.writesEnabled || config.manageBusy)
+                    ]
+                    [ text "Delete collection" ]
+                , button [ class "button button-quiet", type_ "button", onClick config.onCancelDelete ] [ text "Cancel" ]
+                ]
+            ]
+
+    else
+        p []
+            [ button
+                [ class "button button-quiet"
+                , type_ "button"
+                , onClick (config.onRequestDelete collection.id)
+                , disabled (not config.writesEnabled || config.manageBusy)
+                , attribute "aria-label" ("Delete " ++ collection.name)
+                ]
+                [ text "Delete" ]
+            ]
+
+
+manageSection : Config msg -> ManageConfig msg -> Html msg
+manageSection config manage =
+    div [ class "collection-order" ]
+        [ p [ class "panel-note" ]
+            [ text
+                (if manage.loading then
+                    "Loading ordering…"
+
+                 else
+                    "Ordering in " ++ manage.name ++ " (page " ++ String.fromInt (manage.page + 1) ++ " of " ++ String.fromInt manage.pageCount ++ ")"
+                )
+            ]
+        , ul [ class "nav-list collection-order-list" ]
+            (List.map
+                (\row ->
+                    li [ class "nav-row collection-order-row" ]
+                        [ span [ class "collection-order-id", title row.id ] [ text ("#" ++ row.id) ]
+                        , button [ class "collection-move", type_ "button", disabled (not row.canFirst || not config.writesEnabled || manage.busy), onClick (manage.onMoveFirst row.id), attribute "aria-label" ("Move #" ++ row.id ++ " to first") ] [ text "⇤" ]
+                        , button [ class "collection-move", type_ "button", disabled (not row.canUp || not config.writesEnabled || manage.busy), onClick (manage.onMove row.id -1), attribute "aria-label" ("Move #" ++ row.id ++ " up") ] [ text "↑" ]
+                        , button [ class "collection-move", type_ "button", disabled (not row.canDown || not config.writesEnabled || manage.busy), onClick (manage.onMove row.id 1), attribute "aria-label" ("Move #" ++ row.id ++ " down") ] [ text "↓" ]
+                        , button [ class "collection-move", type_ "button", disabled (not row.canLast || not config.writesEnabled || manage.busy), onClick (manage.onMoveLast row.id), attribute "aria-label" ("Move #" ++ row.id ++ " to last") ] [ text "⇥" ]
+                        , button [ class "collection-remove", type_ "button", disabled (not config.writesEnabled || manage.busy || Set.member row.id config.removingPosts), onClick (manage.onRemove row.id), attribute "aria-label" ("Remove #" ++ row.id ++ " from collection") ] [ text "×" ]
+                        ]
+                )
+                manage.rows
+            )
+        , p []
+            [ button [ class "button button-quiet", type_ "button", disabled (not manage.hasPrev || manage.busy), onClick manage.onPrev ] [ text "Back" ]
+            , button [ class "button button-quiet", type_ "button", disabled (not manage.hasNext || manage.busy), onClick manage.onNext ] [ text "Next" ]
+            , button [ class "button button-quiet", type_ "button", onClick manage.onClose ] [ text "Close" ]
             ]
         ]
 

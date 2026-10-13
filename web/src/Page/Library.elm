@@ -30,7 +30,10 @@ import Feature.Reactions as Reactions
 import Feature.QuickLook as QuickLook exposing (Zoom(..))
 import Feature.Search as Search
 import Feature.Shortcuts as Shortcuts
+import Feature.Export as Export
+import Feature.TagSuggestions as TagSuggestions
 import Feature.Tags as Tags
+import Feature.Trash as Trash
 import Feature.Survey as Survey
 import Feature.UploadQueue as UploadQueue
 import Html exposing (Html, button, div, footer, form, h1, header, input, p, span, text)
@@ -118,6 +121,9 @@ type alias Model =
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
     , access : App.Access.State
+    , trash : Trash.Model
+    , exportMetadata : Bool
+    , tagSuggestions : TagSuggestions.Model
     }
 
 
@@ -195,6 +201,9 @@ init flagsValue url key =
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
             , access = App.Access.init
+            , trash = Trash.init
+            , exportMetadata = True
+            , tagSuggestions = TagSuggestions.init
             }
     in
     let
@@ -208,7 +217,7 @@ init flagsValue url key =
     , Cmd.batch
         [ searchCmd
         , measureGrid 0
-        , Api.Collection.list flags.apiBase (CollectionsMsg << Collections.ListCompleted)
+        , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
         , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
         ]
     )
@@ -291,6 +300,10 @@ type Msg
     | RemoveSavedSearch String
     | SyncUrl Int
     | UploadMsg UploadQueue.Msg
+    | TrashMsg Trash.Msg
+    | ExportMetadataChanged Bool
+    | TagSuggestionMsg TagSuggestions.Msg
+    | TagSuggestionChosen String
     | NoOp
 
 
@@ -490,7 +503,42 @@ updateHelp msg model =
                 )
 
         TagsMsg subMsg ->
-            delegateTags subMsg model
+            let
+                ( tagged, tagCmd ) =
+                    delegateTags subMsg model
+
+                ( sugg, suggCmd ) =
+                    case subMsg of
+                        Tags.AddChanged draft ->
+                            TagSuggestions.update (TagSuggestions.context tagged.apiBase) (TagSuggestions.QueryChanged draft) tagged.tagSuggestions
+
+                        _ ->
+                            ( tagged.tagSuggestions, Cmd.none )
+            in
+            ( { tagged | tagSuggestions = sugg }, Cmd.batch [ tagCmd, Cmd.map TagSuggestionMsg suggCmd ] )
+
+        TrashMsg subMsg ->
+            delegateTrash subMsg model
+
+        ExportMetadataChanged value ->
+            ( { model | exportMetadata = value }, Cmd.none )
+
+        TagSuggestionMsg subMsg ->
+            let
+                ( sugg, cmd ) =
+                    TagSuggestions.update (TagSuggestions.context model.apiBase) subMsg model.tagSuggestions
+            in
+            ( { model | tagSuggestions = sugg }, Cmd.map TagSuggestionMsg cmd )
+
+        TagSuggestionChosen tag ->
+            let
+                newDraft =
+                    TagSuggestions.applySuggestion (Tags.addDraft model.tags) tag
+
+                ( tagged, tagCmd ) =
+                    delegateTags (Tags.AddChanged newDraft) model
+            in
+            ( { tagged | tagSuggestions = TagSuggestions.clear tagged.tagSuggestions }, tagCmd )
 
         CapabilitiesReceived generation result ->
             if not (App.Access.isCurrent generation model.access) then
@@ -1379,6 +1427,61 @@ collectionsContext model =
         (Sequence.length model.sequence)
 
 
+trashContext : Model -> Trash.Context
+trashContext model =
+    Trash.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+
+
+delegateTrash : Trash.Msg -> Model -> ( Model, Cmd Msg )
+delegateTrash subMsg model =
+    let
+        ( trash, cmd, outs ) =
+            Trash.update (trashContext model) subMsg model.trash
+
+        base =
+            ( { model | trash = trash }, Cmd.map TrashMsg cmd )
+    in
+    List.foldl applyTrashOut base outs
+
+
+applyTrashOut : Trash.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyTrashOut out ( model, cmd ) =
+    case out of
+        Trash.TrashApplied ids ->
+            reconcileAfterTrash ids model |> withCmd cmd
+
+        Trash.RestoreApplied ids ->
+            reconcileAfterTrash ids model |> withCmd cmd
+
+        Trash.AccessRevoked ->
+            revokeAccess model |> withCmd cmd
+
+
+{-| After a durable trash/restore: browsed collections reload their
+bounded prefix; ordinary search drops trashed ids deliberately, prunes
+selection, then refreshes survivors from the server (no retry of the
+mutation itself).
+-}
+reconcileAfterTrash : List String -> Model -> ( Model, Cmd Msg )
+reconcileAfterTrash ids model =
+    case Collections.browse model.collections of
+        Just _ ->
+            delegateCollections Collections.RetryRequested model
+
+        Nothing ->
+            let
+                survivors =
+                    Sequence.fromList (List.filter (\p -> not (List.member p.id ids)) (Sequence.slice 0 (Sequence.length model.sequence) model.sequence |> List.map Tuple.second))
+
+                selection =
+                    Selection.prune survivors model.selection
+
+                pruned =
+                    { model | sequence = survivors, selection = selection, mode = validMode survivors selection model.mode }
+            in
+            retrySearch pruned
+
+
 delegateCollections : Collections.Msg -> Model -> ( Model, Cmd Msg )
 delegateCollections subMsg model =
     let
@@ -1415,6 +1518,19 @@ applyCollectionsOut out ( model, cmd ) =
 
         Collections.RefreshLoaded arrival ->
             collectionRefreshLoaded arrival model |> withCmd cmd
+
+        Collections.BrowseEnded ->
+            ( { model
+                | sequence = Sequence.empty
+                , selection = Selection.empty
+                , mode = Grid
+                , pendingRoute = Nothing
+                , uploadOrigin = Nothing
+                , viewport = setScroll 0 model.viewport
+              }
+            , Cmd.none
+            )
+                |> withCmd cmd
 
         Collections.AccessRevoked ->
             revokeAccess model |> withCmd cmd
@@ -2259,6 +2375,7 @@ prepareActiveDetail model =
         prepared =
             { model
                 | tags = Tags.activeChanged model.tags
+                , tagSuggestions = TagSuggestions.clear model.tagSuggestions
                 , reactions = Reactions.activeChanged (activeDetail model) model.reactions
             }
     in
@@ -2382,6 +2499,8 @@ lockNow model hint =
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
             , collections = Collections.locked model.collections
+            , trash = Trash.locked model.trash
+            , tagSuggestions = TagSuggestions.init
             , hint = Just hint
         }
 
@@ -2402,6 +2521,8 @@ revokeAccess model =
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
             , collections = Collections.locked model.collections
+            , trash = Trash.locked model.trash
+            , tagSuggestions = TagSuggestions.init
             , hint = Just "The browser was locked (401). Unlock to continue writing."
         }
 
@@ -2420,8 +2541,13 @@ reconcilePublic model =
 
         ( refreshed, postCmd ) =
             refreshPublicPosts postIds { model | details = Dict.empty }
+
+        ( collections, summariesCmd ) =
+            Collections.requestSummaries (collectionsContext refreshed) refreshed.collections
     in
-    ( refreshed, Cmd.batch [ postCmd, Api.Collection.list model.apiBase (CollectionsMsg << Collections.ListCompleted) ] )
+    ( { refreshed | collections = collections }
+    , Cmd.batch [ postCmd, Cmd.map CollectionsMsg summariesCmd ]
+    )
 
 
 refreshPublicPosts : List String -> Model -> ( Model, Cmd Msg )
@@ -2923,6 +3049,7 @@ shell model =
 
                   else
                     text ""
+                , libraryTools model
                 , stage model
                 ]
             , inspectorView model
@@ -3125,6 +3252,94 @@ isSurvey mode =
             False
 
 
+navigatorManage : Model -> Maybe (Feature.Navigator.ManageConfig Msg)
+navigatorManage model =
+    Collections.manageView model.collections
+        |> Maybe.map
+            (\manage ->
+                { collectionId = manage.collectionId
+                , name = manage.name
+                , rows =
+                    List.map
+                        (\row ->
+                            { id = row.id
+                            , canUp = row.canUp
+                            , canDown = row.canDown
+                            , canFirst = row.canFirst
+                            , canLast = row.canLast
+                            }
+                        )
+                        manage.rows
+                , page = manage.page
+                , pageCount = manage.pageCount
+                , hasPrev = manage.hasPrev
+                , hasNext = manage.hasNext
+                , loading = manage.loading
+                , busy = manage.busy
+                , onMove = \postId delta -> CollectionsMsg (Collections.MoveRequested postId delta)
+                , onMoveFirst = CollectionsMsg << Collections.MoveFirstRequested
+                , onMoveLast = CollectionsMsg << Collections.MoveLastRequested
+                , onRemove = CollectionsMsg << Collections.RemoveRequested
+                , onPrev = CollectionsMsg Collections.ManageBackRequested
+                , onNext = CollectionsMsg Collections.ManageNextRequested
+                , onClose = CollectionsMsg Collections.ManageCloseRequested
+                }
+            )
+
+
+libraryTools : Model -> Html Msg
+libraryTools model =
+    let
+        selectedIds =
+            Selection.targets model.sequence model.selection
+
+        selectionExport =
+            Export.selectionUrl model.apiBase selectedIds model.exportMetadata
+
+        activeCollection =
+            Collections.activeId model.collections |> Maybe.andThen (\id -> Collections.items model.collections |> List.filter (\c -> c.id == id) |> List.head)
+
+        collectionExport =
+            activeCollection |> Maybe.andThen (\c -> Export.collectionUrl model.apiBase c.id (Just c.version) model.exportMetadata)
+    in
+    div [ class "panel-section library-tools" ]
+        ([ div [ class "library-tools-row" ]
+            [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Trash" ]
+            , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested selectedIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty selectedIds) ] [ text "Move selected to Trash" ]
+            , Html.label [] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text " Include metadata" ]
+            , case selectionExport of
+                Just url ->
+                    Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text "Export selection (ZIP)" ]
+
+                Nothing ->
+                    button [ class "button button-quiet", type_ "button", disabled True, title "Select 1–1000 posts to export" ] [ text "Export selection (ZIP)" ]
+            , case collectionExport of
+                Just url ->
+                    Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text ("Export " ++ (activeCollection |> Maybe.map .name |> Maybe.withDefault "collection") ++ " (ZIP)") ]
+
+                Nothing ->
+                    button [ class "button button-quiet", type_ "button", disabled True, title "Select a collection with a known version to export" ] [ text "Export collection (ZIP)" ]
+            ]
+         , p [ class "panel-note" ] [ text "Export up to 1,000 posts or 250 MiB of originals as ZIP." ]
+         ]
+            ++ (if Trash.isOpen model.trash || Trash.pendingTrashCount model.trash /= Nothing then
+                    [ Html.map TrashMsg
+                        (Trash.view model.trash
+                            { onClose = Trash.CloseRequested
+                            , onRestore = Trash.RestoreRequested
+                            , onLoadMore = Trash.LoadMoreRequested
+                            , onConfirmTrash = Trash.TrashConfirmRequested
+                            , onCancelTrash = Trash.TrashCancelled
+                            }
+                        )
+                    ]
+
+                else
+                    []
+               )
+        )
+
+
 navigatorView : Model -> Html Msg
 navigatorView model =
     if navigatorVisible model then
@@ -3145,7 +3360,21 @@ navigatorView model =
             , onCreateCollection = CollectionsMsg << Collections.CreateRequested
             , onOpenCollection = OpenCollection
             , onAllPosts = OpenAllPosts
-            , onMoveCollectionPost = \postId delta -> CollectionsMsg (Collections.MoveRequested postId delta)
+            , summariesUnavailable = Collections.summariesUnavailable model.collections
+            , onRetrySummaries = CollectionsMsg Collections.SummariesRetryRequested
+            , manage = navigatorManage model
+            , onManageCollection = CollectionsMsg << Collections.ManageRequested
+            , renamingId = Collections.renamingId model.collections
+            , renameDraft = Collections.renameDraft model.collections
+            , onRenameDraft = CollectionsMsg << Collections.RenameDraftChanged
+            , onStartRename = CollectionsMsg << Collections.RenameRequested
+            , onSubmitRename = CollectionsMsg Collections.RenameSubmitted
+            , onCancelRename = CollectionsMsg Collections.RenameCancelled
+            , deleteConfirmId = Collections.deleteConfirmId model.collections
+            , onRequestDelete = CollectionsMsg << Collections.DeleteRequested
+            , onConfirmDelete = CollectionsMsg Collections.DeleteConfirmed
+            , onCancelDelete = CollectionsMsg Collections.DeleteCancelled
+            , manageBusy = Collections.manageBusy model.collections
             , onRemoveCollectionPost = CollectionsMsg << Collections.RemoveRequested
             , removingPosts = Collections.removals model.collections
             , onRun = RunQuery
@@ -3199,6 +3428,8 @@ inspectorView model =
             , onTagAdd = TagsMsg << Tags.AddChanged
             , onTagRemove = TagsMsg << Tags.RemoveChanged
             , onSaveTags = TagsMsg Tags.SaveRequested
+            , tagSuggestions = TagSuggestions.suggestions model.tagSuggestions
+            , onTagSuggestion = TagSuggestionChosen
             , scoreDraft = Reactions.draft model.reactions
             , reactionSaving = Reactions.saving model.reactions
             , reactionStatus = Reactions.status model.reactions

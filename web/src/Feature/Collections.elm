@@ -1,14 +1,18 @@
 module Feature.Collections exposing
     ( Context
+    , ManageRow
+    , ManageView
     , Model
     , Msg(..)
     , OutMsg(..)
     , Status(..)
+    , SummariesState(..)
     , abandonBrowse
     , activeId
     , activeName
     , browse
     , context
+    , deleteConfirmId
     , draft
     , errorToString
     , hasMore
@@ -16,17 +20,32 @@ module Feature.Collections exposing
     , isBusy
     , items
     , locked
+    , manageBusy
+    , manageView
     , removals
+    , renameDraft
+    , renamingId
     , requestId
     , requestMore
+    , requestSummaries
     , state
     , status
+    , summariesState
+    , summariesUnavailable
     , update
     )
 
-{-| Collection workflows: the collection list and selection, drafts and
-notices, pending removals, versioned pagination, and the bounded
-prefix-refresh lifecycle.
+{-| Collection workflows: the summary list and selection, drafts and
+notices, pending removals, versioned pagination, the bounded
+prefix-refresh lifecycle, bounded ordering management, and
+version-checked rename/delete.
+
+Navigation metadata comes only from collection summaries (counts and
+versions), never from whole member lists. Ordering management pages
+through a bounded window of visible members fetched with the same paged
+posts endpoint the grid uses; moves submit a single post plus a real
+visible neighbor (or the end) and the observed version, so hidden
+members stay server-owned.
 
 The feature owns its own request generation, result cursor, loading
 status, and browsed collection. Late search responses can never replace
@@ -43,7 +62,7 @@ with the page; per-call page facts arrive through `Context`.
 
 import Api.Collection
 import Api.Error as ApiError
-import Domain.Collection exposing (Collection, CollectionPostsPage)
+import Domain.Collection exposing (CollectionAck, CollectionPostsPage, CollectionSummary, ManageResult, MoveResult)
 import Domain.CollectionLogic as CollectionLogic
 import Domain.Post exposing (PostSummary)
 import Domain.Sequence as Sequence exposing (Sequence)
@@ -57,6 +76,16 @@ type Status
     | LoadingMore
     | Ready
     | Failed String
+
+
+{-| Whether the summary capability answered. Older servers without it
+land in `SummariesUnavailable`: the UI offers a retry and never falls
+back to whole-member downloads.
+-}
+type SummariesState
+    = SummariesLoading
+    | SummariesReady
+    | SummariesUnavailable String
 
 
 {-| A prefix refresh in progress. The previously loaded `target` members
@@ -74,8 +103,32 @@ type alias Refresh =
     }
 
 
+{-| A bounded window of visible members for ordering management. Pages
+of at most `collectionPageSize` rows are fetched on demand up to
+`maxManagePages`; `page` pages through the fetched window for display.
+`version` stays `Nothing` until a page snapshot reports it, so a move
+can never invent a version. `pendingMove` resumes one down-move that
+needed the next page's neighbor.
+-}
+type alias ManageState =
+    { collectionId : String
+    , ids : List String
+    , page : Int
+    , nextCursor : Maybe String
+    , version : Maybe Int
+    , loading : Bool
+    , pagesFetched : Int
+    , chainTarget : Int
+    , accumulated : List String
+    , pendingMove : Maybe ( String, Int )
+    , pendingPage : Maybe Int
+    }
+
+
 type alias Model =
-    { items : List Collection
+    { items : List CollectionSummary
+    , summariesState : SummariesState
+    , summariesRequestId : Int
     , activeId : Maybe String
     , browse : Maybe String
     , draft : String
@@ -85,6 +138,13 @@ type alias Model =
     , cursor : Maybe String
     , requestId : Int
     , state : Status
+    , manage : Maybe ManageState
+    , manageRequestId : Int
+    , moveInFlight : Maybe String
+    , renameFor : Maybe String
+    , renameDraft : String
+    , deleteConfirmFor : Maybe String
+    , manageActionInFlight : Bool
     }
 
 
@@ -114,40 +174,61 @@ context apiBase credential writesEnabled accessGeneration selectedIds loadedCoun
 
 
 type Msg
-    = ListCompleted (Result Http.Error (List Collection))
+    = SummariesCompleted Int (Result Http.Error (List CollectionSummary))
+    | SummariesRetryRequested
     | DraftChanged String
     | CreateRequested String
-    | Created Int (Result Http.Error Collection)
+    | Created Int (Result Http.Error CollectionAck)
     | Selected String
     | OpenRequested String
     | PostsCompleted Int String (Result Http.Error CollectionPostsPage)
     | AppendCompleted Int String (Result Http.Error CollectionPostsPage)
     | RefreshCompleted Int String (Result Http.Error CollectionPostsPage)
     | AddRequested
-    | Added Int String (Result Http.Error Collection)
+    | Added Int String (Result Http.Error CollectionAck)
+    | ManageRequested String
+    | ManageCompleted Int String (Result Http.Error CollectionPostsPage)
+    | ManageNextRequested
+    | ManageBackRequested
+    | ManageCloseRequested
     | MoveRequested String Int
-    | Reordered Int String (Result Http.Error Collection)
+    | MoveFirstRequested String
+    | MoveLastRequested String
+    | MoveCompleted Int String String (Result Http.Error MoveResult)
     | RemoveRequested String
     | RemoveCompleted Int String String (Result Http.Error ())
+    | RenameRequested String
+    | RenameDraftChanged String
+    | RenameSubmitted
+    | RenameCancelled
+    | Renamed Int String (Result Http.Error ManageResult)
+    | DeleteRequested String
+    | DeleteCancelled
+    | DeleteConfirmed
+    | Deleted Int String (Result Http.Error ManageResult)
     | RetryRequested
 
 
 {-| Page arrivals carry posts for the sequence merge. `BrowseLoaded`
 replaces the result set, `AppendLoaded` extends it in place, and
 `RefreshLoaded` swaps in the assembled prefix with the remaining
-cursor. `AccessRevoked` asks the page to lock after a 401 on a
-credentialed mutation.
+cursor. `BrowseEnded` means the browsed collection was deleted and the
+page must clear its grid. `AccessRevoked` asks the page to lock after a
+401 on a credentialed mutation.
 -}
 type OutMsg
     = BrowseLoaded { posts : List PostSummary, nextCursor : Maybe String }
     | AppendLoaded { posts : List PostSummary, nextCursor : Maybe String }
     | RefreshLoaded { sequence : Sequence, nextCursor : Maybe String }
+    | BrowseEnded
     | AccessRevoked
 
 
 init : Model
 init =
     { items = []
+    , summariesState = SummariesLoading
+    , summariesRequestId = 0
     , activeId = Nothing
     , browse = Nothing
     , draft = ""
@@ -157,10 +238,17 @@ init =
     , cursor = Nothing
     , requestId = 0
     , state = Idle
+    , manage = Nothing
+    , manageRequestId = 0
+    , moveInFlight = Nothing
+    , renameFor = Nothing
+    , renameDraft = ""
+    , deleteConfirmFor = Nothing
+    , manageActionInFlight = False
     }
 
 
-items : Model -> List Collection
+items : Model -> List CollectionSummary
 items model =
     model.items
 
@@ -207,6 +295,122 @@ requestId model =
     model.requestId
 
 
+summariesState : Model -> SummariesState
+summariesState model =
+    model.summariesState
+
+
+summariesUnavailable : Model -> Maybe String
+summariesUnavailable model =
+    case model.summariesState of
+        SummariesUnavailable message ->
+            Just message
+
+        _ ->
+            Nothing
+
+
+renamingId : Model -> Maybe String
+renamingId model =
+    model.renameFor
+
+
+renameDraft : Model -> String
+renameDraft model =
+    model.renameDraft
+
+
+deleteConfirmId : Model -> Maybe String
+deleteConfirmId model =
+    model.deleteConfirmFor
+
+
+manageBusy : Model -> Bool
+manageBusy model =
+    model.manageActionInFlight || model.moveInFlight /= Nothing
+
+
+{-| One visible ordering row with its edge capabilities inside the
+fetched window. `canDown` also holds at the window end while more
+members can still be fetched.
+-}
+type alias ManageRow =
+    { id : String
+    , canUp : Bool
+    , canDown : Bool
+    , canFirst : Bool
+    , canLast : Bool
+    }
+
+
+type alias ManageView =
+    { collectionId : String
+    , name : String
+    , rows : List ManageRow
+    , page : Int
+    , pageCount : Int
+    , hasPrev : Bool
+    , hasNext : Bool
+    , loading : Bool
+    , busy : Bool
+    }
+
+
+manageView : Model -> Maybe ManageView
+manageView model =
+    case ( model.manage, model.activeId ) of
+        ( Just manage, Just active ) ->
+            if manage.collectionId /= active then
+                Nothing
+
+            else
+                let
+                    summary =
+                        List.filter (\c -> c.id == manage.collectionId) model.items |> List.head
+
+                    page =
+                        CollectionLogic.clampManagePage (List.length manage.ids) manage.page
+
+                    start =
+                        page * CollectionLogic.collectionPageSize
+
+                    moreRows =
+                        manage.nextCursor /= Nothing
+
+                    rows =
+                        manage.ids
+                            |> List.drop start
+                            |> List.take CollectionLogic.collectionPageSize
+                            |> List.indexedMap
+                                (\offset postId ->
+                                    let
+                                        idx =
+                                            start + offset
+                                    in
+                                    { id = postId
+                                    , canUp = idx > 0
+                                    , canDown = idx + 1 < List.length manage.ids || moreRows
+                                    , canFirst = idx > 0
+                                    , canLast = idx + 1 < List.length manage.ids || moreRows
+                                    }
+                                )
+                in
+                Just
+                    { collectionId = manage.collectionId
+                    , name = summary |> Maybe.map .name |> Maybe.withDefault ""
+                    , rows = rows
+                    , page = page
+                    , pageCount = CollectionLogic.managePageCount (List.length manage.ids)
+                    , hasPrev = page > 0
+                    , hasNext = page + 1 < CollectionLogic.managePageCount (List.length manage.ids) || moreRows
+                    , loading = manage.loading
+                    , busy = manageBusy model || manage.loading
+                    }
+
+        _ ->
+            Nothing
+
+
 {-| A browsed page is ready and another page is available. Scroll
 geometry stays with the caller; combine this with the grid mode there.
 -}
@@ -244,13 +448,22 @@ abandonBrowse model =
     { model | browse = Nothing, refresh = Nothing, cursor = Nothing, state = Idle }
 
 
-{-| Credentials went away: notices and in-flight removal markers clear.
-Browsing, refresh work, and the list itself survive; their completions
-reconcile through the generation check.
+{-| Credentials went away: notices, in-flight markers, and unconfirmed
+rename/delete intent clear. Browsing, refresh work, and the list itself
+survive; their completions reconcile through the generation check.
 -}
 locked : Model -> Model
 locked model =
-    { model | status = Nothing, removals = Set.empty }
+    { model
+        | status = Nothing
+        , removals = Set.empty
+        , moveInFlight = Nothing
+        , manageActionInFlight = False
+        , renameFor = Nothing
+        , renameDraft = ""
+        , deleteConfirmFor = Nothing
+        , manage = Maybe.map (\manage -> { manage | pendingMove = Nothing }) model.manage
+    }
 
 
 {-| Ask for the next page of the browsed collection. Without a browsed
@@ -269,32 +482,74 @@ requestMore ctx model =
             ( model, Cmd.none )
 
 
+{-| Re-read the summary list. Each request bumps its generation so a
+late answer can never overwrite a fresher one.
+-}
+requestSummaries : Context -> Model -> ( Model, Cmd Msg )
+requestSummaries ctx model =
+    fetchSummaries ctx model
+
+
+fetchSummaries : Context -> Model -> ( Model, Cmd Msg )
+fetchSummaries ctx model =
+    let
+        id =
+            model.summariesRequestId + 1
+    in
+    ( { model | summariesRequestId = id }
+    , Api.Collection.summaries ctx.apiBase (SummariesCompleted id)
+    )
+
+
+summaryOf : String -> Model -> Maybe CollectionSummary
+summaryOf collectionId model =
+    List.filter (\c -> c.id == collectionId) model.items |> List.head
+
+
 update : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
 update ctx msg model =
     case msg of
-        ListCompleted result ->
-            case result of
-                Ok collections ->
-                    ( { model
-                        | items = collections
-                        , activeId =
-                            case model.activeId of
-                                Just id ->
-                                    if List.any (\collection -> collection.id == id) collections then
-                                        Just id
+        SummariesCompleted id result ->
+            if id /= model.summariesRequestId then
+                ( model, Cmd.none, [] )
 
-                                    else
-                                        List.head collections |> Maybe.map .id
+            else
+                case result of
+                    Ok summaries ->
+                        ( { model
+                            | items = summaries
+                            , summariesState = SummariesReady
+                            , activeId =
+                                case model.activeId of
+                                    Just active ->
+                                        if List.any (\collection -> collection.id == active) summaries then
+                                            Just active
 
-                                Nothing ->
-                                    List.head collections |> Maybe.map .id
-                      }
-                    , Cmd.none
-                    , []
-                    )
+                                        else
+                                            List.head summaries |> Maybe.map .id
 
-                Err error ->
-                    ( { model | status = Just (errorToString error) }, Cmd.none, [] )
+                                    Nothing ->
+                                        List.head summaries |> Maybe.map .id
+                          }
+                        , Cmd.none
+                        , []
+                        )
+
+                    Err error ->
+                        ( { model
+                            | summariesState = SummariesUnavailable (errorToString error)
+                            , status = Just "Collections are unavailable."
+                          }
+                        , Cmd.none
+                        , []
+                        )
+
+        SummariesRetryRequested ->
+            let
+                ( next, cmd ) =
+                    fetchSummaries ctx { model | summariesState = SummariesLoading, status = Nothing }
+            in
+            ( next, cmd, [] )
 
         DraftChanged value ->
             ( { model | draft = value, status = Nothing }, Cmd.none, [] )
@@ -314,14 +569,30 @@ update ctx msg model =
 
         Created generation result ->
             if generation /= ctx.accessGeneration then
-                ( model, Api.Collection.list ctx.apiBase ListCompleted, [] )
+                let
+                    ( next, cmd ) =
+                        fetchSummaries ctx model
+                in
+                ( next, cmd, [] )
 
             else
                 case result of
-                    Ok collection ->
+                    Ok ack ->
+                        let
+                            summary =
+                                { id = ack.id, name = ack.name, version = ack.version, memberCount = 0, visiblePostCount = 0 }
+
+                            nextItems =
+                                if List.any (\c -> c.id == ack.id) model.items then
+                                    List.map (\c -> if c.id == ack.id then summary else c) model.items
+
+                                else
+                                    model.items ++ [ summary ]
+                        in
                         ( { model
-                            | items = model.items ++ [ collection ]
-                            , activeId = Just collection.id
+                            | items = nextItems
+                            , summariesState = SummariesReady
+                            , activeId = Just ack.id
                             , draft = ""
                             , status = Just "Collection created."
                           }
@@ -336,7 +607,16 @@ update ctx msg model =
                         ( { model | status = Just (errorToString error) }, Cmd.none, [] )
 
         Selected id ->
-            ( { model | activeId = Just id, status = Nothing }, Cmd.none, [] )
+            ( { model
+                | activeId = Just id
+                , status = Nothing
+                , renameFor = Nothing
+                , renameDraft = ""
+                , deleteConfirmFor = Nothing
+              }
+            , Cmd.none
+            , []
+            )
 
         OpenRequested collectionId ->
             let
@@ -350,6 +630,9 @@ update ctx msg model =
                 , browse = Just collectionId
                 , activeId = Just collectionId
                 , refresh = Nothing
+                , renameFor = Nothing
+                , renameDraft = ""
+                , deleteConfirmFor = Nothing
               }
             , Api.Collection.posts ctx.apiBase collectionId Nothing CollectionLogic.collectionPageSize (PostsCompleted id collectionId)
             , []
@@ -434,78 +717,107 @@ update ctx msg model =
 
             else
                 case result of
-                    Ok updated ->
-                        let
-                            nextItems =
-                                List.map (\collection -> if collection.id == updated.id then updated else collection) model.items
-
-                            base =
-                                { model | items = nextItems, status = Just "Posts added to collection." }
-                        in
-                        if model.browse == Just collectionId then
-                            startPrefixRefresh ctx collectionId
-                                { base | status = Just "Posts added to collection. Refreshing…" }
+                    Ok ack ->
+                        if ack.id /= collectionId then
+                            let
+                                ( next, cmd ) =
+                                    fetchSummaries ctx { model | status = Just "The add response was invalid." }
+                            in
+                            ( next, cmd, [] )
 
                         else
-                            ( base, Cmd.none, [] )
+                            let
+                                base =
+                                    { model | status = Just "Posts added to collection." }
+
+                                ( withSummaries, summariesCmd ) =
+                                    fetchSummaries ctx base
+
+                                ( managed, manageCmd ) =
+                                    refreshManageIf ctx collectionId withSummaries
+                            in
+                            if model.browse == Just collectionId then
+                                let
+                                    ( refreshed, refreshCmd, outs ) =
+                                        startPrefixRefresh ctx collectionId
+                                            { managed | status = Just "Posts added to collection. Refreshing…" }
+                                in
+                                ( refreshed, Cmd.batch [ summariesCmd, manageCmd, refreshCmd ], outs )
+
+                            else
+                                ( managed, Cmd.batch [ summariesCmd, manageCmd ], [] )
 
                     Err (Http.BadStatus 401) ->
                         ( model, Cmd.none, [ AccessRevoked ] )
 
                     Err error ->
                         ( { model | status = Just (errorToString error) }, Cmd.none, [] )
+
+        ManageRequested collectionId ->
+            case summaryOf collectionId model of
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+                Just _ ->
+                    openManage ctx collectionId { model | activeId = Just collectionId }
+
+        ManageCompleted id collectionId result ->
+            managePageArrived ctx id collectionId result model
+
+        ManageNextRequested ->
+            case model.manage of
+                Just manage ->
+                    let
+                        pageCount =
+                            CollectionLogic.managePageCount (List.length manage.ids)
+                    in
+                    if manage.page + 1 < pageCount then
+                        ( { model | manage = Just { manage | page = manage.page + 1 } }, Cmd.none, [] )
+
+                    else if manage.nextCursor /= Nothing && not manage.loading then
+                        fetchMoreManage ctx { manage | pendingPage = Just (manage.page + 1) } model
+
+                    else if manage.nextCursor == Nothing then
+                        ( { model | status = Just "Already at the last ordering page." }, Cmd.none, [] )
+
+                    else
+                        ( { model | status = Just manageLimitMessage }, Cmd.none, [] )
+
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+        ManageBackRequested ->
+            case model.manage of
+                Just manage ->
+                    ( { model | manage = Just { manage | page = max 0 (manage.page - 1) } }, Cmd.none, [] )
+
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+        ManageCloseRequested ->
+            ( { model | manage = Nothing, moveInFlight = Nothing }, Cmd.none, [] )
 
         MoveRequested postId delta ->
-            if not ctx.writesEnabled then
-                ( { model | status = Just "Unlock to reorder collections." }, Cmd.none, [] )
+            requestMove ctx postId delta model
 
-            else
-                case model.activeId of
-                    Nothing ->
-                        ( { model | status = Just "Select a collection first." }, Cmd.none, [] )
+        MoveFirstRequested postId ->
+            case model.manage of
+                Just manage ->
+                    requestMovePlan ctx postId (CollectionLogic.planFirst manage.ids postId) model
 
-                    Just collectionId ->
-                        case List.filter (\c -> c.id == collectionId) model.items |> List.head of
-                            Nothing ->
-                                ( { model | status = Just "Select a collection first." }, Cmd.none, [] )
+                Nothing ->
+                    requestMovePlan ctx postId Nothing model
 
-                            Just collection ->
-                                case moveInList postId delta collection.postIds of
-                                    Nothing ->
-                                        ( model, Cmd.none, [] )
+        MoveLastRequested postId ->
+            case model.manage of
+                Just manage ->
+                    requestMovePlan ctx postId (CollectionLogic.planLast manage.ids (manage.nextCursor /= Nothing) postId) model
 
-                                    Just reordered ->
-                                        ( { model | status = Just "Reordering…" }
-                                        , Api.Collection.reorder ctx.apiBase ctx.credential collectionId reordered (Reordered ctx.accessGeneration collectionId)
-                                        , []
-                                        )
+                Nothing ->
+                    requestMovePlan ctx postId Nothing model
 
-        Reordered generation collectionId result ->
-            if generation /= ctx.accessGeneration then
-                reconcileStaleMutation ctx collectionId model
-
-            else
-                case result of
-                    Ok updated ->
-                        let
-                            nextItems =
-                                List.map (\c -> if c.id == updated.id then updated else c) model.items
-
-                            base =
-                                { model | items = nextItems, status = Just "Order saved." }
-                        in
-                        if model.browse == Just collectionId then
-                            startPrefixRefresh ctx collectionId
-                                { base | status = Just "Order saved. Refreshing…" }
-
-                        else
-                            ( base, Cmd.none, [] )
-
-                    Err (Http.BadStatus 401) ->
-                        ( model, Cmd.none, [ AccessRevoked ] )
-
-                    Err error ->
-                        ( { model | status = Just (errorToString error) }, Cmd.none, [] )
+        MoveCompleted generation collectionId postId result ->
+            moveCompleted ctx generation collectionId postId result model
 
         RemoveRequested postId ->
             if not ctx.writesEnabled then
@@ -520,20 +832,14 @@ update ctx msg model =
                         if Set.member postId model.removals then
                             ( model, Cmd.none, [] )
 
+                        else if not (manageAllowsRemoval postId collectionId model) then
+                            ( model, Cmd.none, [] )
+
                         else
-                            case List.filter (\c -> c.id == collectionId) model.items |> List.head of
-                                Nothing ->
-                                    ( { model | status = Just "Select a collection first." }, Cmd.none, [] )
-
-                                Just collection ->
-                                    if not (List.member postId collection.postIds) then
-                                        ( model, Cmd.none, [] )
-
-                                    else
-                                        ( { model | status = Just "Removing…", removals = Set.insert postId model.removals }
-                                        , Api.Collection.removePost ctx.apiBase ctx.credential collectionId postId (RemoveCompleted ctx.accessGeneration collectionId postId)
-                                        , []
-                                        )
+                            ( { model | status = Just "Removing…", removals = Set.insert postId model.removals }
+                            , Api.Collection.removePost ctx.apiBase ctx.credential collectionId postId (RemoveCompleted ctx.accessGeneration collectionId postId)
+                            , []
+                            )
 
         RemoveCompleted generation collectionId postId result ->
             if generation /= ctx.accessGeneration then
@@ -543,32 +849,248 @@ update ctx msg model =
                 case result of
                     Ok () ->
                         let
-                            nextItems =
-                                List.map
-                                    (\collection ->
-                                        if collection.id == collectionId then
-                                            { collection | postIds = List.filter ((/=) postId) collection.postIds }
-
-                                        else
-                                            collection
-                                    )
-                                    model.items
-
                             base =
-                                { model | items = nextItems, removals = Set.remove postId model.removals, status = Just "Removed from collection." }
+                                { model | removals = Set.remove postId model.removals, status = Just "Removed from collection." }
+
+                            ( withSummaries, summariesCmd ) =
+                                fetchSummaries ctx base
+
+                            ( managed, manageCmd ) =
+                                refreshManageIf ctx collectionId withSummaries
                         in
                         if model.browse == Just collectionId then
-                            startPrefixRefresh ctx collectionId
-                                { base | status = Just "Removed from collection. Refreshing…" }
+                            let
+                                ( refreshed, refreshCmd, outs ) =
+                                    startPrefixRefresh ctx collectionId
+                                        { managed | status = Just "Removed from collection. Refreshing…" }
+                            in
+                            ( refreshed, Cmd.batch [ summariesCmd, manageCmd, refreshCmd ], outs )
 
                         else
-                            ( base, Cmd.none, [] )
+                            ( managed, Cmd.batch [ summariesCmd, manageCmd ], [] )
 
                     Err (Http.BadStatus 401) ->
-                        ( model, Cmd.none, [ AccessRevoked ] )
+                        ( { model | removals = Set.remove postId model.removals }, Cmd.none, [ AccessRevoked ] )
 
                     Err error ->
                         ( { model | removals = Set.remove postId model.removals, status = Just (errorToString error) }, Cmd.none, [] )
+
+        RenameRequested collectionId ->
+            case summaryOf collectionId model of
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+                Just summary ->
+                    ( { model
+                        | renameFor = Just collectionId
+                        , renameDraft = summary.name
+                        , deleteConfirmFor = Nothing
+                        , status = Nothing
+                      }
+                    , Cmd.none
+                    , []
+                    )
+
+        RenameDraftChanged value ->
+            ( { model | renameDraft = value, status = Nothing }, Cmd.none, [] )
+
+        RenameCancelled ->
+            ( { model | renameFor = Nothing, renameDraft = "", status = Nothing }, Cmd.none, [] )
+
+        RenameSubmitted ->
+            case model.renameFor of
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+                Just collectionId ->
+                    if not ctx.writesEnabled then
+                        ( { model | status = Just "Unlock to rename collections." }, Cmd.none, [] )
+
+                    else if model.manageActionInFlight then
+                        ( model, Cmd.none, [] )
+
+                    else
+                        case summaryOf collectionId model of
+                            Nothing ->
+                                ( { model
+                                    | renameFor = Nothing
+                                    , renameDraft = ""
+                                    , status = Just "That collection is no longer available."
+                                  }
+                                , Cmd.none
+                                , []
+                                )
+
+                            Just summary ->
+                                let
+                                    trimmed =
+                                        String.trim model.renameDraft
+                                in
+                                if trimmed == "" then
+                                    ( { model | status = Just "Enter a name." }, Cmd.none, [] )
+
+                                else if trimmed == summary.name then
+                                    ( { model
+                                        | renameFor = Nothing
+                                        , renameDraft = ""
+                                        , status = Just "Name unchanged."
+                                      }
+                                    , Cmd.none
+                                    , []
+                                    )
+
+                                else
+                                    ( { model | status = Just "Renaming…", manageActionInFlight = True }
+                                    , Api.Collection.rename ctx.apiBase ctx.credential collectionId trimmed summary.version (Renamed ctx.accessGeneration collectionId)
+                                    , []
+                                    )
+
+        Renamed generation collectionId result ->
+            if generation /= ctx.accessGeneration then
+                let
+                    ( next, cmd, outs ) =
+                        reconcileStaleMutation ctx collectionId { model | manageActionInFlight = False }
+                in
+                ( next, cmd, outs )
+
+            else
+                case result of
+                    Ok manageResult ->
+                        if manageResult.id /= collectionId then
+                            let
+                                ( next, cmd ) =
+                                    fetchSummaries ctx
+                                        { model
+                                            | manageActionInFlight = False
+                                            , renameFor = Nothing
+                                            , renameDraft = ""
+                                            , status = Just "The rename response was invalid."
+                                        }
+                            in
+                            ( next, cmd, [] )
+
+                        else
+                            ( { model
+                                | items =
+                                    List.map
+                                        (\c ->
+                                            if c.id == collectionId then
+                                                { c | name = manageResult.name, version = manageResult.version }
+
+                                            else
+                                                c
+                                        )
+                                        model.items
+                                , manageActionInFlight = False
+                                , renameFor = Nothing
+                                , renameDraft = ""
+                                , status =
+                                    Just
+                                        (if manageResult.changed then
+                                            "Collection renamed."
+
+                                         else
+                                            "Name unchanged."
+                                        )
+                              }
+                            , Cmd.none
+                            , []
+                            )
+
+                    Err (Http.BadStatus 401) ->
+                        ( { model | manageActionInFlight = False }, Cmd.none, [ AccessRevoked ] )
+
+                    Err (Http.BadStatus 409) ->
+                        conflictRecovery ctx collectionId "The collection changed. Refreshing…"
+                            { model | manageActionInFlight = False }
+
+                    Err error ->
+                        ( { model | manageActionInFlight = False, status = Just (errorToString error) }, Cmd.none, [] )
+
+        DeleteRequested collectionId ->
+            case summaryOf collectionId model of
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+                Just _ ->
+                    ( { model
+                        | deleteConfirmFor = Just collectionId
+                        , renameFor = Nothing
+                        , renameDraft = ""
+                        , status = Nothing
+                      }
+                    , Cmd.none
+                    , []
+                    )
+
+        DeleteCancelled ->
+            ( { model | deleteConfirmFor = Nothing, status = Nothing }, Cmd.none, [] )
+
+        DeleteConfirmed ->
+            case model.deleteConfirmFor of
+                Nothing ->
+                    ( model, Cmd.none, [] )
+
+                Just collectionId ->
+                    if not ctx.writesEnabled then
+                        ( { model | status = Just "Unlock to delete collections." }, Cmd.none, [] )
+
+                    else if model.manageActionInFlight then
+                        ( model, Cmd.none, [] )
+
+                    else
+                        case summaryOf collectionId model of
+                            Nothing ->
+                                ( { model
+                                    | deleteConfirmFor = Nothing
+                                    , status = Just "That collection is no longer available."
+                                  }
+                                , Cmd.none
+                                , []
+                                )
+
+                            Just summary ->
+                                ( { model | status = Just "Deleting collection…", manageActionInFlight = True }
+                                , Api.Collection.deleteCollection ctx.apiBase ctx.credential collectionId summary.version (Deleted ctx.accessGeneration collectionId)
+                                , []
+                                )
+
+        Deleted generation collectionId result ->
+            if generation /= ctx.accessGeneration then
+                reconcileStaleDelete ctx collectionId result
+                    { model | manageActionInFlight = False, deleteConfirmFor = Nothing }
+
+            else
+                case result of
+                    Ok manageResult ->
+                        if manageResult.id /= collectionId then
+                            let
+                                ( next, cmd ) =
+                                    fetchSummaries ctx
+                                        { model
+                                            | manageActionInFlight = False
+                                            , deleteConfirmFor = Nothing
+                                            , status = Just "The delete response was invalid."
+                                        }
+                            in
+                            ( next, cmd, [] )
+
+                        else
+                            let
+                                ( base, outs ) =
+                                    applyDeletedCollection collectionId model
+                            in
+                            ( base, Cmd.none, outs )
+
+                    Err (Http.BadStatus 401) ->
+                        ( { model | manageActionInFlight = False }, Cmd.none, [ AccessRevoked ] )
+
+                    Err (Http.BadStatus 409) ->
+                        conflictRecovery ctx collectionId "The collection changed. Refreshing…"
+                            { model | manageActionInFlight = False }
+
+                    Err error ->
+                        ( { model | manageActionInFlight = False, status = Just (errorToString error) }, Cmd.none, [] )
 
         RetryRequested ->
             case model.browse of
@@ -579,6 +1101,398 @@ update ctx msg model =
 
                 Nothing ->
                     ( model, Cmd.none, [] )
+
+
+manageAllowsRemoval : String -> String -> Model -> Bool
+manageAllowsRemoval postId collectionId model =
+    case model.manage of
+        Just manage ->
+            if manage.collectionId == collectionId then
+                List.member postId manage.ids
+
+            else
+                True
+
+        Nothing ->
+            True
+
+
+openManage : Context -> String -> Model -> ( Model, Cmd Msg, List OutMsg )
+openManage ctx collectionId model =
+    let
+        id =
+            model.manageRequestId + 1
+
+        manage =
+            { collectionId = collectionId
+            , ids = []
+            , page = 0
+            , nextCursor = Nothing
+            , version = Nothing
+            , loading = True
+            , pagesFetched = 0
+            , chainTarget = CollectionLogic.collectionPageSize
+            , accumulated = []
+            , pendingMove = Nothing
+            , pendingPage = Nothing
+            }
+    in
+    ( { model | manage = Just manage, manageRequestId = id, status = Nothing }
+    , Api.Collection.posts ctx.apiBase collectionId Nothing CollectionLogic.collectionPageSize (ManageCompleted id collectionId)
+    , []
+    )
+
+
+manageLimitMessage : String
+manageLimitMessage =
+    "Ordering limit reached: only the first "
+        ++ String.fromInt CollectionLogic.maxManagePages
+        ++ " pages ("
+        ++ String.fromInt (CollectionLogic.maxManagePages * CollectionLogic.collectionPageSize)
+        ++ " rows) can be ordered here. Use single-post CLI moves beyond this window."
+
+
+fetchMoreManage : Context -> ManageState -> Model -> ( Model, Cmd Msg, List OutMsg )
+fetchMoreManage ctx manage model =
+    case manage.nextCursor of
+        Nothing ->
+            ( model, Cmd.none, [] )
+
+        Just cursor ->
+            if manage.pagesFetched >= CollectionLogic.maxManagePages then
+                ( { model | status = Just manageLimitMessage }, Cmd.none, [] )
+
+            else
+                let
+                    id =
+                        model.manageRequestId + 1
+
+                    next =
+                        { manage
+                            | loading = True
+                            , accumulated = manage.ids
+                            , chainTarget = List.length manage.ids + CollectionLogic.collectionPageSize
+                        }
+                in
+                ( { model | manage = Just next, manageRequestId = id }
+                , Api.Collection.posts ctx.apiBase manage.collectionId (Just cursor) CollectionLogic.collectionPageSize (ManageCompleted id manage.collectionId)
+                , []
+                )
+
+
+{-| Re-read a managed window after a mutation, bounded to the pages it
+already spanned. Returns the model unchanged when another (or no)
+collection is managed, so unrelated workspaces never churn.
+-}
+refreshManageIf : Context -> String -> Model -> ( Model, Cmd Msg )
+refreshManageIf ctx collectionId model =
+    case model.manage of
+        Just manage ->
+            if manage.collectionId /= collectionId then
+                ( model, Cmd.none )
+
+            else
+                let
+                    id =
+                        model.manageRequestId + 1
+
+                    next =
+                        { manage
+                            | loading = True
+                            , accumulated = []
+                            , pagesFetched = 0
+                            , chainTarget = max CollectionLogic.collectionPageSize (List.length manage.ids)
+                            , pendingMove = Nothing
+                            , pendingPage = Nothing
+                        }
+                in
+                ( { model | manage = Just next, manageRequestId = id }
+                , Api.Collection.posts ctx.apiBase collectionId Nothing CollectionLogic.collectionPageSize (ManageCompleted id collectionId)
+                )
+
+        Nothing ->
+            ( model, Cmd.none )
+
+
+managePageArrived : Context -> Int -> String -> Result Http.Error CollectionPostsPage -> Model -> ( Model, Cmd Msg, List OutMsg )
+managePageArrived ctx id collectionId result model =
+    if id /= model.manageRequestId then
+        ( model, Cmd.none, [] )
+
+    else
+        case model.manage of
+            Nothing ->
+                ( model, Cmd.none, [] )
+
+            Just manage ->
+                if manage.collectionId /= collectionId || not manage.loading then
+                    ( model, Cmd.none, [] )
+
+                else
+                    case result of
+                        Err error ->
+                            case classifyCollectionError error of
+                                CollectionLogic.CollectionChanged ->
+                                    ( { model
+                                        | manage = Just { manage | loading = False, pendingMove = Nothing }
+                                        , status = Just "The collection changed. Reopen ordering to retry."
+                                      }
+                                    , Cmd.none
+                                    , []
+                                    )
+
+                                _ ->
+                                    ( { model
+                                        | manage = Just { manage | loading = False, pendingMove = Nothing }
+                                        , status = Just (errorToString error)
+                                      }
+                                    , Cmd.none
+                                    , []
+                                    )
+
+                        Ok response ->
+                            let
+                                newIds =
+                                    manage.accumulated
+                                        ++ (List.map .id response.posts
+                                                |> List.filter (\postId -> not (List.member postId manage.accumulated))
+                                           )
+
+                                pagesFetched =
+                                    manage.pagesFetched + 1
+
+                                chained =
+                                    { manage
+                                        | accumulated = newIds
+                                        , pagesFetched = pagesFetched
+                                        , version = Just response.collectionVersion
+                                    }
+                            in
+                            if CollectionLogic.needsMoreRefreshPages (List.length newIds) manage.chainTarget response.nextCursor && pagesFetched < CollectionLogic.maxManagePages then
+                                let
+                                    nextId =
+                                        model.manageRequestId + 1
+                                in
+                                ( { model | manage = Just chained, manageRequestId = nextId }
+                                , Api.Collection.posts ctx.apiBase collectionId response.nextCursor CollectionLogic.collectionPageSize (ManageCompleted nextId collectionId)
+                                , []
+                                )
+
+                            else
+                                let
+                                    settled =
+                                        { chained
+                                            | ids = newIds
+                                            , nextCursor = response.nextCursor
+                                            , loading = False
+                                            , accumulated = []
+                                            , pendingPage = Nothing
+                                            , page =
+                                                CollectionLogic.clampManagePage (List.length newIds)
+                                                    (manage.pendingPage |> Maybe.withDefault manage.page)
+                                        }
+
+                                    base =
+                                        { model | manage = Just settled }
+                                in
+                                case manage.pendingMove of
+                                    Just ( postId, delta ) ->
+                                        requestMove ctx postId delta
+                                            { base | manage = Just { settled | pendingMove = Nothing } }
+
+                                    Nothing ->
+                                        ( base, Cmd.none, [] )
+
+
+requestMove : Context -> String -> Int -> Model -> ( Model, Cmd Msg, List OutMsg )
+requestMove ctx postId delta model =
+    case model.manage of
+        Just manage ->
+            requestMovePlan ctx postId
+                (CollectionLogic.planMove manage.ids (manage.nextCursor /= Nothing) postId delta)
+                model
+                |> resumePendingMove ctx postId delta manage
+
+        Nothing ->
+            requestMovePlan ctx postId Nothing model
+
+
+{-| When a one-step move has no plan only because the neighbor sits on
+an unfetched page, fetch exactly one more bounded page and resume the
+move once; at the fetch bound the move stays a no-op.
+-}
+resumePendingMove : Context -> String -> Int -> ManageState -> ( Model, Cmd Msg, List OutMsg ) -> ( Model, Cmd Msg, List OutMsg )
+resumePendingMove ctx postId delta manage ( settled, cmd, outs ) =
+    case ( settled.manage, settled.moveInFlight ) of
+        ( Just current, Nothing ) ->
+            if delta == 1
+                && current.collectionId == manage.collectionId
+                && current.nextCursor /= Nothing
+                && not current.loading
+                && List.member postId current.ids
+                && current.pagesFetched < CollectionLogic.maxManagePages
+            then
+                let
+                    ( fetching, fetchCmd, fetchOuts ) =
+                        fetchMoreManage ctx { current | pendingMove = Just ( postId, delta ) } settled
+                in
+                ( { fetching | status = Just "Loading more ordering rows…" }, fetchCmd, fetchOuts )
+
+            else
+                ( settled, cmd, outs )
+
+        _ ->
+            ( settled, cmd, outs )
+
+
+requestMovePlan : Context -> String -> Maybe (Maybe String) -> Model -> ( Model, Cmd Msg, List OutMsg )
+requestMovePlan ctx postId plan model =
+    if not ctx.writesEnabled then
+        ( { model | status = Just "Unlock to reorder collections." }, Cmd.none, [] )
+
+    else if model.moveInFlight /= Nothing then
+        ( model, Cmd.none, [] )
+
+    else
+        case model.activeId of
+            Nothing ->
+                ( { model | status = Just "Select a collection first." }, Cmd.none, [] )
+
+            Just collectionId ->
+                case model.manage of
+                    Nothing ->
+                        ( { model | status = Just "Open ordering to move posts." }, Cmd.none, [] )
+
+                    Just manage ->
+                        if manage.collectionId /= collectionId then
+                            ( { model | status = Just "Open ordering to move posts." }, Cmd.none, [] )
+
+                        else if manage.loading then
+                            ( model, Cmd.none, [] )
+
+                        else
+                            case manage.version of
+                                Nothing ->
+                                    ( { model | status = Just "Ordering is still loading…" }, Cmd.none, [] )
+
+                                Just version ->
+                                    case plan of
+                                        Nothing ->
+                                            ( { model
+                                                | status =
+                                                    Just
+                                                        (if manage.nextCursor /= Nothing && manage.pagesFetched >= CollectionLogic.maxManagePages then
+                                                            manageLimitMessage
+
+                                                         else
+                                                            "Already at that edge — no move needed."
+                                                        )
+                                              }
+                                            , Cmd.none
+                                            , []
+                                            )
+
+                                        Just beforePostId ->
+                                            ( { model | status = Just "Reordering…", moveInFlight = Just postId }
+                                            , Api.Collection.move ctx.apiBase ctx.credential collectionId postId beforePostId version (MoveCompleted ctx.accessGeneration collectionId postId)
+                                            , []
+                                            )
+
+
+moveCompleted : Context -> Int -> String -> String -> Result Http.Error MoveResult -> Model -> ( Model, Cmd Msg, List OutMsg )
+moveCompleted ctx generation collectionId postId result model =
+    if generation /= ctx.accessGeneration then
+        reconcileStaleMutation ctx collectionId { model | moveInFlight = Nothing }
+
+    else
+        case result of
+            Ok moveResult ->
+                if moveResult.collectionId /= collectionId || moveResult.id /= collectionId then
+                    let
+                        ( withSummaries, summariesCmd ) =
+                            fetchSummaries ctx { model | moveInFlight = Nothing, status = Just "The move response was invalid." }
+
+                        ( managed, manageCmd ) =
+                            refreshManageIf ctx collectionId withSummaries
+                    in
+                    ( managed, Cmd.batch [ summariesCmd, manageCmd ], [] )
+
+                else
+                    let
+                        base =
+                            { model
+                                | moveInFlight = Nothing
+                                , items =
+                                    List.map
+                                        (\c ->
+                                            if c.id == collectionId then
+                                                { c | version = moveResult.version }
+
+                                            else
+                                                c
+                                        )
+                                        model.items
+                                , status = Just "Order saved."
+                                , manage =
+                                    Maybe.map
+                                        (\manage ->
+                                            if manage.collectionId == collectionId then
+                                                { manage | version = Just moveResult.version }
+
+                                            else
+                                                manage
+                                        )
+                                        model.manage
+                            }
+
+                        ( managed, manageCmd ) =
+                            refreshManageIf ctx collectionId base
+                    in
+                    if model.browse == Just collectionId then
+                        let
+                            ( refreshed, refreshCmd, outs ) =
+                                startPrefixRefresh ctx collectionId
+                                    { managed | status = Just "Order saved. Refreshing…" }
+                        in
+                        ( refreshed, Cmd.batch [ manageCmd, refreshCmd ], outs )
+
+                    else
+                        ( managed, manageCmd, [] )
+
+            Err (Http.BadStatus 401) ->
+                ( { model | moveInFlight = Nothing }, Cmd.none, [ AccessRevoked ] )
+
+            Err (Http.BadStatus 409) ->
+                conflictRecovery ctx collectionId "The collection changed. Refreshing…"
+                    { model | moveInFlight = Nothing }
+
+            Err error ->
+                ( { model | moveInFlight = Nothing, status = Just (errorToString error) }, Cmd.none, [] )
+
+
+{-| A version conflict (or another refresh-worthy failure) reconciles
+only the affected collection: summaries re-read, the managed window
+rebuilds when open, and the workspace prefix refreshes only while that
+collection is still browsed.
+-}
+conflictRecovery : Context -> String -> String -> Model -> ( Model, Cmd Msg, List OutMsg )
+conflictRecovery ctx collectionId notice model =
+    let
+        ( withSummaries, summariesCmd ) =
+            fetchSummaries ctx { model | status = Just notice }
+
+        ( managed, manageCmd ) =
+            refreshManageIf ctx collectionId withSummaries
+    in
+    if model.browse == Just collectionId then
+        let
+            ( refreshed, refreshCmd, outs ) =
+                startPrefixRefresh ctx collectionId managed
+        in
+        ( refreshed, Cmd.batch [ summariesCmd, manageCmd, refreshCmd ], outs )
+
+    else
+        ( managed, Cmd.batch [ summariesCmd, manageCmd ], [] )
 
 
 {-| Re-read the previously loaded prefix through bounded first pages.
@@ -655,6 +1569,89 @@ restartPrefixRefresh ctx collectionId refresh notice model =
         )
 
 
+{-| Durable deletion applied locally: metadata removed, managed
+window for it closed, and — only when it is still browsed — the
+browse clears with `BrowseEnded` so the page drops its grid.
+-}
+applyDeletedCollection : String -> Model -> ( Model, List OutMsg )
+applyDeletedCollection collectionId model =
+    let
+        remaining =
+            List.filter (\c -> c.id /= collectionId) model.items
+
+        wasBrowsed =
+            model.browse == Just collectionId
+
+        base =
+            { model
+                | items = remaining
+                , summariesState = SummariesReady
+                , manageActionInFlight = False
+                , deleteConfirmFor = Nothing
+                , activeId =
+                    if model.activeId == Just collectionId then
+                        List.head remaining |> Maybe.map .id
+
+                    else
+                        model.activeId
+                , manage =
+                    case model.manage of
+                        Just manage ->
+                            if manage.collectionId == collectionId then
+                                Nothing
+
+                            else
+                                model.manage
+
+                        Nothing ->
+                            Nothing
+                , status = Just "Collection deleted. Its posts were not deleted."
+            }
+    in
+    if wasBrowsed then
+        ( { base | browse = Nothing, refresh = Nothing, cursor = Nothing, state = Idle, requestId = model.requestId + 1 }
+        , [ BrowseEnded ]
+        )
+
+    else
+        ( base, [] )
+
+
+{-| A delete settled after its access epoch ended. A success is
+durable: reconcile that specific deletion instead of refreshing a
+now-404 collection and leaving a ghost grid. A stale 401 belongs to
+the old epoch and never revokes newer access; other stale failures
+only re-read public metadata.
+-}
+reconcileStaleDelete : Context -> String -> Result Http.Error ManageResult -> Model -> ( Model, Cmd Msg, List OutMsg )
+reconcileStaleDelete ctx collectionId result model =
+    case result of
+        Ok manageResult ->
+            if manageResult.id == collectionId then
+                let
+                    ( base, outs ) =
+                        applyDeletedCollection collectionId model
+                in
+                ( base, Cmd.none, outs )
+
+            else
+                let
+                    ( next, cmd ) =
+                        fetchSummaries ctx model
+                in
+                ( next, cmd, [] )
+
+        Err (Http.BadStatus 401) ->
+            ( model, Cmd.none, [] )
+
+        Err _ ->
+            let
+                ( next, cmd ) =
+                    fetchSummaries ctx model
+            in
+            ( next, cmd, [] )
+
+
 {-| A collection mutation settled after its access epoch ended (lock,
 unlock, or rediscovery moved the generation). The server may still
 have applied it, so public state reconciles — but the mutation itself
@@ -668,11 +1665,18 @@ reconcileStaleMutation ctx collectionId model =
             let
                 ( refreshed, refreshCmd, outs ) =
                     startPrefixRefresh ctx collectionId { model | status = Nothing }
+
+                ( withSummaries, summariesCmd ) =
+                    fetchSummaries ctx refreshed
             in
-            ( refreshed, Cmd.batch [ refreshCmd, Api.Collection.list ctx.apiBase ListCompleted ], outs )
+            ( withSummaries, Cmd.batch [ refreshCmd, summariesCmd ], outs )
 
         CollectionLogic.RefreshMetadataOnly ->
-            ( model, Api.Collection.list ctx.apiBase ListCompleted, [] )
+            let
+                ( next, cmd ) =
+                    fetchSummaries ctx model
+            in
+            ( next, cmd, [] )
 
 
 {-| Stale removal completions reconcile like other mutations, and the
@@ -761,53 +1765,23 @@ refreshPageArrived ctx collectionId refresh response model =
         )
 
     else
-        ( { model
-            | state = Ready
-            , cursor = next.cursor
-            , browse = Just collectionId
-            , refresh = Nothing
-            , status = Nothing
-          }
-        , Api.Collection.list ctx.apiBase ListCompleted
+        let
+            settled =
+                { model
+                    | state = Ready
+                    , cursor = next.cursor
+                    , browse = Just collectionId
+                    , refresh = Nothing
+                    , status = Nothing
+                }
+
+            ( withSummaries, summariesCmd ) =
+                fetchSummaries ctx settled
+        in
+        ( withSummaries
+        , summariesCmd
         , [ RefreshLoaded { sequence = next.fetched, nextCursor = next.cursor } ]
         )
-
-
-moveInList : String -> Int -> List String -> Maybe (List String)
-moveInList postId delta ids =
-    case indexIn postId ids of
-        Nothing ->
-            Nothing
-
-        Just idx ->
-            let
-                target =
-                    idx + delta
-            in
-            if target < 0 || target >= List.length ids then
-                Nothing
-
-            else
-                let
-                    without =
-                        List.filter ((/=) postId) ids
-
-                    before =
-                        List.take target without
-
-                    after =
-                        List.drop target without
-                in
-                Just (before ++ [ postId ] ++ after)
-
-
-indexIn : String -> List String -> Maybe Int
-indexIn postId ids =
-    ids
-        |> List.indexedMap Tuple.pair
-        |> List.filter (\( _, candidate ) -> candidate == postId)
-        |> List.head
-        |> Maybe.map Tuple.first
 
 
 {-| Transport failures reuse the workspace wording verbatim; the shared
