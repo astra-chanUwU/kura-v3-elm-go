@@ -5,3 +5,9 @@ web/elm-stuff/
 /web/static/media/uploads/
 /web/static/media/derivatives/
 /.local/test-media-manifest.json
+
+.local/import-media-manifest.json
+.local/import-media-manifest.json.lock
+.local/test-media-manifest.json.lock
+/.local/backups/
+/.local/runtime/
