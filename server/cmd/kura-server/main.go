@@ -43,6 +43,8 @@ func main() {
 				Posts:               pgBackend,
 				PostDetails:         pgBackend,
 				Uploads:             pgBackend,
+				BrowserImports:      pgBackend,
+				Metadata:            pgBackend,
 				Tags:                pgBackend,
 				TagRevisions:        pgBackend,
 				Reactions:           pgBackend,

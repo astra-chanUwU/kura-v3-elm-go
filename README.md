@@ -64,6 +64,18 @@ Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe 
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
 
+**Import folder** previews up to 1,000 JPEG, PNG, or GIF images before you start.
+Hidden files, photo-library packages, and unsupported files are excluded. The
+preview checks for exact duplicates; choose shared tags, artist, a source
+prefix, and an optional destination collection. Import runs one image at a
+time. With **Skip duplicates**, existing images can join the destination
+collection without changing their metadata. Files stay in the tab's memory;
+use the CLI importer below when you need a resume manifest that survives reloads.
+
+Edit **Source & artist** in the Inspector, then save explicitly. Clearing a
+field removes its value. Metadata history records previous values, and a
+conflicting edit keeps your draft until you reload the post.
+
 Navigator shows collection counts and offers paged ordering, rename, and delete.
 First/last and neighbor moves send one post at a time. Deleting a collection
 leaves its images in the library.
@@ -85,6 +97,8 @@ Plain words search the post's text. Use `tag:` to match a specific tag. Put filt
 | Posts tagged "cat" | `tag:cat` |
 | Posts tagged "cat", excluding those tagged "dog" | `tag:cat -tag:dog` |
 | Favorites with a score of at least 5 | `favorite:true score:>=5` |
+| Images by a particular artist | `artist:"ARTIST NAME"` |
+| Images imported from a folder | `source:"folder-import/FOLDER/image.png"` |
 | JPEG images at least 1200 pixels wide | `media_type:image/jpeg width:>=1200` |
 | Posts tagged "cat", highest score first | `tag:cat order:score` |
 | The post with ID 2004 | `id:=2004` |

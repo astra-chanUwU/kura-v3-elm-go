@@ -218,3 +218,73 @@ func TestRevertTagsOneSidedAndUnchanged(t *testing.T) {
 		}
 	})
 }
+
+func TestTagEditsAndRevertsRebuildSearchFromCurrentMetadata(t *testing.T) {
+	ctx := context.Background()
+	backend := newTagRevertTestBackend(t, ctx, tagRevertTestDatabaseURL(t))
+	var id string
+	if err := backend.pool.QueryRow(ctx, `
+INSERT INTO posts (preview_url, original_url, media_type, width, height, source, artist, tags, search_text)
+VALUES ('/media/tag-metadata.png', '/media/tag-metadata.png', 'image/png', 10, 10,
+        'cat source', 'cat artist', ARRAY['cat','night'], 'cat night cat source cat artist')
+RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	editTagsMust(t, ctx, backend, id, 0, nil, []string{"cat"})
+	assertPostSearchText(t, ctx, backend, id, "night cat source cat artist")
+	editTagsMust(t, ctx, backend, id, 1, []string{"other"}, nil)
+	assertPostSearchText(t, ctx, backend, id, "night other cat source cat artist")
+	revertTagsMust(t, ctx, backend, id, 2, 1)
+	assertPostSearchText(t, ctx, backend, id, "night cat source cat artist")
+}
+
+func assertPostSearchText(t *testing.T, ctx context.Context, backend *PostgresBackend, id, want string) {
+	t.Helper()
+	var got string
+	if err := backend.pool.QueryRow(ctx, `SELECT search_text FROM posts WHERE id=$1::bigint`, id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("search_text=%q want %q", got, want)
+	}
+}
+
+func TestTagReactionAndRevertBatchesKeepCallerResultOrder(t *testing.T) {
+	ctx := context.Background()
+	backend := newTagRevertTestBackend(t, ctx, tagRevertTestDatabaseURL(t))
+	first := insertTagTestPost(t, ctx, backend, []string{"base"})
+	second := insertTagTestPost(t, ctx, backend, []string{"base"})
+	inputOrder := []string{second, first}
+	tagResponse, err := backend.EditTags(ctx, TagEditRequest{
+		Posts: []TagTarget{{ID: second, Version: 0}, {ID: first, Version: 0}},
+		Add:   []string{"batch"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{tagResponse.Posts[0].ID, tagResponse.Posts[1].ID}; !equalTags(got, inputOrder) {
+		t.Fatalf("tag result order=%v want caller order %v", got, inputOrder)
+	}
+	favorite := true
+	reactionResponse, err := backend.EditReactions(ctx, ReactionRequest{
+		Posts:    []ReactionTarget{{ID: second, Version: 0}, {ID: first, Version: 0}},
+		Favorite: &favorite,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{reactionResponse.Posts[0].ID, reactionResponse.Posts[1].ID}; !equalTags(got, inputOrder) {
+		t.Fatalf("reaction result order=%v want caller order %v", got, inputOrder)
+	}
+	revertResponse, err := backend.RevertTags(ctx, TagRevertRequest{
+		Posts:         []TagTarget{{ID: second, Version: 1}, {ID: first, Version: 1}},
+		TargetVersion: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{revertResponse.Posts[0].ID, revertResponse.Posts[1].ID}; !equalTags(got, inputOrder) {
+		t.Fatalf("revert result order=%v want caller order %v", got, inputOrder)
+	}
+}

@@ -58,6 +58,8 @@ detailWith history =
     , reactionHistory = []
     , derivativeJobId = Nothing
     , derivativeStatus = Nothing
+    , metadataVersion = 0
+    , metadataHistory = []
     }
 
 

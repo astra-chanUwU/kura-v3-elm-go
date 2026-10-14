@@ -44,6 +44,14 @@ func TestUpdateSearchTextReplacesTagTermsAndPreservesTerms(t *testing.T) {
 	}
 }
 
+func TestSortedPostTargetIDsUsesNumericAscendingOrder(t *testing.T) {
+	got := sortedPostTargetIDs([]string{"30", "100", "2", "11"})
+	want := []string{"2", "11", "30", "100"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sortedPostTargetIDs=%v want %v", got, want)
+	}
+}
+
 func TestValidateTagRevert(t *testing.T) {
 	validated, err := ValidateTagRevert(TagRevertRequest{
 		Posts:         []TagTarget{{ID: "2004", Version: 2}},

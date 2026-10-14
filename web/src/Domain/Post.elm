@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, decoder, detailDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
+module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataResponseDecoder, metadataRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -41,6 +41,8 @@ type alias PostDetail =
     , reactionHistory : List ReactionRevision
     , derivativeJobId : Maybe String
     , derivativeStatus : Maybe String
+    , metadataVersion : Int
+    , metadataHistory : List MetadataRevision
     }
 
 
@@ -100,6 +102,35 @@ type alias ReactionRevision =
     }
 
 
+type alias MetadataRevision =
+    { version : Int
+    , previousSource : String
+    , previousArtist : String
+    , source : String
+    , artist : String
+    , createdAt : String
+    }
+
+
+type alias MetadataTarget =
+    { id : String
+    , version : Int
+    }
+
+
+type alias MetadataResult =
+    { id : String
+    , version : Int
+    , source : String
+    , artist : String
+    , changed : Bool
+    }
+
+
+type alias MetadataResponse =
+    { posts : List MetadataResult }
+
+
 detailDecoder : Decoder PostDetail
 detailDecoder =
     Decode.map5
@@ -133,6 +164,8 @@ detailDecoder =
                 , reactionHistory = []
                 , derivativeJobId = Nothing
                 , derivativeStatus = Nothing
+                , metadataVersion = 0
+                , metadataHistory = []
                 }
             )
             (Decode.field "id" Decode.string)
@@ -171,6 +204,18 @@ detailDecoder =
                     (Decode.oneOf [ Decode.field "reaction_history" (Decode.list reactionRevisionDecoder), Decode.succeed [] ])
                     (Decode.oneOf [ Decode.field "derivative_job_id" Decode.string, Decode.succeed "" ] |> Decode.map emptyToNothing)
                     (Decode.oneOf [ Decode.field "derivative_status" Decode.string, Decode.succeed "" ] |> Decode.map emptyToNothing)
+            )
+        |> Decode.andThen
+            (\detail ->
+                Decode.map2
+                    (\metadataVersion metadataHistory ->
+                        { detail
+                            | metadataVersion = metadataVersion
+                            , metadataHistory = metadataHistory
+                        }
+                    )
+                    (Decode.oneOf [ Decode.field "metadata_version" Decode.int, Decode.succeed 0 ])
+                    (Decode.oneOf [ Decode.field "metadata_history" (Decode.list metadataRevisionDecoder), Decode.succeed [] ])
             )
 
 
@@ -255,6 +300,32 @@ reactionResultDecoder =
         (Decode.field "version" Decode.int)
         (Decode.field "favorite" Decode.bool)
         (Decode.field "score" Decode.int)
+        (Decode.field "changed" Decode.bool)
+
+
+metadataRevisionDecoder : Decoder MetadataRevision
+metadataRevisionDecoder =
+    Decode.map6 MetadataRevision
+        (Decode.field "version" Decode.int)
+        (Decode.oneOf [ Decode.field "previous_source" Decode.string, Decode.succeed "" ])
+        (Decode.oneOf [ Decode.field "previous_artist" Decode.string, Decode.succeed "" ])
+        (Decode.field "source" Decode.string)
+        (Decode.field "artist" Decode.string)
+        (Decode.field "created_at" Decode.string)
+
+
+metadataResponseDecoder : Decoder MetadataResponse
+metadataResponseDecoder =
+    Decode.map MetadataResponse (Decode.field "posts" (Decode.list metadataResultDecoder))
+
+
+metadataResultDecoder : Decoder MetadataResult
+metadataResultDecoder =
+    Decode.map5 MetadataResult
+        (Decode.field "id" Decode.string)
+        (Decode.field "version" Decode.int)
+        (Decode.field "source" Decode.string)
+        (Decode.field "artist" Decode.string)
         (Decode.field "changed" Decode.bool)
 
 

@@ -9,6 +9,7 @@
   </head>
   <body>
     <script src="/dist/elm.js"></script>
+    <script src="/browser-import.js"></script>
     <script>
       var storedPrefs = null;
       try { storedPrefs = JSON.parse(localStorage.getItem("kura.prefs")); } catch (e) {}
@@ -20,6 +21,7 @@
           height: window.innerHeight
         }
       });
+      if (window.KuraBrowserImport) { window.KuraBrowserImport.wire(app); }
       if (app.ports && app.ports.savePrefs) {
         app.ports.savePrefs.subscribe(function (prefs) {
           try { localStorage.setItem("kura.prefs", JSON.stringify(prefs)); } catch (e) {}

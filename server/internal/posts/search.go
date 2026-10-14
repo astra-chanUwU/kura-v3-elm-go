@@ -35,11 +35,13 @@ type PostDetail struct {
 	FileSize         int64              `json:"file_size"`
 	CreatedAt        string             `json:"created_at"`
 	TagVersion       int                `json:"tag_version"`
+	MetadataVersion  int                `json:"metadata_version"`
 	Favorite         bool               `json:"favorite"`
 	Score            int                `json:"score"`
 	ReactionVersion  int                `json:"reaction_version"`
 	History          []Revision         `json:"history"`
 	ReactionHistory  []ReactionRevision `json:"reaction_history"`
+	MetadataHistory  []MetadataRevision `json:"metadata_history"`
 	DerivativeJobID  string             `json:"derivative_job_id,omitempty"`
 	DerivativeStatus string             `json:"derivative_status,omitempty"`
 }
@@ -66,6 +68,17 @@ type ReactionRevision struct {
 	Favorite  bool   `json:"favorite"`
 	Score     int    `json:"score"`
 	CreatedAt string `json:"created_at"`
+}
+
+// MetadataRevision is an immutable source/artist edit entry exposed by the
+// Inspector. Metadata versions are independent of tag and reaction versions.
+type MetadataRevision struct {
+	Version        int    `json:"version"`
+	PreviousSource string `json:"previous_source"`
+	PreviousArtist string `json:"previous_artist"`
+	Source         string `json:"source"`
+	Artist         string `json:"artist"`
+	CreatedAt      string `json:"created_at"`
 }
 
 type TagTarget struct {
@@ -122,6 +135,32 @@ type ReactionResponse struct {
 	Posts []ReactionResult `json:"posts"`
 }
 
+// MetadataTarget identifies one post for a versioned source/artist edit.
+type MetadataTarget struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// MetadataRequest applies the supplied source and/or artist to every target.
+// Nil fields are omitted; a pointer to an empty string clears that field.
+type MetadataRequest struct {
+	Posts  []MetadataTarget `json:"posts"`
+	Source *string          `json:"source,omitempty"`
+	Artist *string          `json:"artist,omitempty"`
+}
+
+type MetadataResult struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+	Source  string `json:"source"`
+	Artist  string `json:"artist"`
+	Changed bool   `json:"changed"`
+}
+
+type MetadataResponse struct {
+	Posts []MetadataResult `json:"posts"`
+}
+
 // PostReaction* aliases keep the contract discoverable to callers that use
 // the longer resource name.
 type PostReactionTarget = ReactionTarget
@@ -166,6 +205,11 @@ type TagReverter interface {
 // score edits.
 type ReactionMutator interface {
 	EditReactions(ctx context.Context, request ReactionRequest) (ReactionResponse, error)
+}
+
+// MetadataMutator applies atomic optimistic source and artist edits.
+type MetadataMutator interface {
+	UpdateMetadata(ctx context.Context, request MetadataRequest) (MetadataResponse, error)
 }
 
 // UploadRequest is the storage-facing contract for a bounded local upload.

@@ -52,6 +52,8 @@ detailScored score =
     , reactionHistory = []
     , derivativeJobId = Nothing
     , derivativeStatus = Nothing
+    , metadataVersion = 0
+    , metadataHistory = []
     }
 
 

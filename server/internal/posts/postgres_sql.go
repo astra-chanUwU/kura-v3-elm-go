@@ -146,7 +146,27 @@ SELECT
     tag_version,
     favorite,
     score,
-    reaction_version
+    reaction_version,
+    metadata_version,
+    COALESCE((
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'version', history.version,
+                'previous_source', history.previous_source,
+                'previous_artist', history.previous_artist,
+                'source', history.source,
+                'artist', history.artist,
+                'created_at', history.created_at::text
+            ) ORDER BY history.version DESC
+        )
+        FROM (
+            SELECT version, previous_source, previous_artist, source, artist, created_at
+            FROM post_metadata_revisions
+            WHERE post_id = posts.id
+            ORDER BY version DESC
+            LIMIT 50
+        ) AS history
+    ), '[]'::jsonb)
 FROM posts
 WHERE deleted_at IS NULL
   AND moderation_state = 'published'

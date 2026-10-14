@@ -16,6 +16,8 @@ import TagsTests
 import QueueTests
 import UploadQueueTests
 import WorkspaceControlTests
+import ImportTests
+import MetadataTests
 
 
 port run : (() -> msg) -> Sub msg
@@ -30,7 +32,7 @@ type Msg
 
 allTests : List ( String, Bool )
 allTests =
-    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ CollectionBoundedTests.suite ++ DailyUseTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite
+    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ CollectionBoundedTests.suite ++ DailyUseTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite ++ ImportTests.suite ++ MetadataTests.suite
 
 
 encodeTest : ( String, Bool ) -> Encode.Value

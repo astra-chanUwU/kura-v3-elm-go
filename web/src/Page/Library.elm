@@ -20,7 +20,9 @@ import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
 import Feature.Compare
 import Feature.Filmstrip as Filmstrip
+import Feature.Import as BrowserImport
 import Feature.Inspector
+import Feature.Metadata as Metadata
 import Feature.MediaGrid as MediaGrid
 import Feature.MediaGrid.Layout as Layout exposing (Geometry, Viewport)
 import Feature.Navigator
@@ -118,6 +120,8 @@ type alias Model =
     , savedSearchSaving : Bool
     , savedSearchStatus : Maybe String
     , upload : UploadQueue.Model
+    , browserImport : BrowserImport.Model
+    , metadata : Metadata.Model
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
     , access : App.Access.State
@@ -198,6 +202,8 @@ init flagsValue url key =
             , savedSearchSaving = False
             , savedSearchStatus = Nothing
             , upload = UploadQueue.init
+            , browserImport = BrowserImport.init
+            , metadata = Metadata.init
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
             , access = App.Access.init
@@ -300,6 +306,8 @@ type Msg
     | RemoveSavedSearch String
     | SyncUrl Int
     | UploadMsg UploadQueue.Msg
+    | ImportMsg BrowserImport.Msg
+    | MetadataMsg Metadata.Msg
     | TrashMsg Trash.Msg
     | ExportMetadataChanged Bool
     | TagSuggestionMsg TagSuggestions.Msg
@@ -498,6 +506,17 @@ updateHelp msg model =
 
                             Err _ ->
                                 model.reactions
+                    , metadata =
+                        case result of
+                            Ok detail ->
+                                if model.selection.active == Just postId then
+                                    Metadata.syncDetail detail model.metadata
+
+                                else
+                                    model.metadata
+
+                            Err _ ->
+                                model.metadata
                   }
                 , Cmd.none
                 )
@@ -835,6 +854,12 @@ updateHelp msg model =
                 _ ->
                     delegateUpload subMsg model
 
+        ImportMsg subMsg ->
+            delegateImport subMsg model
+
+        MetadataMsg subMsg ->
+            delegateMetadata subMsg model
+
         NoOp ->
             ( model, Cmd.none )
 
@@ -925,6 +950,176 @@ applyUploadOut out ( model, cmd ) =
 sequence, saving the originating result set first. Returning to the
 grid restores the origin untouched.
 -}
+
+importContext : Model -> BrowserImport.Context
+importContext model =
+    BrowserImport.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+
+
+delegateImport : BrowserImport.Msg -> Model -> ( Model, Cmd Msg )
+delegateImport subMsg model =
+    let
+        ( importModel, importCmd, outs ) =
+            BrowserImport.update (importContext model) subMsg model.browserImport
+    in
+    handleImportOuts outs ( { model | browserImport = importModel }, Cmd.map ImportMsg importCmd )
+
+
+handleImportOuts : List BrowserImport.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleImportOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleImportOuts rest (applyImportOut out ( model, cmd ))
+
+
+{-| Import confirmations keep the workspace stable: summaries refresh in
+place only, the detail cache learns the new post, and the captured
+collection is reconciled only while it is still browsed. Summaries are
+public, so attachment changes refresh them without a credential.
+-}
+applyImportOut : BrowserImport.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyImportOut out ( model, cmd ) =
+    case out of
+        BrowserImport.ImportConfirmed result ->
+            let
+                detail =
+                    result.post
+
+                base =
+                    { model
+                        | sequence = Sequence.refreshSummary (summaryOfDetail detail) model.sequence
+                        , details = Dict.insert detail.id (DetailReady detail) model.details
+                        , uploadedPosts = Dict.insert detail.id (summaryOfDetail detail) model.uploadedPosts
+                        , tags = Tags.noteVersion detail.id detail.tagVersion model.tags
+                        , reactions = Reactions.noteVersion detail.id detail.reactionVersion model.reactions
+                    }
+            in
+            case result.collectionId of
+                Just collectionId ->
+                    let
+                        ( collections, summariesCmd ) =
+                            Collections.requestSummaries (collectionsContext base) base.collections
+
+                        withSummaries =
+                            { base | collections = collections }
+                    in
+                    if Collections.browse withSummaries.collections == Just collectionId then
+                        delegateCollections Collections.RetryRequested withSummaries
+                            |> withCmd (Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd ])
+
+                    else
+                        ( withSummaries, Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd ] )
+
+                Nothing ->
+                    ( base, cmd )
+
+        BrowserImport.OpenPost postId ->
+            case Dict.get postId model.uploadedPosts |> Maybe.map Just |> Maybe.withDefault (Sequence.find postId model.sequence) of
+                Just summary ->
+                    openUploadPost postId summary ( model, cmd )
+
+                Nothing ->
+                    ( { model | hint = Just "That import is no longer available in this tab." }, cmd )
+
+        BrowserImport.CredentialRejected requestGeneration status ->
+            if status == 401 && App.Access.isCurrent requestGeneration model.access && App.Access.canWrite model.access then
+                revokeAccess model |> withCmd cmd
+
+            else
+                ( model, cmd )
+
+
+metadataContext : Model -> Metadata.Context
+metadataContext model =
+    Metadata.context
+        model.apiBase
+        (App.Access.credential model.access)
+        (App.Access.canWrite model.access)
+        model.access.generation
+        model.selection.active
+        (activeDetail model)
+
+
+delegateMetadata : Metadata.Msg -> Model -> ( Model, Cmd Msg )
+delegateMetadata subMsg model =
+    let
+        ( metadata, metadataCmd, outs ) =
+            Metadata.update (metadataContext model) subMsg model.metadata
+    in
+    handleMetadataOuts outs ( { model | metadata = metadata }, Cmd.map MetadataMsg metadataCmd )
+
+
+handleMetadataOuts : List Metadata.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleMetadataOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleMetadataOuts rest (applyMetadataOut out ( model, cmd ))
+
+
+applyMetadataOut : Metadata.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyMetadataOut out ( model, cmd ) =
+    case out of
+        Metadata.Saved result ->
+            let
+                details =
+                    Dict.update result.id
+                        (\state ->
+                            case state of
+                                Just (DetailReady detail) ->
+                                    Just
+                                        (DetailReady
+                                            { detail
+                                                | source = result.source
+                                                , artist = result.artist
+                                                , metadataVersion = result.version
+                                            }
+                                        )
+
+                                other ->
+                                    other
+                        )
+                        model.details
+
+                base =
+                    { model | details = details }
+
+                detailCmd =
+                    Api.Post.detail model.apiBase result.id (DetailCompleted model.access.generation result.id)
+            in
+            if not result.changed then
+                ( base, Cmd.batch [ cmd, detailCmd ] )
+
+            else
+                case Collections.browse base.collections of
+                    Just _ ->
+                        delegateCollections Collections.RetryRequested base
+                            |> withCmd (Cmd.batch [ cmd, detailCmd ])
+
+                    Nothing ->
+                        if Search.state base.search == Search.Idle then
+                            ( base, Cmd.batch [ cmd, detailCmd ] )
+
+                        else
+                            retrySearch base |> withCmd (Cmd.batch [ cmd, detailCmd ])
+
+        Metadata.StaleResponse postId ->
+            refreshPublicPosts [ postId ] model |> withCmd cmd
+
+        Metadata.AccessRevoked ->
+            revokeAccess model |> withCmd cmd
+
+        Metadata.ReloadPost postId ->
+            ( { model | details = Dict.insert postId DetailLoading model.details }
+            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
+            )
+
+
 openUploadPost : String -> PostSummary -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
 openUploadPost postId summary ( model, cmd ) =
     let
@@ -1054,7 +1249,10 @@ runCommand command model =
                 exitToGrid model
 
         Escape ->
-            if UploadQueue.isOpen model.upload then
+            if BrowserImport.isOpen model.browserImport then
+                ( { model | browserImport = BrowserImport.setOpen False model.browserImport }, Cmd.none )
+
+            else if UploadQueue.isOpen model.upload then
                 ( { model | upload = UploadQueue.setOpen False model.upload }, Cmd.none )
 
             else if drawersOpen model then
@@ -2373,10 +2571,25 @@ prepareActiveDetail : Model -> ( Model, Cmd Msg )
 prepareActiveDetail model =
     let
         prepared =
+            let
+                resetMetadata =
+                    Metadata.activeChanged model.metadata
+            in
             { model
                 | tags = Tags.activeChanged model.tags
                 , tagSuggestions = TagSuggestions.clear model.tagSuggestions
                 , reactions = Reactions.activeChanged (activeDetail model) model.reactions
+                , metadata =
+                    case activeDetail model of
+                        Just detail ->
+                            if model.selection.active == Just detail.id then
+                                Metadata.syncDetail detail resetMetadata
+
+                            else
+                                resetMetadata
+
+                        Nothing ->
+                            resetMetadata
             }
     in
     case prepared.selection.active of
@@ -2454,9 +2667,15 @@ capabilitiesSettled model =
 
                 ( withQueue, queueCmds ) =
                     handleUploadOuts outs ( { model | upload = queue }, Cmd.map UploadMsg queueCmd )
+
+                ( importModel, importCmd, importOuts ) =
+                    BrowserImport.resume (importContext withQueue) withQueue.browserImport
+
+                ( withImport, importCmds ) =
+                    handleImportOuts importOuts ( { withQueue | browserImport = importModel }, Cmd.map ImportMsg importCmd )
             in
-            ( { withQueue | hint = Just "Unlocked. Writes enabled." }
-            , Cmd.batch [ queueCmds, loadServerSearches model ]
+            ( { withImport | hint = Just "Unlocked. Writes enabled." }
+            , Cmd.batch [ queueCmds, importCmds, loadServerSearches model ]
             )
 
         App.Access.OpenLocal ->
@@ -2498,6 +2717,7 @@ lockNow model hint =
             , savedSearchSaving = False
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
+            , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
             , tagSuggestions = TagSuggestions.init
@@ -2520,6 +2740,7 @@ revokeAccess model =
             , savedSearchSaving = False
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
+            , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
             , tagSuggestions = TagSuggestions.init
@@ -2994,6 +3215,7 @@ subscriptions model =
                     )
             )
         , Sub.map UploadMsg (UploadQueue.subscriptions model.upload)
+        , Sub.map ImportMsg (BrowserImport.subscriptions model.browserImport)
         ]
 
 
@@ -3054,6 +3276,7 @@ shell model =
                 ]
             , inspectorView model
             , Html.map UploadMsg (UploadQueue.view (App.Access.canWrite model.access) model.upload)
+            , Html.map ImportMsg (BrowserImport.view (App.Access.canWrite model.access) (Collections.items model.collections) model.browserImport)
             ]
         , statusBar model
         , if model.shortcutsOpen then
@@ -3087,6 +3310,7 @@ topBar model =
             ]
         , div [ class "topbar-actions" ]
             [ uploadButton model
+            , importButton model
             , accessControls model
             , Ui.Button.icon "info" [ class "button-quiet inspector-toggle" ]
                 { label = "Toggle image details"
@@ -3097,6 +3321,26 @@ topBar model =
                 }
             ]
         ]
+
+
+importButton : Model -> Html Msg
+importButton model =
+    Ui.Button.view [ class "upload-button" ]
+        { label = "Import folder"
+        , key = Nothing
+        , onPress =
+            Just
+                (ImportMsg
+                    (if BrowserImport.isOpen model.browserImport then
+                        BrowserImport.ClosePanel
+
+                     else
+                        BrowserImport.OpenPanel
+                    )
+                )
+        , pressed = Just (BrowserImport.isOpen model.browserImport)
+        , hint = Just "Import a folder of images"
+        }
 
 
 uploadButton : Model -> Html Msg
@@ -3442,6 +3686,15 @@ inspectorView model =
             , revertConfirm = Tags.revertConfirm model.tags
             , revertPending = Tags.revertPending model.tags
             , revertStatus = Tags.revertStatus model.tags
+            , metadataSource = Metadata.sourceDraft model.metadata
+            , metadataArtist = Metadata.artistDraft model.metadata
+            , metadataSaving = Metadata.saving model.metadata
+            , metadataStatus = Metadata.status model.metadata
+            , metadataConflict = Metadata.conflict model.metadata
+            , onMetadataSource = MetadataMsg << Metadata.SourceChanged
+            , onMetadataArtist = MetadataMsg << Metadata.ArtistChanged
+            , onSaveMetadata = MetadataMsg Metadata.SaveRequested
+            , onReloadMetadata = MetadataMsg Metadata.ReloadRequested
             }
 
     else

@@ -56,6 +56,15 @@ type alias Config msg =
     , revertConfirm : Maybe Int
     , revertPending : Maybe Int
     , revertStatus : Maybe String
+    , metadataSource : String
+    , metadataArtist : String
+    , metadataSaving : Bool
+    , metadataStatus : Maybe String
+    , metadataConflict : Bool
+    , onMetadataSource : String -> msg
+    , onMetadataArtist : String -> msg
+    , onSaveMetadata : msg
+    , onReloadMetadata : msg
     }
 
 
@@ -78,6 +87,7 @@ view config =
 
                 Just post ->
                     [ identitySection config post
+                    , metadataSection config post
                     , reactionSection config post
                     , Panel.section
                         (if config.selectedCount > 1 then
@@ -102,6 +112,91 @@ view config =
                     ]
             )
         ]
+
+
+metadataSection : Config msg -> PostSummary -> Html msg
+metadataSection config post =
+    case config.detail of
+        Just detail ->
+            if detail.id == post.id then
+                Panel.section "Source & artist"
+                    [ form [ class "tag-editor", onSubmit config.onSaveMetadata ]
+                        [ label [ class "upload-label", attribute "for" "metadata-source" ] [ text "Source" ]
+                        , input
+                            [ class "compact-input"
+                            , Html.Attributes.id "metadata-source"
+                            , type_ "text"
+                            , placeholder "Source URL or note"
+                            , value config.metadataSource
+                            , onInput config.onMetadataSource
+                            , attribute "aria-label" "Source"
+                            , disabled (not config.writesEnabled || config.metadataSaving)
+                            ]
+                            []
+                        , label [ class "upload-label", attribute "for" "metadata-artist" ] [ text "Artist" ]
+                        , input
+                            [ class "compact-input"
+                            , Html.Attributes.id "metadata-artist"
+                            , type_ "text"
+                            , placeholder "Artist"
+                            , value config.metadataArtist
+                            , onInput config.onMetadataArtist
+                            , attribute "aria-label" "Artist"
+                            , disabled (not config.writesEnabled || config.metadataSaving)
+                            ]
+                            []
+                        , if config.metadataSaving || config.metadataSource /= detail.source || config.metadataArtist /= detail.artist then
+                            button [ class "button", type_ "submit", disabled (config.metadataSaving || not config.writesEnabled) ]
+                                [ text
+                                    (if config.metadataSaving then
+                                        "Saving…"
+
+                                     else
+                                        "Save source & artist"
+                                    )
+                                ]
+
+                          else
+                            text ""
+                        , case config.metadataStatus of
+                            Just message ->
+                                p [ class "panel-note", attribute "role" "status" ] [ text message ]
+
+                            Nothing ->
+                                text ""
+                        , if config.metadataConflict then
+                            button [ class "button button-quiet", type_ "button", onClick config.onReloadMetadata ] [ text "Reload post" ]
+
+                          else
+                            text ""
+                        ]
+                    , if List.isEmpty detail.metadataHistory then
+                        text ""
+
+                      else
+                        details [ class "inspector-disclosure" ]
+                            [ summary [] [ text "Metadata history" ]
+                            , ul [ class "history-list" ]
+                                (List.map
+                                    (\revision ->
+                                        li [ class "history-item" ]
+                                            [ div [ class "history-header" ]
+                                                [ span [ class "history-version" ] [ text ("v" ++ String.fromInt revision.version) ]
+                                                , span [ class "history-time" ] [ text revision.createdAt ]
+                                                ]
+                                            , p [ class "panel-note" ] [ text ("Source: " ++ revision.source ++ " · Artist: " ++ revision.artist) ]
+                                            ]
+                                    )
+                                    detail.metadataHistory
+                                )
+                            ]
+                    ]
+
+            else
+                text ""
+
+        Nothing ->
+            text ""
 
 
 detailSection : Config msg -> PostSummary -> Html msg

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +17,27 @@ const (
 	maxTagEditTags  = 100
 	maxTagLength    = 128
 )
+
+const currentPostMetadataForTagEditSQL = `
+SELECT source, artist
+FROM posts
+WHERE id = $1::bigint AND deleted_at IS NULL AND moderation_state = 'published'
+`
+
+// sortedPostTargetIDs returns numeric ascending IDs for consistent row-lock
+// acquisition across tag, reaction, and metadata mutations.
+func sortedPostTargetIDs(ids []string) []string {
+	sorted := append([]string(nil), ids...)
+	sort.Slice(sorted, func(i, j int) bool {
+		// IDs are validated positive canonical decimal strings. Length first,
+		// then lexical order, is therefore numeric ascending without reparsing.
+		if len(sorted[i]) != len(sorted[j]) {
+			return len(sorted[i]) < len(sorted[j])
+		}
+		return sorted[i] < sorted[j]
+	})
+	return sorted
+}
 
 // ValidateTagEdit normalizes tags and validates the bounded mutation shape.
 // It is shared by HTTP and storage-facing callers so invalid requests never
@@ -83,9 +105,9 @@ func normalizeTags(tags []string) ([]string, error) {
 // applyTagEdit updates one row while its transaction lock is held.
 func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target TagTarget, add, remove []string) (TagEditResult, error) {
 	var currentTags []string
-	var searchText string
+	var ignoredSearchText string
 	var currentVersion int
-	err := tx.QueryRow(ctx, lockPostForTagEditSQL, target.ID).Scan(&currentTags, &searchText, &currentVersion)
+	err := tx.QueryRow(ctx, lockPostForTagEditSQL, target.ID).Scan(&currentTags, &ignoredSearchText, &currentVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TagEditResult{}, ErrNotFound
 	}
@@ -94,6 +116,13 @@ func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target Ta
 	}
 	if currentVersion != target.Version {
 		return TagEditResult{}, ErrConflict
+	}
+	var source, artist string
+	if err := tx.QueryRow(ctx, currentPostMetadataForTagEditSQL, target.ID).Scan(&source, &artist); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TagEditResult{}, ErrNotFound
+		}
+		return TagEditResult{}, err
 	}
 
 	removeSet := make(map[string]struct{}, len(remove))
@@ -127,7 +156,7 @@ func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target Ta
 	}
 
 	nextVersion := currentVersion + 1
-	updatedSearch := updateSearchText(searchText, removed, added)
+	updatedSearch := canonicalSearchText(nextTags, source, artist)
 	if _, err := tx.Exec(ctx, updatePostTagsSQL, nextTags, updatedSearch, nextVersion, target.ID); err != nil {
 		return TagEditResult{}, err
 	}
@@ -141,11 +170,18 @@ func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target Ta
 
 func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int) (TagEditResult, error) {
 	var currentTags []string
-	var searchText string
+	var ignoredSearchText string
 	var currentVersion int
-	if err := tx.QueryRow(ctx, lockPostForTagRevertSQL, target.ID).Scan(&currentTags, &searchText, &currentVersion); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, lockPostForTagRevertSQL, target.ID).Scan(&currentTags, &ignoredSearchText, &currentVersion); errors.Is(err, pgx.ErrNoRows) {
 		return TagEditResult{}, ErrNotFound
 	} else if err != nil {
+		return TagEditResult{}, err
+	}
+	var source, artist string
+	if err := tx.QueryRow(ctx, currentPostMetadataForTagEditSQL, target.ID).Scan(&source, &artist); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TagEditResult{}, ErrNotFound
+		}
 		return TagEditResult{}, err
 	}
 	if currentVersion != target.Version {
@@ -175,7 +211,7 @@ func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target 
 		restored = []string{}
 	}
 	nextVersion := currentVersion + 1
-	updatedSearch := updateSearchText(searchText, removed, added)
+	updatedSearch := canonicalSearchText(restored, source, artist)
 	if _, err := tx.Exec(ctx, updatePostTagsSQL, restored, updatedSearch, nextVersion, target.ID); err != nil {
 		return TagEditResult{}, err
 	}

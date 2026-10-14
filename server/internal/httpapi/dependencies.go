@@ -12,6 +12,8 @@ type Dependencies struct {
 	Posts               posts.Searcher
 	PostDetails         posts.PostDetailer
 	Uploads             posts.UploadCreator
+	BrowserImports      posts.BrowserImporter
+	Metadata            posts.MetadataMutator
 	Tags                posts.TagMutator
 	TagRevisions        posts.TagReverter
 	Reactions           posts.ReactionMutator
@@ -40,6 +42,8 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps := Dependencies{Posts: backend}
 	deps.PostDetails, _ = backend.(posts.PostDetailer)
 	deps.Uploads, _ = backend.(posts.UploadCreator)
+	deps.BrowserImports, _ = backend.(posts.BrowserImporter)
+	deps.Metadata, _ = backend.(posts.MetadataMutator)
 	deps.Tags, _ = backend.(posts.TagMutator)
 	deps.TagRevisions, _ = backend.(posts.TagReverter)
 	deps.Reactions, _ = backend.(posts.ReactionMutator)

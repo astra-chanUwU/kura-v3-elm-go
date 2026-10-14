@@ -56,11 +56,14 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Post("/posts/tags", editTags(deps.Tags))
 		api.Post("/posts/tags/revert", revertTags(deps.TagRevisions))
 		api.Post("/posts/reactions", editReactions(deps.Reactions))
+		api.Post("/posts/metadata", EditMetadata(deps.Metadata))
 		api.Get("/posts/{id}", postDetail(deps.PostDetails))
 		api.Get("/posts/{id}/moderation", listPostModerationActions(deps.ModerationRead))
 
 		// Uploads and durable processing status (uploads.go, jobs.go).
 		api.Post("/uploads", uploadPost(deps.Uploads))
+		api.Get("/imports/duplicates", browserImportDuplicates(deps.BrowserImports))
+		api.Post("/imports", browserImport(deps.BrowserImports))
 		api.Get("/jobs/{id}", getJobStatus(deps.Jobs))
 
 		// Saved searches (saved_searches.go).

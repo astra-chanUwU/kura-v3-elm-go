@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -163,12 +164,9 @@ func overlayReadyPreviewsWith(ctx context.Context, q previewQuerier, summaries [
 // enrichPostDetail overlays the ready thumbnail preview and attaches the
 // discoverable derivative job metadata. Missing rows leave the detail
 // untouched: the original stays the preview and no job fields are set.
-func (s *PostgresBackend) enrichPostDetail(ctx context.Context, detail *PostDetail) error {
-	if s == nil || s.pool == nil || detail == nil {
-		return nil
-	}
+func enrichPostDetailWithQuery(ctx context.Context, query postDetailQuerier, detail *PostDetail) error {
 	var preview string
-	if err := s.pool.QueryRow(ctx, readyVariantURLSQL, detail.ID).Scan(&preview); err != nil {
+	if err := query.QueryRow(ctx, readyVariantURLSQL, detail.ID).Scan(&preview); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			preview = ""
 		} else {
@@ -179,7 +177,7 @@ func (s *PostgresBackend) enrichPostDetail(ctx context.Context, detail *PostDeta
 		detail.PreviewURL = preview
 	}
 	var jobID, status string
-	if err := s.pool.QueryRow(ctx, derivativeJobForPostSQL, derivativeJobKey(detail.ID)).Scan(&jobID, &status); err != nil {
+	if err := query.QueryRow(ctx, derivativeJobForPostSQL, derivativeJobKey(detail.ID)).Scan(&jobID, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -367,8 +365,20 @@ func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDet
 	if s == nil || s.pool == nil {
 		return PostDetail{}, ErrUnavailable
 	}
+	return s.getPostDetail(ctx, s.pool, id)
+}
+
+type postDetailQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+// getPostDetail accepts the transaction holding an import lock so its receipt
+// cannot disappear between a durable write and response construction.
+func (s *PostgresBackend) getPostDetail(ctx context.Context, query postDetailQuerier, id string) (PostDetail, error) {
 	var detail PostDetail
-	err := s.pool.QueryRow(ctx, GetPostDetailSQL, id).Scan(
+	var metadataHistoryJSON []byte
+	err := query.QueryRow(ctx, GetPostDetailSQL, id).Scan(
 		&detail.ID,
 		&detail.PreviewURL,
 		&detail.OriginalURL,
@@ -385,6 +395,8 @@ func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDet
 		&detail.Favorite,
 		&detail.Score,
 		&detail.ReactionVersion,
+		&detail.MetadataVersion,
+		&metadataHistoryJSON,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PostDetail{}, ErrNotFound
@@ -392,8 +404,14 @@ func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDet
 	if err != nil {
 		return PostDetail{}, err
 	}
+	if err := json.Unmarshal(metadataHistoryJSON, &detail.MetadataHistory); err != nil {
+		return PostDetail{}, err
+	}
+	if detail.MetadataHistory == nil {
+		detail.MetadataHistory = []MetadataRevision{}
+	}
 	detail.History = make([]Revision, 0, 50)
-	rows, err := s.pool.Query(ctx, GetPostRevisionsSQL, id)
+	rows, err := query.Query(ctx, GetPostRevisionsSQL, id)
 	if err != nil {
 		return PostDetail{}, err
 	}
@@ -423,7 +441,7 @@ func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDet
 		return PostDetail{}, err
 	}
 	detail.ReactionHistory = make([]ReactionRevision, 0, 50)
-	reactionRows, err := s.pool.Query(ctx, GetPostReactionRevisionsSQL, id)
+	reactionRows, err := query.Query(ctx, GetPostReactionRevisionsSQL, id)
 	if err != nil {
 		return PostDetail{}, err
 	}
@@ -438,7 +456,7 @@ func (s *PostgresBackend) GetPostDetail(ctx context.Context, id string) (PostDet
 	if err := reactionRows.Err(); err != nil {
 		return PostDetail{}, err
 	}
-	if err := s.enrichPostDetail(ctx, &detail); err != nil {
+	if err := enrichPostDetailWithQuery(ctx, query, &detail); err != nil {
 		return PostDetail{}, err
 	}
 	return detail, nil
@@ -460,16 +478,27 @@ func (s *PostgresBackend) EditTags(ctx context.Context, request TagEditRequest) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	response := TagEditResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	results := make(map[string]TagEditResult, len(validated.Posts))
+	targets := make(map[string]TagTarget, len(validated.Posts))
+	ids := make([]string, 0, len(validated.Posts))
 	for _, target := range validated.Posts {
+		targets[target.ID] = target
+		ids = append(ids, target.ID)
+	}
+	for _, id := range sortedPostTargetIDs(ids) {
+		target := targets[id]
 		result, err := s.applyTagEdit(ctx, tx, target, validated.Add, validated.Remove)
 		if err != nil {
 			return TagEditResponse{}, err
 		}
-		response.Posts = append(response.Posts, result)
+		results[id] = result
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagEditResponse{}, err
+	}
+	response := TagEditResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		response.Posts = append(response.Posts, results[target.ID])
 	}
 	return response, nil
 }
@@ -490,16 +519,27 @@ func (s *PostgresBackend) RevertTags(ctx context.Context, request TagRevertReque
 		return TagRevertResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	response := TagRevertResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	results := make(map[string]TagEditResult, len(validated.Posts))
+	targets := make(map[string]TagTarget, len(validated.Posts))
+	ids := make([]string, 0, len(validated.Posts))
 	for _, target := range validated.Posts {
+		targets[target.ID] = target
+		ids = append(ids, target.ID)
+	}
+	for _, id := range sortedPostTargetIDs(ids) {
+		target := targets[id]
 		result, err := s.applyTagRevert(ctx, tx, target, validated.TargetVersion)
 		if err != nil {
 			return TagRevertResponse{}, err
 		}
-		response.Posts = append(response.Posts, result)
+		results[id] = result
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagRevertResponse{}, err
+	}
+	response := TagRevertResponse{Posts: make([]TagEditResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		response.Posts = append(response.Posts, results[target.ID])
 	}
 	return response, nil
 }
@@ -521,16 +561,27 @@ func (s *PostgresBackend) EditReactions(ctx context.Context, request ReactionReq
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	response := ReactionResponse{Posts: make([]ReactionResult, 0, len(validated.Posts))}
+	results := make(map[string]ReactionResult, len(validated.Posts))
+	targets := make(map[string]ReactionTarget, len(validated.Posts))
+	ids := make([]string, 0, len(validated.Posts))
 	for _, target := range validated.Posts {
+		targets[target.ID] = target
+		ids = append(ids, target.ID)
+	}
+	for _, id := range sortedPostTargetIDs(ids) {
+		target := targets[id]
 		result, err := s.applyReaction(ctx, tx, target, validated.Favorite, validated.Score)
 		if err != nil {
 			return ReactionResponse{}, err
 		}
-		response.Posts = append(response.Posts, result)
+		results[id] = result
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return ReactionResponse{}, err
+	}
+	response := ReactionResponse{Posts: make([]ReactionResult, 0, len(validated.Posts))}
+	for _, target := range validated.Posts {
+		response.Posts = append(response.Posts, results[target.ID])
 	}
 	return response, nil
 }

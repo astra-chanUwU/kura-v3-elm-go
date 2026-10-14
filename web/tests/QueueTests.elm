@@ -46,6 +46,8 @@ detail jobId status =
     , reactionHistory = []
     , derivativeJobId = jobId
     , derivativeStatus = status
+    , metadataVersion = 0
+    , metadataHistory = []
     }
 
 
