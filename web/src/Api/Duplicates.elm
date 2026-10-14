@@ -16,16 +16,26 @@ import Url.Builder
 
 listGroups : String -> Maybe String -> Int -> (Result Http.Error DuplicateGroupsPage -> msg) -> Cmd msg
 listGroups apiBase cursor limit toMsg =
-    Http.get
-        { url = groupsEndpoint apiBase cursor limit
+    Http.request
+        { method = "GET"
+        , headers = []
+        , body = Http.emptyBody
+        , timeout = Just 30000
+        , tracker = Nothing
+        , url = groupsEndpoint apiBase cursor limit
         , expect = Http.expectJson toMsg groupsPageDecoder
         }
 
 
 listMembers : String -> String -> Maybe String -> Int -> (Result Http.Error DuplicateMembersPage -> msg) -> Cmd msg
 listMembers apiBase hash cursor limit toMsg =
-    Http.get
-        { url = membersEndpoint apiBase hash cursor limit
+    Http.request
+        { method = "GET"
+        , headers = []
+        , body = Http.emptyBody
+        , timeout = Just 30000
+        , tracker = Nothing
+        , url = membersEndpoint apiBase hash cursor limit
         , expect = Http.expectJson toMsg membersPageDecoder
         }
 

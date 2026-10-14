@@ -2287,7 +2287,7 @@ syncDuplicatesAfterTrash isRestore ids model =
 
 {-| Open the regular Compare mode on a temporary member sequence.
 The Library's query, collection, loaded prefix, selection, and grid
-scroll are saved first (through the existing `openMode` capture) and
+scroll are measured before entering Compare and
 restored by `exitToGrid`; the grid selection itself is untouched
 because the temporary selection is discarded on return.
 -}

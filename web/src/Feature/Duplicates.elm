@@ -252,6 +252,12 @@ update ctx msg model =
         CloseRequested ->
             ( { model
                 | open = False
+                , currentHash = Nothing
+                , members = []
+                , membersCount = 0
+                , membersNext = Nothing
+                , selected = Set.empty
+                , metadata = Dict.empty
                 , groupsLoading = False
                 , membersLoading = False
                 , groupsRequestId = model.groupsRequestId + 1
@@ -338,6 +344,7 @@ update ctx msg model =
                 in
                 ( { model
                     | currentHash = Just hash
+                    , metadata = Dict.empty
                     , members = []
                     , membersCount = 0
                     , membersNext = Nothing

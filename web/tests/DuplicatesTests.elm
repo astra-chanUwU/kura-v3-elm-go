@@ -428,6 +428,25 @@ caseUnrelatedTrashAndLatePage =
         && DupF.membersCount afterLate == 3
 
 
+caseReopenRequiresFreshReview : Bool
+caseReopenRequiresFreshReview =
+    let
+        chosen =
+            inGroup |> step (DupF.MemberToggled "1" True) |> Tuple.first
+
+        reopened =
+            chosen |> step DupF.CloseRequested |> Tuple.first |> step DupF.OpenRequested |> Tuple.first
+
+        ( _, outs ) =
+            step DupF.TrashRequested reopened
+    in
+    DupF.currentHash reopened == Nothing
+        && DupF.members reopened == []
+        && DupF.selectedIds reopened == []
+        && DupF.groupsLoading reopened
+        && outs == []
+
+
 allPassed : Bool
 allPassed =
     List.all Tuple.second suite
@@ -435,7 +454,8 @@ allPassed =
 
 suite : List ( String, Bool )
 suite =
-    [ ( "duplicates unrelated Trash preserves count and invalidates late page", caseUnrelatedTrashAndLatePage )
+    [ ( "duplicates reopening requires a fresh group and explicit choice", caseReopenRequiresFreshReview )
+    , ( "duplicates unrelated Trash preserves count and invalidates late page", caseUnrelatedTrashAndLatePage )
     , ( "duplicates decoder strict canonical hash", caseDecoderStrict )
     , ( "duplicates members decoder", caseMembersDecoder )
     , ( "duplicates endpoints encode hash and cursor", caseEndpoints )
