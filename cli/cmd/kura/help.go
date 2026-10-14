@@ -14,6 +14,7 @@ Commands:
   search    Search posts via GET /api/posts
   collection List collections or browse collection posts
   post      Show post detail and mutate tags, favorites, scores, and content ratings
+  export    Export posts as a ZIP archive file
   tag       List and manage global tags
 
 Environment:
@@ -151,6 +152,7 @@ Usage:
   kura collection move [flags] COLLECTION_ID POST_ID
   kura collection rename [flags] COLLECTION_ID NAME
   kura collection delete [flags] COLLECTION_ID
+  kura collection export [flags] COLLECTION_ID
 
 Commands:
   list     List collections via GET /api/collections
@@ -163,6 +165,7 @@ Commands:
   move     Move one post via POST /api/collections/{id}/move
   rename   Rename a collection via PATCH /api/collections/{id}
   delete   Delete a collection via DELETE /api/collections/{id}
+  export   Export visible members as a ZIP via GET /api/collections/{id}/export
 
 Flags:
   --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
@@ -335,6 +338,10 @@ Commands:
   show      Show post detail with revision history via GET /api/posts/{id}
   get       Alias for show
   tag       Edit or revert tags (subcommands: edit, revert)
+  metadata  Edit source/artist via POST /api/posts/metadata
+  trash     Move posts to trash via POST /api/posts/trash
+  restore   Restore trashed posts via POST /api/posts/restore
+  trash-list List trashed posts via GET /api/posts/trash
   favorite  Set favorite via POST /api/posts/reactions
   score     Set score via POST /api/posts/reactions
   reaction  Set favorite and/or score via POST /api/posts/reactions
@@ -348,6 +355,10 @@ Flags:
 Examples:
   kura post show 2004
   kura post show --json 2004
+  kura post metadata --version 0 --source "scan" 2004
+  kura post trash --reason duplicate 2004
+  kura post restore 2004
+  kura post trash-list --json
   kura post tag edit --version 2 --add night 2004
   kura post tag revert --version 3 --target-version 1 2004
   kura post favorite --version 1 --favorite=true 2004
@@ -465,6 +476,109 @@ Flags:
   --score N         Score value 0..2147483647 (required)
   --json            Output the response as JSON (pretty-printed)
   --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postMetadataHelp = `kura post metadata - edit source/artist via the HTTP API
+
+Usage:
+  kura post metadata --version N [--source VALUE] [--artist VALUE] POST_ID
+
+At least one of --source or --artist is required. An omitted field stays
+unchanged; an explicitly empty value clears it. Values are trimmed and must
+be at most 512 characters. Version zero is valid.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Required observed metadata_version
+  --source VALUE    New source value
+  --artist VALUE    New artist value
+  --json            Output the response as JSON (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postTrashHelp = `kura post trash - move posts to trash via the HTTP API
+
+Usage:
+  kura post trash [--reason VALUE] POST_ID...
+
+Accepts 1 to 100 distinct post ids. Trashing is reversible with restore.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --reason VALUE    Optional reason (at most 512 characters)
+  --json            Output the response as JSON (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postRestoreHelp = `kura post restore - restore trashed posts via the HTTP API
+
+Usage:
+  kura post restore POST_ID...
+
+Accepts 1 to 100 distinct post ids.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --json            Output the response as JSON (pretty-printed)
+  --jsonl           Output one JSON object per result (JSON Lines)
+  -h, --help        Show this help
+`
+
+const postTrashListHelp = `kura post trash-list - list trashed posts via the HTTP API
+
+Usage:
+  kura post trash-list [flags]
+
+Reads one bounded page from the protected GET /api/posts/trash endpoint. A
+Bearer [REDACTED] from KURA_API_TOKEN is sent for this protected endpoint.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --limit N         Page size 1..60
+  --cursor CURSOR   Opaque cursor from the previous page
+  --json            Output the full response envelope
+  --jsonl           Output one trashed post object per line
+  -h, --help        Show this help
+`
+
+const exportHelp = `kura export - export posts as a ZIP archive via the HTTP API
+
+Usage:
+  kura export --ids ID,ID,... --output PATH [--metadata]
+
+Downloads GET /api/posts/export to PATH. The destination must not already
+exist; the archive is streamed to a temporary file and published atomically.
+ZIP bytes are never written to stdout.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --ids IDS         Comma-separated distinct post ids (1 to 1000, required)
+  --output PATH     Destination ZIP path (required, must not exist)
+  --metadata        Include metadata in the archive
+  --json            Output a {path,bytes} receipt as JSON
+  --jsonl           Output a {path,bytes} receipt as one JSON Lines object
+  -h, --help        Show this help
+`
+
+const collectionExportHelp = `kura collection export - export a collection as a ZIP archive
+
+Usage:
+  kura collection export --version N --output PATH [--metadata] COLLECTION_ID
+
+Downloads GET /api/collections/{id}/export with the observed collection
+version. Only visible members are exported. The destination must not already
+exist; ZIP bytes are never written to stdout.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL, default http://localhost:8080)
+  --version N       Required observed collection version (zero is valid)
+  --output PATH     Destination ZIP path (required, must not exist)
+  --metadata        Include metadata in the archive
+  --json            Output a {path,bytes} receipt as JSON
+  --jsonl           Output a {path,bytes} receipt as one JSON Lines object
   -h, --help        Show this help
 `
 

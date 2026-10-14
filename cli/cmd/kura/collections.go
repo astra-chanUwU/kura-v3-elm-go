@@ -21,6 +21,9 @@ func runCollection(ctx context.Context, args []string, stdout, stderr io.Writer,
 	}
 	subcommand := args[0]
 	subargs := args[1:]
+	if subcommand == "export" {
+		return runCollectionExport(ctx, subargs, stdout, stderr, getenv)
+	}
 	if subcommand != "list" && subcommand != "summaries" && subcommand != "posts" && subcommand != "create" && subcommand != "add" && subcommand != "remove" && subcommand != "reorder" && subcommand != "move" && subcommand != "rename" && subcommand != "delete" {
 		fmt.Fprintf(stderr, "error: unknown collection command %q\n", subcommand)
 		fmt.Fprint(stderr, collectionHelp)

@@ -141,7 +141,28 @@ Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/der
 
 Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
 
-The CLI sends `KURA_API_TOKEN` on writes. In protected mode, use **Unlock** in the browser's top bar to enter that token; **Lock** or a reload clears it. Open local mode needs no token. There is no password, OAuth, or passkey login flow yet.
+The CLI sends `KURA_API_TOKEN` on writes and protected Trash reads. In protected mode, use **Unlock** in the browser's top bar to enter that token; **Lock** or a reload clears it. Open local mode needs no token. There is no password, OAuth, or passkey login flow yet.
+
+The native CLI can edit metadata, recover images, and save original ZIP exports:
+
+```sh
+kura post metadata --version 0 --artist "ARTIST" 10
+kura post metadata --version 1 --source "" 10
+kura post trash --reason "Duplicate copy" 10 12
+kura post trash-list --json --limit 60
+kura post restore 10 12
+kura export --ids 10,12 --metadata --output selection.zip
+kura collection export --version 3 --metadata --output references.zip 7
+```
+
+Use the current `metadata_version` from `kura post show --json 10` for edits,
+and the collection's current `version` for its export. A stale version fails
+without retrying. Omit a metadata field to preserve it, or pass an empty value
+to clear it. Trash and restore accept up to 100 IDs; the recovery list reads
+one page and returns `next_cursor` for the next request. Exports stream to a
+private temporary file and publish only a valid ZIP, refusing an existing
+destination. Large exports may need `KURA_HTTP_TIMEOUT=1m`. Place flags before
+IDs and use `--json` or `--jsonl` when scripting.
 
 ## Import local test images
 

@@ -70,6 +70,14 @@ func runPost(ctx context.Context, args []string, stdout, stderr io.Writer, geten
 		return runPostTagEdit(ctx, rest, stdout, stderr, getenv)
 	case "tag-revert", "tag_revert":
 		return runPostTagRevert(ctx, rest, stdout, stderr, getenv)
+	case "metadata":
+		return runPostMetadata(ctx, rest, stdout, stderr, getenv)
+	case "trash":
+		return runPostTrash(ctx, rest, stdout, stderr, getenv)
+	case "restore":
+		return runPostRestore(ctx, rest, stdout, stderr, getenv)
+	case "trash-list":
+		return runPostTrashList(ctx, rest, stdout, stderr, getenv)
 	case "favorite":
 		return runPostFavorite(ctx, rest, stdout, stderr, getenv)
 	case "rating":
