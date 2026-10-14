@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 MAX_BYTES = 25 * 1024 * 1024
-SUPPORTED = {".jpg", ".jpeg", ".png", ".gif"}
+SUPPORTED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 VIDEO = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 PACKAGES = {".photoslibrary", ".photolibrary"}
 METADATA_NAMES = {".ds_store", "thumbs.db", "desktop.ini", "ehthumbs.db"}
@@ -135,7 +135,7 @@ def scan(root):
             elif suffix in SUPPORTED:
                 candidates.append(path)
             else:
-                key = "video" if suffix in VIDEO else "webp" if suffix == ".webp" else (suffix or "[no extension]")
+                key = "video" if suffix in VIDEO else (suffix or "[no extension]")
                 unsupported[key] = unsupported.get(key, 0) + 1
     candidates.sort(key=lambda p: p.relative_to(root).as_posix().casefold())
     return candidates, counts, unsupported

@@ -178,7 +178,7 @@ func (s *PostgresBackend) ExportLibrary(ctx context.Context, request ExportReque
 		if p.Key == "" || strings.HasPrefix(p.Key, "/") || path.Clean(p.Key) != p.Key || strings.Contains(p.Key, "\\") || strings.HasPrefix(p.Key, "../") {
 			return nil, fmt.Errorf("original media unavailable for post %s", p.ID)
 		}
-		extension := map[string]string{"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/svg+xml": "svg"}[p.MediaType]
+		extension := exportExtension(p.MediaType)
 		if extension == "" {
 			extension = "bin"
 		}
@@ -263,6 +263,13 @@ func (s *PostgresBackend) ExportLibrary(ctx context.Context, request ExportReque
 	success = true
 	return archive, nil
 }
+func exportExtension(mediaType string) string {
+	if extension, ok := map[string]string{"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg"}[mediaType]; ok {
+		return extension
+	}
+	return "bin"
+}
+
 func nullableCollectionID(id string) any {
 	if id == "" {
 		return nil

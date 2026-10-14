@@ -186,6 +186,20 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(state.requests[-1][2], "Bearer token-value")
         self.assertFalse(list(self.root.glob("kura-import-snapshots-*")))
 
+    def test_scan_includes_webp_as_supported(self):
+        webp = self.source / "photo.webp"
+        webp.write_bytes(b"RIFF\x04\x00\x00\x00WEBP")
+        self.add_image("a.jpg", b"pixels")
+        video = self.source / "clip.mp4"
+        video.write_bytes(b"video")
+        candidates, _counts, unsupported = importer.scan(self.source)
+        names = [path.name for path in candidates]
+        self.assertIn("photo.webp", names)
+        self.assertIn("a.jpg", names)
+        self.assertNotIn("webp", unsupported)
+        self.assertEqual(unsupported.get("video"), 1)
+        self.assertIn(".webp", importer.SUPPORTED)
+
     def test_empty_terminal_post_page_allows_first_upload(self):
         path = self.add_image()
         state = FakeState()

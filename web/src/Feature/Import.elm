@@ -579,7 +579,7 @@ view writesEnabled collections model =
                             , option [ value "error", selected (importState.duplicatePolicy == State.ErrorOnDuplicates) ] [ text "Fail on duplicates" ]
                             ]
                         ]
-                    , p [ class "panel-note" ] [ text "JPEG, PNG, or GIF up to 25 MiB each; at most 1000 supported images per folder. Picking only previews and hashes locally — nothing uploads until you start the import." ]
+                    , p [ class "panel-note" ] [ text "JPEG, PNG, GIF, or WebP up to 25 MiB each; at most 1000 supported images per folder. Picking only previews and hashes locally — nothing uploads until you start the import." ]
                     , div [ class "upload-item-actions" ]
                         [ button [ class "button", type_ "button", onClick PickFolderClicked, disabled (not writesEnabled || model.pickerPending || State.isPickBlocked importState) ] [ text "Choose folder…" ]
                         , button [ class "button button-quiet", type_ "button", onClick PickFilesClicked, disabled (not writesEnabled || model.pickerPending || State.isPickBlocked importState) ] [ text "Choose files…" ]

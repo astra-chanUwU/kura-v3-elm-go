@@ -178,6 +178,8 @@ caseClassify =
     ImportState.classify (fact "photos/a.jpg" "image/jpeg" 10) == Ok ()
         && ImportState.classify (fact "photos/b.txt" "text/plain" 10) /= Ok ()
         && ImportState.classify (fact "photos/big.png" "image/png" (26 * 1024 * 1024)) /= Ok ()
+        && ImportState.classify (fact "photos/c.webp" "image/webp" 10) == Ok ()
+        && ImportState.classify (fact "photos/d.webp" "" 10) == Ok ()
 
 
 caseExcludedKinds : Bool

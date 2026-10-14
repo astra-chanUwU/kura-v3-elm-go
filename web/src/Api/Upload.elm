@@ -93,7 +93,7 @@ uploadErrorToString error =
             "The connection was lost while saving. The post may already exist — check the Library before uploading again."
 
         Http.BadStatus 400 ->
-            "The server rejected the file. It may not be a supported JPEG, PNG, or GIF image."
+            "The server rejected the file. It may not be a supported JPEG, PNG, GIF, or WebP image."
 
         Http.BadStatus 401 ->
             "Authorization failed. A write capability is required to upload."

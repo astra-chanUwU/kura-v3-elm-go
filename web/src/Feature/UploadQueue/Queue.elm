@@ -77,7 +77,7 @@ other means get honest errors instead of silent acceptance.
 -}
 acceptMimes : List String
 acceptMimes =
-    [ "image/jpeg", "image/png", "image/gif" ]
+    [ "image/jpeg", "image/png", "image/gif", "image/webp" ]
 
 
 {-| Thumbnail poll bound: 40 polls, after which the entry settles as a
@@ -348,10 +348,10 @@ parseTags raw =
 
 allowedExtensions : List String
 allowedExtensions =
-    [ ".jpg", ".jpeg", ".png", ".gif" ]
+    [ ".jpg", ".jpeg", ".png", ".gif", ".webp" ]
 
 
-{-| Accept JPEG, PNG, and GIF up to 25 MiB. An empty MIME type falls back
+{-| Accept JPEG, PNG, GIF, and WebP up to 25 MiB. An empty MIME type falls back
 to the file extension; anything else is rejected with a useful message.
 -}
 validateFile : FileInfo -> Result String ()
@@ -378,13 +378,13 @@ validateFile info =
                 Ok ()
 
             else
-                Err "The file is not a supported image. Upload JPEG, PNG, or GIF."
+                Err "The file is not a supported image. Upload JPEG, PNG, GIF, or WebP."
 
         else if List.member mime acceptMimes then
             Ok ()
 
         else
-            Err ("Files of type " ++ info.mime ++ " are not supported. Upload JPEG, PNG, or GIF.")
+            Err ("Files of type " ++ info.mime ++ " are not supported. Upload JPEG, PNG, GIF, or WebP.")
 
 
 formatBytes : Int -> String

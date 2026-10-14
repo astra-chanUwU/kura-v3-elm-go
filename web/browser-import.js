@@ -7,8 +7,8 @@
   "use strict";
 
   var MAX_BYTES = 25 * 1024 * 1024;
-  var ACCEPT_MIMES = ["image/jpeg", "image/png", "image/gif"];
-  var ACCEPT_EXTS = [".jpg", ".jpeg", ".png", ".gif"];
+  var ACCEPT_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+  var ACCEPT_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
 
   function isValidHash(value) {
     return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
@@ -66,7 +66,7 @@
     var filesInput = document.createElement("input");
     filesInput.type = "file";
     filesInput.multiple = true;
-    filesInput.accept = "image/jpeg,image/png,image/gif";
+    filesInput.accept = "image/jpeg,image/png,image/gif,image/webp";
     filesInput.style.display = "none";
     document.body.appendChild(folderInput);
     document.body.appendChild(filesInput);

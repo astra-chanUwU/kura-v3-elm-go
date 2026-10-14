@@ -27,8 +27,8 @@ import (
 const KindDerivative = "derivative"
 
 // Supported thumbnail variants and their long-edge bound in pixels. The
-// decode set stays the repository's existing stdlib set (JPEG, PNG, GIF,
-// as accepted by uploads); no ffmpeg, libvips, or richer formats are added.
+// decode set is JPEG, PNG, GIF and static WebP (via golang.org/x/image/webp),
+// as accepted by uploads; no ffmpeg or libvips is added.
 var derivativeBounds = map[string]int{
 	"thumb-160": 160,
 	"thumb-320": 320,
@@ -150,6 +150,11 @@ func (p *DerivativeProcessor) process(ctx context.Context, payload derivativePay
 	}
 	if int64(len(data)) == 0 || int64(len(data)) > maxOriginalBytes {
 		return Variant{}, fmt.Errorf("original must be between 1 byte and 25 MiB")
+	}
+	if IsWebP(data) {
+		if _, err := ValidateStaticWebP(data); err != nil {
+			return Variant{}, fmt.Errorf("decode original: file is not a supported image: %w", err)
+		}
 	}
 	source, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {

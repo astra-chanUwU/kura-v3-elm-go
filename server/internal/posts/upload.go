@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+
+	_ "golang.org/x/image/webp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +137,26 @@ func stageUpload(request UploadRequest) (*stagedUpload, error) {
 	if !ok {
 		_ = os.Remove(tempPath)
 		return nil, fmt.Errorf("%w: format %q is not supported", ErrInvalidUpload, format)
+	}
+	if format == "webp" {
+		data, err := os.ReadFile(tempPath)
+		if err != nil {
+			_ = os.Remove(tempPath)
+			return nil, err
+		}
+		if int64(len(data)) != written {
+			_ = os.Remove(tempPath)
+			return nil, fmt.Errorf("%w: file is not a supported image", ErrInvalidUpload)
+		}
+		webpConfig, err := media.ValidateStaticWebP(data)
+		if err != nil {
+			_ = os.Remove(tempPath)
+			if errors.Is(err, media.ErrAnimatedWebP) {
+				return nil, fmt.Errorf("%w: animated WebP is not supported", ErrInvalidUpload)
+			}
+			return nil, fmt.Errorf("%w: file is not a supported image", ErrInvalidUpload)
+		}
+		config = webpConfig
 	}
 
 	digest := hex.EncodeToString(hasher.Sum(nil))
@@ -286,6 +309,8 @@ func uploadFormat(format string) (mediaType, extension string, ok bool) {
 		return "image/png", "png", true
 	case "gif":
 		return "image/gif", "gif", true
+	case "webp":
+		return "image/webp", "webp", true
 	default:
 		return "", "", false
 	}

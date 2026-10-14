@@ -16,7 +16,7 @@ milestone's original scope and historical acceptance checks.
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
 - Edit tags, rename or merge tags across the library, revert revisions, set favorites, and score posts.
-- Upload JPEG, PNG, and GIF files, up to 25 MiB each, with a sequential queue and transfer progress.
+- Upload JPEG, PNG, GIF, and static WebP files, up to 25 MiB each, with a sequential queue and transfer progress.
 - Generate thumbnails through durable PostgreSQL jobs with retries and crash recovery.
 - Moderate posts through the API. Hidden, rejected, and deleted posts are excluded from public browsing and local media access.
 
@@ -64,7 +64,7 @@ Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe 
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
 
-**Import folder** previews up to 1,000 JPEG, PNG, or GIF images before you start.
+**Import folder** previews up to 1,000 JPEG, PNG, GIF, or static WebP images before you start.
 Hidden files, photo-library packages, and unsupported files are excluded. The
 preview checks for exact duplicates; choose shared tags, artist, a source
 prefix, and an optional destination collection. Import runs one image at a
@@ -190,7 +190,7 @@ To add a folder of local test images without changing the source files, run:
 python3 scripts/import-test-media.py "SOURCE_FOLDER" --api-url http://127.0.0.1:8080
 ```
 
-The importer accepts JPEG, PNG, and GIF files up to 25 MiB, skips hidden and Photos library content, and records each file's relative path as source metadata. It adds the `test-data` and `folder-test` tags; search for imported posts with `tag:folder-test`. WebP and video files are reported as unsupported. Duplicate detection checks hashes from browse-visible posts; hidden or deleted posts are outside that API listing. If the API requires a bearer token, set `KURA_API_TOKEN` in the environment. A local resume manifest is kept at `.local/test-media-manifest.json` and is ignored by Git.
+The importer accepts JPEG, PNG, GIF, and static WebP files up to 25 MiB, skips hidden and Photos library content, and records each file's relative path as source metadata. It adds the `test-data` and `folder-test` tags; search for imported posts with `tag:folder-test`. Animated WebP and video files are unsupported. Static WebP originals keep their bytes and produce JPEG thumbnails. Duplicate detection checks hashes from browse-visible posts; hidden or deleted posts are outside that API listing. If the API requires a bearer token, set `KURA_API_TOKEN` in the environment. A local resume manifest is kept at `.local/test-media-manifest.json` and is ignored by Git.
 
 The manifest belongs to one source folder and API URL. Use a separate ignored
 manifest for another import. Interrupted or ambiguous uploads are verified before

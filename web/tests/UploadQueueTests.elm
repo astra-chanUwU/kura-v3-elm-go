@@ -32,6 +32,13 @@ caseGifAccepted =
     UploadQueue.validateFile (info "anim.gif" "image/gif" 4096) == Ok ()
 
 
+caseWebpAccepted : Bool
+caseWebpAccepted =
+    UploadQueue.validateFile (info "photo.webp" "image/webp" 4096) == Ok ()
+        && UploadQueue.validateFile (info "photo.WEBP" "" 4096) == Ok ()
+        && List.member "image/webp" UploadQueue.acceptMimes
+
+
 caseBadMimeRejected : Bool
 caseBadMimeRejected =
     case UploadQueue.validateFile (info "notes.txt" "text/plain" 100) of
@@ -457,6 +464,7 @@ suite =
     [ ( "jpeg accepted", caseJpegAccepted )
     , ( "png accepted", casePngAccepted )
     , ( "gif accepted", caseGifAccepted )
+    , ( "webp accepted", caseWebpAccepted )
     , ( "unsupported mime rejected", caseBadMimeRejected )
     , ( "empty mime falls back to extension", caseEmptyMimeFallsBackToExtension )
     , ( "empty mime with unknown extension rejected", caseEmptyMimeUnknownExtensionRejected )

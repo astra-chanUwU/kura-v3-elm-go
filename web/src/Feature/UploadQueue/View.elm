@@ -83,7 +83,7 @@ view config writesEnabled model =
                             ]
                             []
                         ]
-                    , p [ class "panel-note" ] [ text "Shared fields apply to files you pick next. JPEG, PNG, or GIF up to 25 MiB each." ]
+                    , p [ class "panel-note" ] [ text "Shared fields apply to files you pick next. JPEG, PNG, GIF, or WebP up to 25 MiB each." ]
                     , if writesEnabled then
                         button [ class "button", type_ "button", id "upload-browse", onClick config.onBrowse ] [ text "Choose files…" ]
 
