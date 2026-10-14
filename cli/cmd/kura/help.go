@@ -8,11 +8,13 @@ Usage:
   kura search --help
   kura collection --help
   kura post --help
+  kura tag --help
 
 Commands:
   search    Search posts via GET /api/posts
   collection List collections or browse collection posts
   post      Show post detail and mutate tags, favorites, scores, and content ratings
+  tag       List and manage global tags
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
@@ -25,6 +27,65 @@ Notes:
   http://localhost:8080. Writes are never automatically retried.
   Run with --help on any command for details.
 `
+
+const tagHelp = `kura tag - list and manage global tags
+
+Usage:
+  kura tag list [flags]
+  kura tag rename [flags] SOURCE TARGET
+  kura tag merge [flags] SOURCE TARGET
+
+Commands:
+  list    Read one bounded page of global tags
+  rename  Preview by default; apply with an explicitly observed --version
+  merge   Preview by default; apply with an explicitly observed --version
+
+Run kura tag list --help, kura tag rename --help, or kura tag merge --help for details.
+`
+
+const tagListHelp = `kura tag list - list global tags
+
+Usage:
+  kura tag list [flags]
+
+Reads one page from the protected GET /api/tags/manage endpoint.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL)
+  --prefix TEXT     Filter tags by prefix
+  --limit N         Page size 1..60 (default 60)
+  --cursor CURSOR   Opaque cursor from the previous page
+  --json            Output the full response envelope
+  --jsonl           Output one tag object per line
+  -h, --help        Show this help
+
+The response includes taxonomy version and next_cursor. Each invocation reads
+exactly one page; pass its cursor to continue. A bearer token from
+KURA_API_TOKEN is sent for this protected endpoint.
+`
+
+func tagMutationHelp(mode string) string {
+	return `kura tag ` + mode + ` - ` + mode + ` global tags
+
+Usage:
+  kura tag ` + mode + ` [flags] SOURCE TARGET
+
+By default this sends a non-mutating preview request. To apply the operation,
+pass --version N using the taxonomy version observed from the preview. Version
+zero is valid. Writes are never retried automatically.
+
+Flags:
+  --api-url URL     Base API URL (env KURA_API_URL)
+  --preview         Explicitly request a preview (default behavior)
+  --version N       Apply using the expected taxonomy version (non-negative int64)
+  --json            Output the response as pretty JSON
+  --jsonl           Output the response as one JSON Lines object
+  -h, --help        Show this help
+
+--preview and --version cannot be combined. SOURCE and TARGET are canonical
+tag names.
+`
+}
 
 const searchHelp = `kura search - search posts via the HTTP API
 

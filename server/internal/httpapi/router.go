@@ -47,6 +47,9 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		// moderation (moderation.go). Static paths precede the id routes.
 		api.Get("/posts", searchPosts(deps.Posts))
 		api.Get("/tags/suggestions", suggestTags(deps.TagSuggestions))
+		api.Get("/tags/manage", listManageTags(deps.TagTaxonomy))
+		api.Post("/tags/manage/preview", previewTagOperation(deps.TagTaxonomy))
+		api.Post("/tags/manage/apply", applyTagOperation(deps.TagTaxonomy))
 		api.Get("/posts/export", exportLibrary(deps.Exports, false))
 		api.Get("/posts/trash", listTrash(deps.Trash))
 		api.Post("/posts/trash", trashPosts(deps.Trash))

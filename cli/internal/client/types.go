@@ -49,6 +49,52 @@ type CollectionSummariesResponse struct {
 	Collections []CollectionSummary `json:"collections"`
 }
 
+// TagSummary is one bounded global taxonomy entry returned to CLI managers.
+type TagSummary struct {
+	Tag              string `json:"tag"`
+	PostCount        int64  `json:"post_count"`
+	VisiblePostCount int64  `json:"visible_post_count"`
+}
+
+// TagManageListResponse is one version-bound page from GET /api/tags/manage.
+type TagManageListResponse struct {
+	Version    int64        `json:"version"`
+	Tags       []TagSummary `json:"tags"`
+	NextCursor *string      `json:"next_cursor,omitempty"`
+}
+
+// TagManageRequest describes a preview or version-checked global tag mutation.
+type TagManageRequest struct {
+	Mode            string `json:"mode"`
+	SourceTag       string `json:"source_tag"`
+	TargetTag       string `json:"target_tag"`
+	ExpectedVersion *int64 `json:"expected_version,omitempty"`
+}
+
+// TagManageResult describes a non-mutating operation preview.
+type TagManageResult struct {
+	Version           int64  `json:"version"`
+	Mode              string `json:"mode"`
+	SourceTag         string `json:"source_tag"`
+	TargetTag         string `json:"target_tag"`
+	AffectedPostCount int64  `json:"affected_post_count"`
+	VisiblePostCount  int64  `json:"visible_post_count"`
+	TargetPostCount   int64  `json:"target_post_count"`
+}
+
+// TagManageApplyResult acknowledges one tag mutation. Its ID is required by
+// the shared transport contract before the caller can report success.
+type TagManageApplyResult struct {
+	ID                string `json:"id"`
+	Version           int64  `json:"version"`
+	Mode              string `json:"mode"`
+	SourceTag         string `json:"source_tag"`
+	TargetTag         string `json:"target_tag"`
+	AffectedPostCount int64  `json:"affected_post_count"`
+	VisiblePostCount  int64  `json:"visible_post_count"`
+	Changed           bool   `json:"changed"`
+}
+
 type CollectionManageRequest struct {
 	Name            string `json:"name,omitempty"`
 	ExpectedVersion int64  `json:"expected_version"`

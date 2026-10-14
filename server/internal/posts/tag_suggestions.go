@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type TagSuggestion struct {
@@ -31,13 +33,27 @@ func (s *PostgresBackend) SuggestTags(ctx context.Context, prefix string, limit 
 	if err != nil {
 		return nil, err
 	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	effectivePrefix := prefix
+	if canonical, ok := redirects[prefix]; ok {
+		effectivePrefix = canonical
+	}
 	// Literal prefix comparison prevents wildcard characters from expanding a
-	// suggestion query. Only tags on publicly visible posts contribute counts.
-	rows, err := s.pool.Query(ctx, `SELECT t.tag, COUNT(DISTINCT p.id)
+	// suggestion query. Only canonical tags on publicly visible posts count.
+	rows, err := tx.Query(ctx, `SELECT t.tag, COUNT(DISTINCT p.id)
 FROM posts p CROSS JOIN LATERAL unnest(p.tags) t(tag)
 WHERE p.deleted_at IS NULL AND p.moderation_state = 'published'
 AND t.tag <> '' AND left(lower(t.tag), length($1)) = lower($1)
-GROUP BY t.tag ORDER BY COUNT(DISTINCT p.id) DESC, t.tag LIMIT $2`, prefix, limit)
+AND NOT EXISTS (SELECT 1 FROM tag_redirects r WHERE r.retired_tag = t.tag)
+GROUP BY t.tag ORDER BY COUNT(DISTINCT p.id) DESC, t.tag LIMIT $2`, effectivePrefix, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -50,5 +66,12 @@ GROUP BY t.tag ORDER BY COUNT(DISTINCT p.id) DESC, t.tag LIMIT $2`, prefix, limi
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
 }

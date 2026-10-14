@@ -93,7 +93,7 @@ func newCollectionPaginationBackendWithPoolURL(t *testing.T, ctx context.Context
 			t.Fatalf("apply %s: %v", file, err)
 		}
 	}
-	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, collections CASCADE"); err != nil {
+	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, collections, tag_operations, tag_redirects CASCADE; UPDATE tag_taxonomy_state SET version=0 WHERE id=1"); err != nil {
 		t.Fatal(err)
 	}
 	return backend

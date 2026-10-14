@@ -37,6 +37,7 @@ import Feature.Export as Export
 import Feature.TagSuggestions as TagSuggestions
 import Feature.Tags as Tags
 import Feature.Trash as Trash
+import Feature.TagManagement as TagManagement
 import Feature.Survey as Survey
 import Feature.UploadQueue as UploadQueue
 import Html exposing (Html, button, div, footer, form, h1, header, input, p, span, text)
@@ -128,6 +129,8 @@ type alias Model =
     , uploadOrigin : Maybe UploadOrigin
     , access : App.Access.State
     , trash : Trash.Model
+    , tagManagement : TagManagement.Model
+    , detailEpoch : Int
     , exportMetadata : Bool
     , tagSuggestions : TagSuggestions.Model
     }
@@ -211,6 +214,8 @@ init flagsValue url key =
             , uploadOrigin = Nothing
             , access = App.Access.init
             , trash = Trash.init
+            , tagManagement = TagManagement.init
+            , detailEpoch = 0
             , exportMetadata = True
             , tagSuggestions = TagSuggestions.init
             }
@@ -272,7 +277,7 @@ type Msg
     | DraftChanged String
     | SearchSubmitted
     | SearchMsg Search.Msg
-    | DetailCompleted Int String (Result Http.Error PostDetail)
+    | DetailCompleted Int Int String (Result Http.Error PostDetail)
     | TagsMsg Tags.Msg
     | ReactionsMsg Reactions.Msg
     | RatingsMsg Ratings.Msg
@@ -313,6 +318,7 @@ type Msg
     | ImportMsg BrowserImport.Msg
     | MetadataMsg Metadata.Msg
     | TrashMsg Trash.Msg
+    | TagManagementMsg TagManagement.Msg
     | ExportMetadataChanged Bool
     | TagSuggestionMsg TagSuggestions.Msg
     | TagSuggestionChosen String
@@ -472,8 +478,8 @@ updateHelp msg model =
         SearchMsg subMsg ->
             delegateSearch subMsg model
 
-        DetailCompleted generation postId result ->
-            if not (App.Access.isCurrent generation model.access) then
+        DetailCompleted generation detailEpoch postId result ->
+            if not (App.Access.isCurrent generation model.access) || detailEpoch /= model.detailEpoch then
                 ( model, Cmd.none )
 
             else
@@ -565,6 +571,9 @@ updateHelp msg model =
 
         TrashMsg subMsg ->
             delegateTrash subMsg model
+
+        TagManagementMsg subMsg ->
+            delegateTagManagement subMsg model
 
         ExportMetadataChanged value ->
             ( { model | exportMetadata = value }, Cmd.none )
@@ -924,9 +933,14 @@ delegateUpload subMsg model =
 
 {-| Upload queue effects keep the Library stable: the query, collection,
 selection, and scroll position are never touched here. Confirmed uploads
-stay in the queue and detail caches; sequence members are refreshed in
-place, but new posts are never injected into filtered searches or
-collection results.
+stay in the queue; sequence members are refreshed in place, but new
+posts are never injected into filtered searches or collection results.
+The embedded detail comes from the upload transaction, so its tags and
+tag version may predate a global rename that landed meanwhile: it is
+never trusted for the detail or tag-version caches. A fresh detail
+GET under the current detail epoch repopulates both, while the
+uploaded-post summary keeps the route and the rating/reaction metadata
+from the confirmation is preserved.
 -}
 handleUploadOuts : List UploadQueue.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
 handleUploadOuts outs ( model, cmd ) =
@@ -945,21 +959,22 @@ applyUploadOut out ( model, cmd ) =
             let
                 guarded =
                     guardRatingDetail model detail.id detail
+
+                freshDetail =
+                    Api.Post.detail model.apiBase guarded.id (DetailCompleted model.access.generation model.detailEpoch guarded.id)
             in
             ( { model
-                | sequence = Sequence.refreshSummary (summaryOfDetail guarded) model.sequence
-                , details = Dict.insert guarded.id (DetailReady guarded) model.details
+                | details = Dict.insert guarded.id DetailLoading model.details
                 , uploadedPosts = Dict.insert guarded.id (summaryOfDetail guarded) model.uploadedPosts
-                , tags = Tags.noteVersion guarded.id guarded.tagVersion model.tags
                 , reactions = Reactions.noteVersion guarded.id guarded.reactionVersion model.reactions
                 , ratings = Ratings.noteDetail guarded model.ratings
               }
-            , cmd
+            , Cmd.batch [ cmd, freshDetail ]
             )
 
         UploadQueue.ThumbCompleted postId ->
             ( model
-            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
+            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation model.detailEpoch postId) ]
             )
 
         UploadQueue.OpenPost postId ->
@@ -1010,9 +1025,12 @@ handleImportOuts outs ( model, cmd ) =
             handleImportOuts rest (applyImportOut out ( model, cmd ))
 
 
-{-| Import confirmations keep the workspace stable: summaries refresh in
-place only, the detail cache learns the new post, and the captured
-collection is reconciled only while it is still browsed. Summaries are
+{-| Import confirmations keep the workspace stable: the captured
+collection is reconciled only while it is still browsed. As with
+uploads, the embedded detail may carry tags from before a global
+rename, so a fresh detail GET under the current detail epoch fills
+the detail and tag-version caches; the uploaded-post summary keeps
+the route and rating/reaction metadata is preserved. Summaries are
 public, so attachment changes refresh them without a credential.
 -}
 applyImportOut : BrowserImport.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
@@ -1023,12 +1041,13 @@ applyImportOut out ( model, cmd ) =
                 detail =
                     guardRatingDetail model result.post.id result.post
 
+                freshDetail =
+                    Api.Post.detail model.apiBase detail.id (DetailCompleted model.access.generation model.detailEpoch detail.id)
+
                 base =
                     { model
-                        | sequence = Sequence.refreshSummary (summaryOfDetail detail) model.sequence
-                        , details = Dict.insert detail.id (DetailReady detail) model.details
+                        | details = Dict.insert detail.id DetailLoading model.details
                         , uploadedPosts = Dict.insert detail.id (summaryOfDetail detail) model.uploadedPosts
-                        , tags = Tags.noteVersion detail.id detail.tagVersion model.tags
                         , reactions = Reactions.noteVersion detail.id detail.reactionVersion model.reactions
                         , ratings = Ratings.noteDetail detail model.ratings
                     }
@@ -1044,13 +1063,13 @@ applyImportOut out ( model, cmd ) =
                     in
                     if Collections.browse withSummaries.collections == Just collectionId then
                         delegateCollections Collections.RetryRequested withSummaries
-                            |> withCmd (Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd ])
+                            |> withCmd (Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd, freshDetail ])
 
                     else
-                        ( withSummaries, Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd ] )
+                        ( withSummaries, Cmd.batch [ cmd, Cmd.map CollectionsMsg summariesCmd, freshDetail ] )
 
                 Nothing ->
-                    ( base, cmd )
+                    ( base, Cmd.batch [ cmd, freshDetail ] )
 
         BrowserImport.OpenPost postId ->
             case Dict.get postId model.uploadedPosts |> Maybe.map Just |> Maybe.withDefault (Sequence.find postId model.sequence) of
@@ -1126,7 +1145,7 @@ applyMetadataOut out ( model, cmd ) =
                     { model | details = details }
 
                 detailCmd =
-                    Api.Post.detail model.apiBase result.id (DetailCompleted model.access.generation result.id)
+                    Api.Post.detail model.apiBase result.id (DetailCompleted model.access.generation model.detailEpoch result.id)
             in
             if not result.changed then
                 ( base, Cmd.batch [ cmd, detailCmd ] )
@@ -1152,7 +1171,7 @@ applyMetadataOut out ( model, cmd ) =
 
         Metadata.ReloadPost postId ->
             ( { model | details = Dict.insert postId DetailLoading model.details }
-            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
+            , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation model.detailEpoch postId) ]
             )
 
 
@@ -1559,15 +1578,18 @@ applyTagsOut out ( model, cmd ) =
                         (\post sequence_ -> Sequence.updateTags post.id post.tags sequence_)
                         model.sequence
                         response.posts
+
+                ( refreshed, managementCmd ) =
+                    delegateTagManagement TagManagement.TagsChanged { model | sequence = sequence }
             in
             case activeId of
                 Just postId ->
-                    ( { model | sequence = sequence, details = Dict.insert postId DetailLoading model.details }
-                    , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
+                    ( { refreshed | details = Dict.insert postId DetailLoading refreshed.details }
+                    , Cmd.batch [ cmd, managementCmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation model.detailEpoch postId) ]
                     )
 
                 Nothing ->
-                    ( { model | sequence = sequence }, cmd )
+                    ( refreshed, Cmd.batch [ cmd, managementCmd ] )
 
         Tags.StaleResponse postIds ->
             refreshPublicPosts postIds model |> withCmd cmd
@@ -1636,7 +1658,7 @@ applyReactionsOut out ( model, cmd ) =
             case activeId of
                 Just postId ->
                     ( { model | details = Dict.insert postId DetailLoading model.details }
-                    , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation postId) ]
+                    , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation model.detailEpoch postId) ]
                     )
 
                 Nothing ->
@@ -1812,7 +1834,7 @@ applyRatingsOut out ( model, cmd ) =
                     case model.selection.active of
                         Just activeId ->
                             if List.any (\post -> post.id == activeId) response.posts then
-                                Api.Post.detail model.apiBase activeId (DetailCompleted model.access.generation activeId)
+                                Api.Post.detail model.apiBase activeId (DetailCompleted model.access.generation model.detailEpoch activeId)
 
                             else
                                 Cmd.none
@@ -1953,6 +1975,81 @@ applyTrashOut out ( model, cmd ) =
 
         Trash.AccessRevoked ->
             revokeAccess model |> withCmd cmd
+
+
+tagManagementContext : Model -> TagManagement.Context
+tagManagementContext model =
+    TagManagement.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+
+
+delegateTagManagement : TagManagement.Msg -> Model -> ( Model, Cmd Msg )
+delegateTagManagement subMsg model =
+    let
+        ( tm, cmd, outs ) =
+            TagManagement.update (tagManagementContext model) subMsg model.tagManagement
+
+        base =
+            ( { model | tagManagement = tm }, Cmd.map TagManagementMsg cmd )
+    in
+    List.foldl applyTagManagementOut base outs
+
+
+applyTagManagementOut : TagManagement.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyTagManagementOut out ( model, cmd ) =
+    case out of
+        TagManagement.Applied _ ->
+            reconcileAfterTagManagement model |> withCmd cmd
+
+        TagManagement.ResultUncertain ->
+            reconcileAfterTagManagement model |> withCmd cmd
+
+        TagManagement.AccessRevoked ->
+            revokeAccess model |> withCmd cmd
+
+
+{-| After a global rename/merge, and likewise when an apply result is
+uncertain and may have changed tags on the server: cached details and
+tag versions are stale, tag drafts/confirmations and suggestions
+clear, the loaded search or collection prefix re-reads without
+changing query/selection/scroll, and the active detail reloads under
+a new detail epoch so prior in-flight detail responses cannot
+reintroduce old tags. An uncertain result is never retried here; the
+feature still blocks resubmission until a fresh preview.
+-}
+reconcileAfterTagManagement : Model -> ( Model, Cmd Msg )
+reconcileAfterTagManagement model =
+    let
+        epoch =
+            model.detailEpoch + 1
+
+        cleared =
+            { model
+                | details = Dict.empty
+                , detailEpoch = epoch
+                , tags = Tags.globalTagsChanged model.tags
+                , tagSuggestions = TagSuggestions.clear model.tagSuggestions
+            }
+
+        ( refreshed, refreshCmd ) =
+            refreshQueryMembership cleared
+
+        detailCmd =
+            case refreshed.selection.active of
+                Just postId ->
+                    Api.Post.detail refreshed.apiBase postId (DetailCompleted refreshed.access.generation epoch postId)
+
+                Nothing ->
+                    Cmd.none
+
+        withDetail =
+            case refreshed.selection.active of
+                Just postId ->
+                    { refreshed | details = Dict.insert postId DetailLoading refreshed.details }
+
+                Nothing ->
+                    refreshed
+    in
+    ( withDetail, Cmd.batch [ refreshCmd, detailCmd ] )
 
 
 {-| After a durable trash/restore: browsed collections reload their
@@ -2927,7 +3024,7 @@ prepareActiveDetail model =
 
                 _ ->
                     ( { prepared | details = Dict.insert postId DetailLoading prepared.details }
-                    , Api.Post.detail prepared.apiBase postId (DetailCompleted prepared.access.generation postId)
+                    , Api.Post.detail prepared.apiBase postId (DetailCompleted prepared.access.generation prepared.detailEpoch postId)
                     )
 
 
@@ -3042,6 +3139,7 @@ lockNow model hint =
             , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
+            , tagManagement = TagManagement.locked model.tagManagement
             , tagSuggestions = TagSuggestions.init
             , hint = Just hint
         }
@@ -3066,6 +3164,7 @@ revokeAccess model =
             , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
+            , tagManagement = TagManagement.locked model.tagManagement
             , tagSuggestions = TagSuggestions.init
             , hint = Just "The browser was locked (401). Unlock to continue writing."
         }
@@ -3101,7 +3200,7 @@ refreshPublicPosts postIds model =
             Set.fromList postIds |> Set.toList
     in
     ( { model | details = List.foldl (\id details -> Dict.insert id DetailLoading details) model.details ids }
-    , ids |> List.map (\id -> Api.Post.detail model.apiBase id (DetailCompleted model.access.generation id)) |> Cmd.batch
+    , ids |> List.map (\id -> Api.Post.detail model.apiBase id (DetailCompleted model.access.generation model.detailEpoch id)) |> Cmd.batch
     )
 
 
@@ -3872,6 +3971,7 @@ libraryTools model =
     div [ class "panel-section library-tools" ]
         ([ div [ class "library-tools-row" ]
             [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Trash" ]
+            , button [ class "button button-quiet", type_ "button", onClick (TagManagementMsg TagManagement.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Manage tags" ]
             , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested selectedIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty selectedIds) ] [ text "Move selected to Trash" ]
             , Html.label [] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text " Include metadata" ]
             , case selectionExport of
@@ -3897,6 +3997,25 @@ libraryTools model =
                             , onLoadMore = Trash.LoadMoreRequested
                             , onConfirmTrash = Trash.TrashConfirmRequested
                             , onCancelTrash = Trash.TrashCancelled
+                            }
+                        )
+                    ]
+
+                else
+                    []
+               )
+            ++ (if TagManagement.isOpen model.tagManagement then
+                    [ Html.map TagManagementMsg
+                        (TagManagement.view model.tagManagement
+                            { onClose = TagManagement.CloseRequested
+                            , onPrefix = TagManagement.PrefixChanged
+                            , onLoadMore = TagManagement.LoadMoreRequested
+                            , onChoose = TagManagement.SourceChosen
+                            , onSource = TagManagement.SourceChanged
+                            , onTarget = TagManagement.TargetChanged
+                            , onMode = TagManagement.ModeChanged
+                            , onPreview = TagManagement.PreviewRequested
+                            , onApply = TagManagement.ApplyRequested
                             }
                         )
                     ]

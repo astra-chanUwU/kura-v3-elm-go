@@ -53,6 +53,8 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 		return runCollection(ctx, args[1:], stdout, stderr, getenv)
 	case "post":
 		return runPost(ctx, args[1:], stdout, stderr, getenv)
+	case "tag":
+		return runTag(ctx, args[1:], stdout, stderr, getenv)
 	default:
 		fmt.Fprintf(stderr, "error: unknown command %q\n", args[0])
 		fmt.Fprint(stderr, rootHelp)

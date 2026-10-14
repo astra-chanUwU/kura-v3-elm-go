@@ -140,6 +140,15 @@ func (s *PostgresBackend) ImportBrowser(ctx context.Context, request BrowserImpo
 		return BrowserImportResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockTaxonomyTx(ctx, tx); err != nil {
+		return BrowserImportResult{}, err
+	}
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return BrowserImportResult{}, err
+	}
+	staged.tags = canonicalizeTags(staged.tags, redirects)
+	staged.search = canonicalSearchText(staged.tags, staged.source, staged.artist)
 	// A transaction-scoped advisory lock serializes same-content browser
 	// imports. It is independent of collection/post row locks used elsewhere.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "kura:browser-import:"+staged.digest); err != nil {
@@ -195,6 +204,11 @@ func (s *PostgresBackend) ImportBrowser(ctx context.Context, request BrowserImpo
 	id, err := s.insertStagedUpload(ctx, tx, staged, object)
 	if err != nil {
 		return BrowserImportResult{}, err
+	}
+	if len(staged.tags) > 0 {
+		if err := bumpTaxonomyTx(ctx, tx); err != nil {
+			return BrowserImportResult{}, err
+		}
 	}
 	if collectionID != "" {
 		if _, err := tx.Exec(ctx, addCollectionPostSQL, collectionNumeric, []int64{parsePostID(id)}); err != nil {

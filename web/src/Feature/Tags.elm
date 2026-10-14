@@ -6,6 +6,7 @@ module Feature.Tags exposing
     , Revert(..)
     , activeChanged
     , addDraft
+    , globalTagsChanged
     , context
     , errorToString
     , init
@@ -212,6 +213,14 @@ completions will arrive with an obsolete generation and be ignored.
 locked : Model -> Model
 locked model =
     { model | saving = False, revert = Idle }
+
+
+{-| A global rename/merge changed every tag version: cached versions,
+drafts, and confirmations are stale and in-flight edits are abandoned.
+-}
+globalTagsChanged : Model -> Model
+globalTagsChanged model =
+    { model | addDraft = "", removeDraft = "", status = Nothing, revertStatus = Nothing, revert = Idle, versions = Dict.empty, requestId = model.requestId + 1, saving = False }
 
 
 resolveTarget : Model -> Context -> String -> TagEditTarget

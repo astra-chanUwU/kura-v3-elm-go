@@ -57,6 +57,7 @@ func main() {
 				CollectionManager:   pgBackend,
 				Trash:               pgBackend,
 				TagSuggestions:      pgBackend,
+				TagTaxonomy:         pgBackend,
 				Exports:             pgBackend,
 				Moderation:          pgBackend,
 				ModerationRead:      pgBackend,

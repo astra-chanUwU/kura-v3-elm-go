@@ -48,8 +48,8 @@ func ValidateTagEdit(request TagEditRequest) (TagEditRequest, error) {
 	}
 	seenPosts := make(map[string]struct{}, len(request.Posts))
 	for index, target := range request.Posts {
-		id, err := strconv.ParseInt(strings.TrimSpace(target.ID), 10, 64)
-		if err != nil || id <= 0 || strings.TrimSpace(target.ID) != strconv.FormatInt(id, 10) {
+		id, err := strconv.ParseInt(target.ID, 10, 64)
+		if err != nil || id <= 0 || target.ID != strconv.FormatInt(id, 10) {
 			return TagEditRequest{}, fmt.Errorf("%w: posts[%d].id must be a positive integer", ErrInvalidTags, index)
 		}
 		if target.Version < 0 {
@@ -90,8 +90,8 @@ func normalizeTags(tags []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(tags))
 	for _, raw := range tags {
 		tag := strings.TrimSpace(raw)
-		if tag == "" || utf8.RuneCountInString(tag) > maxTagLength {
-			return nil, fmt.Errorf("%w: tags must be non-empty and at most 128 characters", ErrInvalidTags)
+		if tag == "" || !utf8.ValidString(tag) || strings.ContainsRune(tag, '\x00') || utf8.RuneCountInString(tag) > maxTagLength {
+			return nil, fmt.Errorf("%w: tags must be non-empty valid UTF-8 without NUL and at most 128 characters", ErrInvalidTags)
 		}
 		if _, duplicate := seen[tag]; duplicate {
 			return nil, fmt.Errorf("%w: duplicate tag %q", ErrInvalidTags, tag)
@@ -168,35 +168,39 @@ func (s *PostgresBackend) applyTagEdit(ctx context.Context, tx pgx.Tx, target Ta
 	return result, nil
 }
 
-func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int) (TagEditResult, error) {
+func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target TagTarget, targetVersion int, redirects map[string]string) (TagEditResult, bool, error) {
 	var currentTags []string
 	var ignoredSearchText string
 	var currentVersion int
 	if err := tx.QueryRow(ctx, lockPostForTagRevertSQL, target.ID).Scan(&currentTags, &ignoredSearchText, &currentVersion); errors.Is(err, pgx.ErrNoRows) {
-		return TagEditResult{}, ErrNotFound
+		return TagEditResult{}, false, ErrNotFound
 	} else if err != nil {
-		return TagEditResult{}, err
+		return TagEditResult{}, false, err
 	}
 	var source, artist string
 	if err := tx.QueryRow(ctx, currentPostMetadataForTagEditSQL, target.ID).Scan(&source, &artist); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return TagEditResult{}, ErrNotFound
+			return TagEditResult{}, false, ErrNotFound
 		}
-		return TagEditResult{}, err
+		return TagEditResult{}, false, err
 	}
 	if currentVersion != target.Version {
-		return TagEditResult{}, ErrConflict
+		return TagEditResult{}, false, ErrConflict
 	}
-	var restored []string
+	var restoredRaw []string
 	var hasTarget bool
-	if err := tx.QueryRow(ctx, targetTagsForRevisionSQL, target.ID, targetVersion).Scan(&hasTarget, &restored); errors.Is(err, pgx.ErrNoRows) {
-		return TagEditResult{}, ErrRevisionNotFound
+	if err := tx.QueryRow(ctx, targetTagsForRevisionSQL, target.ID, targetVersion).Scan(&hasTarget, &restoredRaw); errors.Is(err, pgx.ErrNoRows) {
+		return TagEditResult{}, false, ErrRevisionNotFound
 	} else if err != nil {
-		return TagEditResult{}, err
+		return TagEditResult{}, false, err
 	}
 	if !hasTarget {
-		return TagEditResult{}, ErrRevisionNotFound
+		return TagEditResult{}, false, ErrRevisionNotFound
 	}
+	// Historic snapshot stays verbatim in its own row; restored current
+	// tags are canonicalized/deduped through current redirects.
+	restored := canonicalizeTags(restoredRaw, redirects)
+	orderedChanged := !orderedEqualTags(currentTags, restored)
 	added, removed := tagDelta(currentTags, restored)
 	// pgx binds nil slices as NULL, which violates the NOT NULL array
 	// columns on post_tag_revisions. Normalize every side (including the
@@ -213,12 +217,12 @@ func (s *PostgresBackend) applyTagRevert(ctx context.Context, tx pgx.Tx, target 
 	nextVersion := currentVersion + 1
 	updatedSearch := canonicalSearchText(restored, source, artist)
 	if _, err := tx.Exec(ctx, updatePostTagsSQL, restored, updatedSearch, nextVersion, target.ID); err != nil {
-		return TagEditResult{}, err
+		return TagEditResult{}, false, err
 	}
 	if _, err := tx.Exec(ctx, insertPostRevertRevisionSQL, target.ID, nextVersion, added, removed, restored); err != nil {
-		return TagEditResult{}, err
+		return TagEditResult{}, false, err
 	}
-	return TagEditResult{ID: target.ID, Version: nextVersion, Tags: restored, Changed: len(added) > 0 || len(removed) > 0}, nil
+	return TagEditResult{ID: target.ID, Version: nextVersion, Tags: restored, Changed: len(added) > 0 || len(removed) > 0}, orderedChanged, nil
 }
 
 func tagDelta(current, target []string) (added, removed []string) {

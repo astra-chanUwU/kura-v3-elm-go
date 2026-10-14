@@ -153,6 +153,15 @@ func (s *PostgresBackend) persistStagedUpload(ctx context.Context, staged *stage
 		return persistedUpload{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockTaxonomyTx(ctx, tx); err != nil {
+		return persistedUpload{}, err
+	}
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return persistedUpload{}, err
+	}
+	staged.tags = canonicalizeTags(staged.tags, redirects)
+	staged.search = canonicalSearchText(staged.tags, staged.source, staged.artist)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "kura:browser-import:"+staged.digest); err != nil {
 		return persistedUpload{}, err
 	}
@@ -169,6 +178,11 @@ func (s *PostgresBackend) persistStagedUpload(ctx context.Context, staged *stage
 	id, err := s.insertStagedUpload(ctx, tx, staged, object)
 	if err != nil {
 		return persistedUpload{}, err
+	}
+	if len(staged.tags) > 0 {
+		if err := bumpTaxonomyTx(ctx, tx); err != nil {
+			return persistedUpload{}, err
+		}
 	}
 	post, err := s.getPostDetail(ctx, tx, id)
 	if err != nil {
@@ -248,8 +262,8 @@ func normalizeUploadTags(tags []string) ([]string, error) {
 			if tag == "" {
 				continue
 			}
-			if utf8.RuneCountInString(tag) > maxTagLength {
-				return nil, fmt.Errorf("%w: tags must be at most 128 characters", ErrInvalidUpload)
+			if !utf8.ValidString(tag) || strings.ContainsRune(tag, '\x00') || utf8.RuneCountInString(tag) > maxTagLength {
+				return nil, fmt.Errorf("%w: tags must be valid UTF-8 without NUL and at most 128 characters", ErrInvalidUpload)
 			}
 			if _, exists := seen[tag]; exists {
 				continue

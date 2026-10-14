@@ -52,3 +52,9 @@ var ErrInvalidUpload = errors.New("invalid upload")
 
 // ErrInvalidModeration indicates a malformed moderation command.
 var ErrInvalidModeration = errors.New("invalid moderation")
+
+var ErrInvalidTagTaxonomy = errors.New("invalid tag taxonomy request")
+var ErrTagTaxonomyChanged = errors.New("tag taxonomy changed")
+var ErrTagRetired = errors.New("tag is retired")
+var ErrTagTargetExists = errors.New("target tag already exists")
+var ErrTagOperationTooLarge = errors.New("tag operation exceeds 1000 affected posts")

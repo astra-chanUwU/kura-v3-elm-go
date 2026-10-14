@@ -85,6 +85,12 @@ func (e *RequestError) Error() string {
 func (e *RequestError) Unwrap() error { return e.Err }
 
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, payload, target any) error {
+	return c.requestWithProtectedRead(ctx, method, path, query, payload, target, false)
+}
+
+// requestWithProtectedRead includes the bearer token on GET requests when the
+// endpoint requires authentication. Existing public reads keep their behavior.
+func (c *Client) requestWithProtectedRead(ctx context.Context, method, path string, query url.Values, payload, target any, protectedRead bool) error {
 	base := c.BaseURL
 	if base == "" {
 		base = "http://localhost:8080"
@@ -117,7 +123,13 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	c.authorize(req)
+	if protectedRead && (method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions) {
+		if token := strings.TrimSpace(c.APIToken); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	} else {
+		c.authorize(req)
+	}
 	transport := http.Client{Timeout: 10 * time.Second}
 	if c.HTTPClient != nil {
 		transport = *c.HTTPClient
@@ -187,6 +199,15 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 	case *MoveCollectionPostResult:
 		field = "id"
 		required = []string{"id", "collection_id", "version", "changed"}
+	case *TagManageListResponse:
+		field = "tags"
+		required = []string{"version", "tags"}
+	case *TagManageResult:
+		field = "version"
+		required = []string{"version", "mode", "source_tag", "target_tag", "affected_post_count", "visible_post_count", "target_post_count"}
+	case *TagManageApplyResult:
+		field = "id"
+		required = []string{"id", "changed", "version", "mode", "source_tag", "target_tag", "affected_post_count", "visible_post_count"}
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -224,6 +245,37 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 				return responseError(fmt.Errorf("invalid collection summary; check --api-url"))
 			}
 			seen[item.ID] = true
+		}
+	case *TagManageListResponse:
+		var entries []map[string]json.RawMessage
+		if result.Version < 0 || json.Unmarshal(fields["tags"], &entries) != nil {
+			return responseError(fmt.Errorf("invalid tag list; check --api-url"))
+		}
+		seen := map[string]bool{}
+		for _, entry := range entries {
+			for _, name := range []string{"tag", "post_count", "visible_post_count"} {
+				if raw, exists := entry[name]; !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+					return responseError(fmt.Errorf("tag list is missing %q; check --api-url", name))
+				}
+			}
+			var item TagSummary
+			encoded, _ := json.Marshal(entry)
+			if json.Unmarshal(encoded, &item) != nil || strings.TrimSpace(item.Tag) == "" || seen[item.Tag] || item.PostCount < 0 || item.VisiblePostCount < 0 || item.VisiblePostCount > item.PostCount {
+				return responseError(fmt.Errorf("invalid tag list entry; check --api-url"))
+			}
+			seen[item.Tag] = true
+		}
+		if result.NextCursor != nil && strings.TrimSpace(*result.NextCursor) == "" {
+			return responseError(fmt.Errorf("invalid tag list cursor; check --api-url"))
+		}
+	case *TagManageResult:
+		if result.Version < 0 || result.AffectedPostCount < 1 || result.AffectedPostCount > 1000 || result.VisiblePostCount < 0 || result.VisiblePostCount > result.AffectedPostCount || result.TargetPostCount < 0 || result.Mode != "rename" && result.Mode != "merge" || strings.TrimSpace(result.SourceTag) == "" || strings.TrimSpace(result.TargetTag) == "" || result.SourceTag == result.TargetTag || result.Mode == "rename" && result.TargetPostCount != 0 || result.Mode == "merge" && result.TargetPostCount == 0 {
+			return responseError(fmt.Errorf("invalid tag management acknowledgement; check --api-url"))
+		}
+	case *TagManageApplyResult:
+		id, err := strconv.ParseInt(result.ID, 10, 64)
+		if err != nil || id < 1 || strconv.FormatInt(id, 10) != result.ID || result.Version < 0 || !result.Changed || result.AffectedPostCount < 1 || result.AffectedPostCount > 1000 || result.VisiblePostCount < 0 || result.VisiblePostCount > result.AffectedPostCount || result.Mode != "rename" && result.Mode != "merge" || strings.TrimSpace(result.SourceTag) == "" || strings.TrimSpace(result.TargetTag) == "" {
+			return responseError(fmt.Errorf("invalid tag management receipt; check --api-url"))
 		}
 	}
 	raw, ok := fields[field]

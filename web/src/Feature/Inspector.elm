@@ -622,6 +622,7 @@ historyList config =
 
             else
                 [ ul [ class "history-list" ] (List.map (historyItem config) detail.history)
+                , p [ class "panel-note" ] [ text "Old tag names in history map to their current tag after a rename or merge." ]
                 , case config.revertStatus of
                     Just status ->
                         p [ class "panel-note status-info" ] [ text status ]

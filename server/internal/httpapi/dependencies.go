@@ -26,6 +26,7 @@ type Dependencies struct {
 	CollectionManager   posts.CollectionManager
 	Trash               posts.PostTrashStore
 	TagSuggestions      posts.TagSuggester
+	TagTaxonomy         posts.TagTaxonomyManager
 	Exports             posts.LibraryExporter
 	Moderation          posts.ModerationMutator
 	ModerationRead      posts.ModerationReader
@@ -57,6 +58,7 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.CollectionManager, _ = backend.(posts.CollectionManager)
 	deps.Trash, _ = backend.(posts.PostTrashStore)
 	deps.TagSuggestions, _ = backend.(posts.TagSuggester)
+	deps.TagTaxonomy, _ = backend.(posts.TagTaxonomyManager)
 	deps.Exports, _ = backend.(posts.LibraryExporter)
 	deps.Moderation, _ = backend.(posts.ModerationMutator)
 	deps.ModerationRead, _ = backend.(posts.ModerationReader)

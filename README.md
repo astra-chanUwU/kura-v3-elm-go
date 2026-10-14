@@ -15,7 +15,7 @@ milestone's original scope and historical acceptance checks.
 
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
-- Edit tags, revert revisions, set favorites, and score posts.
+- Edit tags, rename or merge tags across the library, revert revisions, set favorites, and score posts.
 - Upload JPEG, PNG, and GIF files, up to 25 MiB each, with a sequential queue and transfer progress.
 - Generate thumbnails through durable PostgreSQL jobs with retries and crash recovery.
 - Moderate posts through the API. Hidden, rejected, and deleted posts are excluded from public browsing and local media access.
@@ -92,6 +92,13 @@ instead of publicly exposing hidden originals. **Export selection (ZIP)** or
 **Export collection (ZIP)** downloads originals with optional metadata. Tag
 suggestions appear after two characters in the Inspector's Add tags field;
 choosing a suggestion edits the draft, and **Save tags** applies it.
+
+Open **Manage tags** to rename a tag or merge it into an existing tag. Preview
+the affected image count, then confirm. The operation includes hidden and
+trashed images and handles at most 1,000 images together. A change to tags after
+the preview requires a new preview. Old tag names redirect to the current name
+in exact `tag:` searches, uploads, edits, and history reverts; historical entries
+keep their original names. Ordinary text and artist searches keep their meaning.
 
 Type a query into the search bar and press Enter. Leave it blank to browse all visible posts, newest first.
 
@@ -181,6 +188,20 @@ Set a content rating using the independent `rating_version` shown by
 ```sh
 kura post rating --version 0 10 safe
 ```
+
+List tags or preview a rename or merge before applying it:
+
+```sh
+kura tag list --prefix cat --json
+kura tag rename --json cats cat
+kura tag merge --json kitten cat
+```
+
+Rename and merge commands preview by default. To apply, repeat the command with
+`--version N`, using the `version` from that preview. A stale version fails
+without changing any images. Tag lists read one page; pass the returned
+`next_cursor` with `--cursor` to continue. These commands use `KURA_API_TOKEN`
+when the server requires authentication.
 
 Pagination stops on duplicate posts, repeated cursors, collection version changes, API errors, or the 1,000-page limit. It never silently restarts under a changed collection. Search pagination does not freeze a changing library. Ctrl-C cancels active requests. Writes are never automatically retried; if a write response is lost or invalid, inspect the resource before retrying. API addresses must be absolute HTTP(S) URLs without embedded credentials, query strings, or fragments; reverse-proxy path prefixes are supported and redirects are reported as errors.
 

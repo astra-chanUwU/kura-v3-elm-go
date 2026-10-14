@@ -218,6 +218,15 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	if cursor != nil && cursor.Order != compiled.Order {
 		return SearchPage{}, ErrInvalidCursor
 	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return SearchPage{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return SearchPage{}, err
+	}
 	var favorite any
 	if compiled.Favorite != nil {
 		favorite = *compiled.Favorite
@@ -267,9 +276,11 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 		}
 	}
 	if len(included) > 0 {
+		included = canonicalizeTags(included, redirects)
 		includedTags = included
 	}
 	if len(excluded) > 0 {
+		excluded = canonicalizeTags(excluded, redirects)
 		excludedTags = excluded
 	}
 
@@ -281,7 +292,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 			cursorScore = cursor.Score
 			cursorID = cursor.ID
 		}
-		rows, err = s.pool.Query(ctx, SearchPostsScoreSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorScore, cursorID, rating, limit+1)
+		rows, err = tx.Query(ctx, SearchPostsScoreSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorScore, cursorID, rating, limit+1)
 		if err != nil {
 			return SearchPage{}, err
 		}
@@ -300,10 +311,13 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 		if err := rows.Err(); err != nil {
 			return SearchPage{}, err
 		}
-		if err := s.overlayReadyPreviews(ctx, posts); err != nil {
+		if err := overlayReadyPreviewsTx(ctx, tx, posts); err != nil {
 			return SearchPage{}, err
 		}
 		if len(posts) <= limit {
+			if err := tx.Commit(ctx); err != nil {
+				return SearchPage{}, err
+			}
 			return SearchPage{Posts: posts}, nil
 		}
 		posts = posts[:limit]
@@ -318,6 +332,9 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 		if err != nil {
 			return SearchPage{}, err
 		}
+		if err := tx.Commit(ctx); err != nil {
+			return SearchPage{}, err
+		}
 		return SearchPage{Posts: posts, NextCursor: &token}, nil
 	}
 
@@ -325,7 +342,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	if cursor != nil {
 		cursorID = cursor.ID
 	}
-	rows, err = s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorID, rating, limit+1)
+	rows, err = tx.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorID, rating, limit+1)
 	if err != nil {
 		return SearchPage{}, err
 	}
@@ -344,10 +361,13 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	if err := rows.Err(); err != nil {
 		return SearchPage{}, err
 	}
-	if err := s.overlayReadyPreviews(ctx, posts); err != nil {
+	if err := overlayReadyPreviewsTx(ctx, tx, posts); err != nil {
 		return SearchPage{}, err
 	}
 	if len(posts) <= limit {
+		if err := tx.Commit(ctx); err != nil {
+			return SearchPage{}, err
+		}
 		return SearchPage{Posts: posts}, nil
 	}
 	posts = posts[:limit]
@@ -358,6 +378,9 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	}
 	token, err := EncodeSortCursor(query, SortNewest, 0, id)
 	if err != nil {
+		return SearchPage{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return SearchPage{}, err
 	}
 	return SearchPage{Posts: posts, NextCursor: &token}, nil
@@ -491,6 +514,25 @@ func (s *PostgresBackend) EditTags(ctx context.Context, request TagEditRequest) 
 		return TagEditResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockTaxonomyTx(ctx, tx); err != nil {
+		return TagEditResponse{}, err
+	}
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return TagEditResponse{}, err
+	}
+	addCanon := canonicalizeTags(validated.Add, redirects)
+	removeCanon := canonicalizeTags(validated.Remove, redirects)
+	removeSet := make(map[string]struct{}, len(removeCanon))
+	for _, tag := range removeCanon {
+		removeSet[tag] = struct{}{}
+	}
+	for _, tag := range addCanon {
+		if _, overlap := removeSet[tag]; overlap {
+			return TagEditResponse{}, fmt.Errorf("%w: tag %q appears in add and remove", ErrInvalidTags, tag)
+		}
+	}
+	validated.Add, validated.Remove = addCanon, removeCanon
 
 	results := make(map[string]TagEditResult, len(validated.Posts))
 	targets := make(map[string]TagTarget, len(validated.Posts))
@@ -499,13 +541,22 @@ func (s *PostgresBackend) EditTags(ctx context.Context, request TagEditRequest) 
 		targets[target.ID] = target
 		ids = append(ids, target.ID)
 	}
+	anyChanged := false
 	for _, id := range sortedPostTargetIDs(ids) {
 		target := targets[id]
 		result, err := s.applyTagEdit(ctx, tx, target, validated.Add, validated.Remove)
 		if err != nil {
 			return TagEditResponse{}, err
 		}
+		if result.Changed {
+			anyChanged = true
+		}
 		results[id] = result
+	}
+	if anyChanged {
+		if err := bumpTaxonomyTx(ctx, tx); err != nil {
+			return TagEditResponse{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagEditResponse{}, err
@@ -533,6 +584,13 @@ func (s *PostgresBackend) RevertTags(ctx context.Context, request TagRevertReque
 		return TagRevertResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockTaxonomyTx(ctx, tx); err != nil {
+		return TagRevertResponse{}, err
+	}
+	redirects, err := loadRedirects(ctx, tx)
+	if err != nil {
+		return TagRevertResponse{}, err
+	}
 	results := make(map[string]TagEditResult, len(validated.Posts))
 	targets := make(map[string]TagTarget, len(validated.Posts))
 	ids := make([]string, 0, len(validated.Posts))
@@ -540,13 +598,22 @@ func (s *PostgresBackend) RevertTags(ctx context.Context, request TagRevertReque
 		targets[target.ID] = target
 		ids = append(ids, target.ID)
 	}
+	anyOrderedChanged := false
 	for _, id := range sortedPostTargetIDs(ids) {
 		target := targets[id]
-		result, err := s.applyTagRevert(ctx, tx, target, validated.TargetVersion)
+		result, orderedChanged, err := s.applyTagRevert(ctx, tx, target, validated.TargetVersion, redirects)
 		if err != nil {
 			return TagRevertResponse{}, err
 		}
+		if orderedChanged {
+			anyOrderedChanged = true
+		}
 		results[id] = result
+	}
+	if anyOrderedChanged {
+		if err := bumpTaxonomyTx(ctx, tx); err != nil {
+			return TagRevertResponse{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return TagRevertResponse{}, err

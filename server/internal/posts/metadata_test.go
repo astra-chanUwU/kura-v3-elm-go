@@ -104,7 +104,7 @@ func newMetadataTestBackend(t *testing.T, ctx context.Context, url string) *Post
 			t.Fatalf("apply %s: %v", file, err)
 		}
 	}
-	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants CASCADE"); err != nil {
+	if _, err := backend.pool.Exec(ctx, "TRUNCATE posts, jobs, asset_variants, tag_operations, tag_redirects CASCADE; UPDATE tag_taxonomy_state SET version=0 WHERE id=1"); err != nil {
 		t.Fatal(err)
 	}
 	return backend
