@@ -222,6 +222,10 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	if compiled.Favorite != nil {
 		favorite = *compiled.Favorite
 	}
+	var rating any
+	if compiled.Rating != nil {
+		rating = *compiled.Rating
+	}
 	var scoreOperator, scoreValue any
 	if compiled.Score != nil {
 		scoreOperator, scoreValue = compiled.Score.Operator, compiled.Score.Value
@@ -277,7 +281,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 			cursorScore = cursor.Score
 			cursorID = cursor.ID
 		}
-		rows, err = s.pool.Query(ctx, SearchPostsScoreSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorScore, cursorID, limit+1)
+		rows, err = s.pool.Query(ctx, SearchPostsScoreSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorScore, cursorID, rating, limit+1)
 		if err != nil {
 			return SearchPage{}, err
 		}
@@ -287,7 +291,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 		for rows.Next() {
 			var post PostSummary
 			var score int
-			if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score); err != nil {
+			if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score, &post.Rating, &post.RatingVersion); err != nil {
 				return SearchPage{}, err
 			}
 			posts = append(posts, post)
@@ -321,7 +325,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	if cursor != nil {
 		cursorID = cursor.ID
 	}
-	rows, err = s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorID, limit+1)
+	rows, err = s.pool.Query(ctx, SearchPostsSQL, compiled.Text, favorite, scoreOperator, scoreValue, widthOperator, widthValue, heightOperator, heightValue, fileSizeOperator, fileSizeValue, idOperator, idValue, mediaType, source, artist, includedTags, excludedTags, cursorID, rating, limit+1)
 	if err != nil {
 		return SearchPage{}, err
 	}
@@ -331,7 +335,7 @@ func (s *PostgresBackend) SearchPosts(ctx context.Context, query string, cursor 
 	for rows.Next() {
 		var post PostSummary
 		var score int
-		if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score); err != nil {
+		if err := rows.Scan(&post.ID, &post.PreviewURL, &post.OriginalURL, &post.MediaType, &post.Width, &post.Height, &post.Tags, &score, &post.Rating, &post.RatingVersion); err != nil {
 			return SearchPage{}, err
 		}
 		posts = append(posts, post)
@@ -378,6 +382,7 @@ type postDetailQuerier interface {
 func (s *PostgresBackend) getPostDetail(ctx context.Context, query postDetailQuerier, id string) (PostDetail, error) {
 	var detail PostDetail
 	var metadataHistoryJSON []byte
+	var ratingHistoryJSON []byte
 	err := query.QueryRow(ctx, GetPostDetailSQL, id).Scan(
 		&detail.ID,
 		&detail.PreviewURL,
@@ -396,7 +401,10 @@ func (s *PostgresBackend) getPostDetail(ctx context.Context, query postDetailQue
 		&detail.Score,
 		&detail.ReactionVersion,
 		&detail.MetadataVersion,
+		&detail.Rating,
+		&detail.RatingVersion,
 		&metadataHistoryJSON,
+		&ratingHistoryJSON,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PostDetail{}, ErrNotFound
@@ -409,6 +417,12 @@ func (s *PostgresBackend) getPostDetail(ctx context.Context, query postDetailQue
 	}
 	if detail.MetadataHistory == nil {
 		detail.MetadataHistory = []MetadataRevision{}
+	}
+	if err := json.Unmarshal(ratingHistoryJSON, &detail.RatingHistory); err != nil {
+		return PostDetail{}, err
+	}
+	if detail.RatingHistory == nil {
+		detail.RatingHistory = []RatingRevision{}
 	}
 	detail.History = make([]Revision, 0, 50)
 	rows, err := query.Query(ctx, GetPostRevisionsSQL, id)

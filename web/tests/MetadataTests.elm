@@ -1,5 +1,6 @@
 module MetadataTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Api.Metadata as MetadataApi
 import Domain.Post as Post
 import Feature.Metadata as Metadata
@@ -32,6 +33,9 @@ detail version source artist =
     , derivativeStatus = Nothing
     , metadataVersion = version
     , metadataHistory = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
+    , ratingHistory = []
     }
 
 

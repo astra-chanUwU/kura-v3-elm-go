@@ -1,5 +1,6 @@
 module TagsTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Domain.Post exposing (PostDetail, TagRevision)
 import Feature.Tags as Tags
 import Http
@@ -60,6 +61,9 @@ detailWith history =
     , derivativeStatus = Nothing
     , metadataVersion = 0
     , metadataHistory = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
+    , ratingHistory = []
     }
 
 

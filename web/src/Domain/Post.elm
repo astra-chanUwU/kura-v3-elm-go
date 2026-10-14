@@ -1,5 +1,6 @@
-module Domain.Post exposing (PostDetail, PostSummary, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataResponseDecoder, metadataRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
+module Domain.Post exposing (PostDetail, PostSummary, RatingResponse, RatingResult, RatingRevision, RatingTarget, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataResponseDecoder, metadataRevisionDecoder, ratingResponseDecoder, ratingRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
 
+import Domain.Rating as Rating exposing (Rating)
 import Json.Decode as Decode exposing (Decoder)
 
 
@@ -11,6 +12,8 @@ type alias PostSummary =
     , width : Int
     , height : Int
     , tags : List String
+    , rating : Rating
+    , ratingVersion : Maybe Int
     }
 
 
@@ -43,6 +46,9 @@ type alias PostDetail =
     , derivativeStatus : Maybe String
     , metadataVersion : Int
     , metadataHistory : List MetadataRevision
+    , rating : Rating
+    , ratingVersion : Maybe Int
+    , ratingHistory : List RatingRevision
     }
 
 
@@ -131,6 +137,32 @@ type alias MetadataResponse =
     { posts : List MetadataResult }
 
 
+type alias RatingRevision =
+    { version : Int
+    , previousRating : Rating
+    , rating : Rating
+    , createdAt : String
+    }
+
+
+type alias RatingTarget =
+    { id : String
+    , version : Int
+    }
+
+
+type alias RatingResult =
+    { id : String
+    , version : Int
+    , rating : Rating
+    , changed : Bool
+    }
+
+
+type alias RatingResponse =
+    { posts : List RatingResult }
+
+
 detailDecoder : Decoder PostDetail
 detailDecoder =
     Decode.map5
@@ -166,6 +198,9 @@ detailDecoder =
                 , derivativeStatus = Nothing
                 , metadataVersion = 0
                 , metadataHistory = []
+                , rating = Rating.Unrated
+                , ratingVersion = Nothing
+                , ratingHistory = []
                 }
             )
             (Decode.field "id" Decode.string)
@@ -217,6 +252,16 @@ detailDecoder =
                     (Decode.oneOf [ Decode.field "metadata_version" Decode.int, Decode.succeed 0 ])
                     (Decode.oneOf [ Decode.field "metadata_history" (Decode.list metadataRevisionDecoder), Decode.succeed [] ])
             )
+        |> Decode.andThen
+            (\detail ->
+                Decode.map3
+                    (\rating ratingVersion ratingHistory ->
+                        { detail | rating = rating, ratingVersion = ratingVersion, ratingHistory = ratingHistory }
+                    )
+                    ratingFieldDecoder
+                    ratingVersionFieldDecoder
+                    (Decode.oneOf [ Decode.field "rating_history" (Decode.list ratingRevisionDecoder), Decode.succeed [] ])
+            )
 
 
 emptyToNothing : String -> Maybe String
@@ -228,9 +273,66 @@ emptyToNothing value =
         Just value
 
 
+{-| Present-but-unknown ratings fail: never assert an unknown value is safe
+(or any other rating). A missing rating displays as unrated.
+-}
+ratingFieldDecoder : Decoder Rating
+ratingFieldDecoder =
+    Decode.oneOf
+        [ Decode.field "rating" (Decode.map Just Decode.value)
+        , Decode.succeed Nothing
+        ]
+        |> Decode.andThen
+            (\present ->
+                case present of
+                    Just _ ->
+                        Decode.field "rating" Rating.decoder
+
+                    Nothing ->
+                        Decode.succeed Rating.Unrated
+            )
+
+
+{-| A missing version stays unknown (`Nothing`): writes stay disabled until
+a proper read supplies one. A present valid zero is `Just 0`; non-integer,
+null, or negative values never become a valid zero.
+-}
+ratingVersionFieldDecoder : Decoder (Maybe Int)
+ratingVersionFieldDecoder =
+    Decode.oneOf
+        [ Decode.field "rating_version" nonNegativeInt |> Decode.map Just
+        , Decode.succeed Nothing
+        ]
+
+
+nonNegativeInt : Decoder Int
+nonNegativeInt =
+    Decode.int
+        |> Decode.andThen
+            (\value ->
+                if value >= 0 then
+                    Decode.succeed value
+
+                else
+                    Decode.fail "negative version"
+            )
+
+
 decoder : Decoder PostSummary
 decoder =
-    Decode.map7 PostSummary
+    Decode.map7
+        (\id previewUrl originalUrl mediaType width height tags ->
+            { id = id
+            , previewUrl = previewUrl
+            , originalUrl = originalUrl
+            , mediaType = mediaType
+            , width = width
+            , height = height
+            , tags = tags
+            , rating = Rating.Unrated
+            , ratingVersion = Nothing
+            }
+        )
         (Decode.field "id" Decode.string)
         (Decode.field "preview_url" Decode.string)
         (Decode.field "original_url" Decode.string)
@@ -238,6 +340,36 @@ decoder =
         (Decode.field "width" Decode.int)
         (Decode.field "height" Decode.int)
         (Decode.oneOf [ Decode.field "tags" (Decode.list Decode.string), Decode.succeed [] ])
+        |> Decode.andThen
+            (\summary ->
+                Decode.map2
+                    (\rating ratingVersion -> { summary | rating = rating, ratingVersion = ratingVersion })
+                    ratingFieldDecoder
+                    ratingVersionFieldDecoder
+            )
+
+
+ratingRevisionDecoder : Decoder RatingRevision
+ratingRevisionDecoder =
+    Decode.map4 RatingRevision
+        (Decode.field "version" Decode.int)
+        (Decode.field "previous_rating" Rating.decoder)
+        (Decode.field "rating" Rating.decoder)
+        (Decode.field "created_at" Decode.string)
+
+
+ratingResponseDecoder : Decoder RatingResponse
+ratingResponseDecoder =
+    Decode.map RatingResponse (Decode.field "posts" (Decode.list ratingResultDecoder))
+
+
+ratingResultDecoder : Decoder RatingResult
+ratingResultDecoder =
+    Decode.map4 RatingResult
+        (Decode.field "id" Decode.string)
+        (Decode.field "version" nonNegativeInt)
+        (Decode.field "rating" Rating.decoder)
+        (Decode.field "changed" Decode.bool)
 
 
 responseDecoder : Decoder SearchResponse
@@ -350,4 +482,6 @@ summaryOfDetail detail =
     , width = detail.width
     , height = detail.height
     , tags = detail.tags
+    , rating = detail.rating
+    , ratingVersion = detail.ratingVersion
     }

@@ -72,6 +72,8 @@ func runPost(ctx context.Context, args []string, stdout, stderr io.Writer, geten
 		return runPostTagRevert(ctx, rest, stdout, stderr, getenv)
 	case "favorite":
 		return runPostFavorite(ctx, rest, stdout, stderr, getenv)
+	case "rating":
+		return runPostRating(ctx, rest, stdout, stderr, getenv)
 	case "score":
 		return runPostScore(ctx, rest, stdout, stderr, getenv)
 	case "reaction":

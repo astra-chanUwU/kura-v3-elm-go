@@ -61,7 +61,7 @@ func ValidateMetadataRequest(request MetadataRequest) (MetadataRequest, error) {
 	seen := make(map[string]struct{}, len(request.Posts))
 	for index, target := range request.Posts {
 		id, err := strconv.ParseInt(strings.TrimSpace(target.ID), 10, 64)
-		if err != nil || id <= 0 || strings.TrimSpace(target.ID) != strconv.FormatInt(id, 10) {
+		if err != nil || id <= 0 || target.ID != strconv.FormatInt(id, 10) {
 			return MetadataRequest{}, fmt.Errorf("%w: posts[%d].id must be a canonical positive integer", ErrInvalidMetadata, index)
 		}
 		if target.Version < 0 {

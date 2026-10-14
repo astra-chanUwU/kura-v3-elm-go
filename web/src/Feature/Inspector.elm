@@ -3,6 +3,7 @@ module Feature.Inspector exposing (Config, view)
 import Api.Post
 import Domain.Collection exposing (CollectionSummary)
 import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
+import Domain.Rating as Rating exposing (Rating)
 import Html exposing (Html, a, aside, button, dd, details, div, dl, dt, form, input, label, li, option, p, select, span, summary, text, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, selected, style, target, title, type_, value)
 import Html.Events exposing (on, onClick, onInput, onSubmit)
@@ -65,6 +66,17 @@ type alias Config msg =
     , onMetadataArtist : String -> msg
     , onSaveMetadata : msg
     , onReloadMetadata : msg
+    , ratingTargetCount : Int
+    , ratingSelected : Maybe Rating
+    , ratingMixed : Bool
+    , ratingUnknownVersion : Bool
+    , ratingDraft : Maybe Rating
+    , ratingSaving : Bool
+    , ratingStatus : Maybe String
+    , ratingConflict : Bool
+    , onRating : Rating -> msg
+    , onSaveRating : msg
+    , onReloadRating : msg
     }
 
 
@@ -89,6 +101,7 @@ view config =
                     [ identitySection config post
                     , metadataSection config post
                     , reactionSection config post
+                    , ratingSection config post
                     , Panel.section
                         (if config.selectedCount > 1 then
                             "Shared tags"
@@ -470,6 +483,113 @@ reactionSection config post =
 
                         Nothing ->
                             text ""
+                    ]
+
+            else
+                text ""
+
+        Nothing ->
+            text ""
+
+
+ratingSection : Config msg -> PostSummary -> Html msg
+ratingSection config post =
+    let
+        targetCount =
+            max 1 config.ratingTargetCount
+
+        isDisabled =
+            not config.writesEnabled || config.ratingSaving || config.ratingUnknownVersion
+    in
+    Panel.section "Content rating"
+        [ form [ class "tag-editor", onSubmit config.onSaveRating ]
+            [ label [ class "upload-label", attribute "for" "content-rating" ] [ text "Rating" ]
+            , select
+                [ class "compact-input"
+                , Html.Attributes.id "content-rating"
+                , attribute "aria-label" "Content rating"
+                , onInput (\value -> config.onRating (Rating.fromString value |> Maybe.withDefault Rating.Unrated))
+                , disabled isDisabled
+                ]
+                ((if config.ratingMixed && config.ratingDraft == Nothing then
+                    [ option [ value "", selected True ] [ text "Mixed" ] ]
+
+                  else
+                    []
+                 )
+                    ++ List.map
+                        (\rating ->
+                            option
+                                [ value (Rating.toString rating)
+                                , selected (config.ratingSelected == Just rating)
+                                ]
+                                [ text (Rating.label rating) ]
+                        )
+                        Rating.all
+                )
+            , p [ class "panel-note" ]
+                [ text
+                    (if targetCount > 1 then
+                        "Applies to " ++ String.fromInt targetCount ++ " selected posts."
+
+                     else
+                        "Applies to this post."
+                    )
+                ]
+            , if config.ratingUnknownVersion then
+                p [ class "panel-note" ] [ text "Rating version unknown; reload before saving." ]
+
+              else
+                text ""
+            , if config.ratingSaving || config.ratingDraft /= Nothing then
+                button [ class "button", type_ "submit", disabled (config.ratingSaving || not config.writesEnabled || config.ratingUnknownVersion || config.ratingConflict) ]
+                    [ text
+                        (if config.ratingSaving then
+                            "Saving…"
+
+                         else
+                            "Save rating"
+                        )
+                    ]
+
+              else
+                text ""
+            , case config.ratingStatus of
+                Just message ->
+                    p [ class "panel-note", attribute "role" "status" ] [ text message ]
+
+                Nothing ->
+                    text ""
+            , if config.ratingConflict || config.ratingUnknownVersion then
+                button [ class "button button-quiet", type_ "button", onClick config.onReloadRating ] [ text "Reload selected posts" ]
+
+              else
+                text ""
+            ]
+        , ratingHistorySection config post
+        ]
+
+
+ratingHistorySection : Config msg -> PostSummary -> Html msg
+ratingHistorySection config post =
+    case config.detail of
+        Just detail ->
+            if detail.id == post.id && not (List.isEmpty detail.ratingHistory) then
+                details [ class "inspector-disclosure" ]
+                    [ summary [] [ text "Rating history" ]
+                    , ul [ class "history-list" ]
+                        (List.map
+                            (\revision ->
+                                li [ class "history-item" ]
+                                    [ div [ class "history-header" ]
+                                        [ span [ class "history-version" ] [ text ("v" ++ String.fromInt revision.version) ]
+                                        , span [ class "history-time" ] [ text revision.createdAt ]
+                                        ]
+                                    , p [ class "panel-note" ] [ text (Rating.label revision.previousRating ++ " → " ++ Rating.label revision.rating) ]
+                                    ]
+                            )
+                            detail.ratingHistory
+                        )
                     ]
 
             else

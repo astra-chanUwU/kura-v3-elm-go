@@ -14,12 +14,12 @@ import (
 const maxTrashLockRetries = 3
 
 const listTrashSQL = `
-SELECT id::text, preview_url, original_url, media_type, width, height, tags,
+SELECT id::text, preview_url, original_url, media_type, width, height, tags, rating, rating_version,
        deleted_at, deleted_at::text AS deleted_at_text, moderation_state
 FROM posts
 WHERE deleted_at IS NOT NULL
   AND ($1::timestamptz IS NULL OR (deleted_at, id) < ($1::timestamptz, $2::bigint))
-ORDER BY deleted_at DESC, id DESC
+ORDER BY posts.deleted_at DESC, posts.id DESC
 LIMIT $3
 `
 
@@ -94,7 +94,7 @@ func (s *PostgresBackend) ListTrash(ctx context.Context, actor string, limit int
 	for rows.Next() {
 		var item TrashPost
 		var deletedAtValue time.Time
-		if err := rows.Scan(&item.ID, &item.PreviewURL, &item.OriginalURL, &item.MediaType, &item.Width, &item.Height, &item.Tags, &deletedAtValue, &item.DeletedAt, &item.ModerationState); err != nil {
+		if err := rows.Scan(&item.ID, &item.PreviewURL, &item.OriginalURL, &item.MediaType, &item.Width, &item.Height, &item.Tags, &item.Rating, &item.RatingVersion, &deletedAtValue, &item.DeletedAt, &item.ModerationState); err != nil {
 			return TrashPage{}, err
 		}
 		if len(page.Posts) == limit {

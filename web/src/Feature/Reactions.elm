@@ -226,7 +226,7 @@ update ctx msg model =
                             merged =
                                 List.foldl (\post versions_ -> Dict.insert post.id post.version versions_) model.versions response.posts
                         in
-                        ( { model | versions = merged, saving = False, status = Just "Rating saved." }
+                        ( { model | versions = merged, saving = False, status = Just "Favorite or score saved." }
                         , Cmd.none
                         , [ Saved ctx.activeId ]
                         )

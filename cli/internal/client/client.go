@@ -241,6 +241,9 @@ func (c *Client) GetPostDetail(ctx context.Context, id string) (PostDetail, erro
 	if result.History == nil {
 		result.History = []Revision{}
 	}
+	if result.RatingHistory == nil {
+		result.RatingHistory = []RatingRevision{}
+	}
 	if result.ReactionHistory == nil {
 		result.ReactionHistory = []ReactionRevision{}
 	}

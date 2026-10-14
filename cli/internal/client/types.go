@@ -2,13 +2,15 @@ package client
 
 // PostSummary is the stable browser-facing representation from GET /api/posts.
 type PostSummary struct {
-	ID          string   `json:"id"`
-	PreviewURL  string   `json:"preview_url"`
-	OriginalURL string   `json:"original_url"`
-	MediaType   string   `json:"media_type"`
-	Width       int      `json:"width"`
-	Height      int      `json:"height"`
-	Tags        []string `json:"tags"`
+	ID            string   `json:"id"`
+	PreviewURL    string   `json:"preview_url"`
+	OriginalURL   string   `json:"original_url"`
+	MediaType     string   `json:"media_type"`
+	Width         int      `json:"width"`
+	Height        int      `json:"height"`
+	Tags          []string `json:"tags"`
+	Rating        string   `json:"rating,omitempty"`
+	RatingVersion *int     `json:"rating_version,omitempty"`
 }
 
 // SearchResponse is the envelope for GET /api/posts.
@@ -104,6 +106,7 @@ type PostDetail struct {
 	ReactionVersion  int                `json:"reaction_version"`
 	History          []Revision         `json:"history"`
 	ReactionHistory  []ReactionRevision `json:"reaction_history"`
+	RatingHistory    []RatingRevision   `json:"rating_history"`
 	DerivativeJobID  string             `json:"derivative_job_id,omitempty"`
 	DerivativeStatus string             `json:"derivative_status,omitempty"`
 }

@@ -116,7 +116,7 @@ func (s *PostgresBackend) ListModerationQueue(ctx context.Context, state string,
 	page := ModerationQueuePage{Posts: make([]ModerationQueueItem, 0, limit)}
 	for rows.Next() {
 		var item ModerationQueueItem
-		if err := rows.Scan(&item.ID, &item.PreviewURL, &item.OriginalURL, &item.MediaType, &item.Width, &item.Height, &item.Tags, &item.ModerationState); err != nil {
+		if err := rows.Scan(&item.ID, &item.PreviewURL, &item.OriginalURL, &item.MediaType, &item.Width, &item.Height, &item.Tags, &item.Rating, &item.RatingVersion, &item.ModerationState); err != nil {
 			return ModerationQueuePage{}, err
 		}
 		page.Posts = append(page.Posts, item)

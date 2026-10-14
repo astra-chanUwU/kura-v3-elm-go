@@ -28,6 +28,7 @@ import Feature.MediaGrid.Layout as Layout exposing (Geometry, Viewport)
 import Feature.Navigator
 import Feature.Collections as Collections
 import Feature.QueryEditor as QueryEditor
+import Feature.Ratings as Ratings
 import Feature.Reactions as Reactions
 import Feature.QuickLook as QuickLook exposing (Zoom(..))
 import Feature.Search as Search
@@ -114,6 +115,7 @@ type alias Model =
     , urlSeq : Int
     , tags : Tags.Model
     , reactions : Reactions.Model
+    , ratings : Ratings.Model
     , collections : Collections.Model
     , savedSearches : List Api.SavedSearch.SavedSearch
     , savedSearchFallback : Bool
@@ -196,6 +198,7 @@ init flagsValue url key =
             , urlSeq = 0
             , tags = Tags.init
             , reactions = Reactions.init
+            , ratings = Ratings.init
             , collections = Collections.init
             , savedSearches = []
             , savedSearchFallback = True
@@ -272,6 +275,7 @@ type Msg
     | DetailCompleted Int String (Result Http.Error PostDetail)
     | TagsMsg Tags.Msg
     | ReactionsMsg Reactions.Msg
+    | RatingsMsg Ratings.Msg
     | CollectionsMsg Collections.Msg
     | CapabilitiesReceived Int (Result Http.Error Api.Access.Capabilities)
     | TokenDraftChanged String
@@ -334,12 +338,19 @@ update msg model =
         ( updated, cmd ) =
             updateHelp msg model
 
-        ( next, detailCmd ) =
-            if updated.selection.active /= model.selection.active then
-                prepareActiveDetail updated
+        syncedRatings =
+            if updated.selection /= model.selection then
+                { updated | ratings = Ratings.selectionChanged (ratingTargetSummaries updated) updated.ratings }
 
             else
-                ( updated, Cmd.none )
+                updated
+
+        ( next, detailCmd ) =
+            if syncedRatings.selection.active /= model.selection.active then
+                prepareActiveDetail syncedRatings
+
+            else
+                ( syncedRatings, Cmd.none )
 
         urlFollows =
             case msg of
@@ -466,9 +477,18 @@ updateHelp msg model =
                 ( model, Cmd.none )
 
             else
+                let
+                    effectiveResult =
+                        case result of
+                            Ok detail ->
+                                Ok (guardRatingDetail model postId detail)
+
+                            Err error ->
+                                Err error
+                in
                 ( { model
                     | sequence =
-                        case result of
+                        case effectiveResult of
                             Ok detail ->
                                 Sequence.refreshSummary (summaryOfDetail detail) model.sequence
 
@@ -476,7 +496,7 @@ updateHelp msg model =
                                 model.sequence
                     , details =
                         Dict.insert postId
-                            (case result of
+                            (case effectiveResult of
                                 Ok detail ->
                                     DetailReady detail
 
@@ -485,14 +505,14 @@ updateHelp msg model =
                             )
                             model.details
                     , tags =
-                        case result of
+                        case effectiveResult of
                             Ok detail ->
                                 Tags.noteVersion postId detail.tagVersion model.tags
 
                             Err _ ->
                                 model.tags
                     , reactions =
-                        case result of
+                        case effectiveResult of
                             Ok detail ->
                                 let
                                     reactions =
@@ -506,8 +526,15 @@ updateHelp msg model =
 
                             Err _ ->
                                 model.reactions
+                    , ratings =
+                        case effectiveResult of
+                            Ok detail ->
+                                Ratings.noteDetail detail model.ratings
+
+                            Err _ ->
+                                model.ratings
                     , metadata =
-                        case result of
+                        case effectiveResult of
                             Ok detail ->
                                 if model.selection.active == Just postId then
                                     Metadata.syncDetail detail model.metadata
@@ -597,6 +624,9 @@ updateHelp msg model =
 
         ReactionsMsg subMsg ->
             delegateReactions subMsg model
+
+        RatingsMsg subMsg ->
+            delegateRatings subMsg model
 
         SavedSearchesCompleted generation result ->
             if not (App.Access.isCurrent generation model.access) then
@@ -912,12 +942,17 @@ applyUploadOut : UploadQueue.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
 applyUploadOut out ( model, cmd ) =
     case out of
         UploadQueue.UploadConfirmed detail ->
+            let
+                guarded =
+                    guardRatingDetail model detail.id detail
+            in
             ( { model
-                | sequence = Sequence.refreshSummary (summaryOfDetail detail) model.sequence
-                , details = Dict.insert detail.id (DetailReady detail) model.details
-                , uploadedPosts = Dict.insert detail.id (summaryOfDetail detail) model.uploadedPosts
-                , tags = Tags.noteVersion detail.id detail.tagVersion model.tags
-                , reactions = Reactions.noteVersion detail.id detail.reactionVersion model.reactions
+                | sequence = Sequence.refreshSummary (summaryOfDetail guarded) model.sequence
+                , details = Dict.insert guarded.id (DetailReady guarded) model.details
+                , uploadedPosts = Dict.insert guarded.id (summaryOfDetail guarded) model.uploadedPosts
+                , tags = Tags.noteVersion guarded.id guarded.tagVersion model.tags
+                , reactions = Reactions.noteVersion guarded.id guarded.reactionVersion model.reactions
+                , ratings = Ratings.noteDetail guarded model.ratings
               }
             , cmd
             )
@@ -986,7 +1021,7 @@ applyImportOut out ( model, cmd ) =
         BrowserImport.ImportConfirmed result ->
             let
                 detail =
-                    result.post
+                    guardRatingDetail model result.post.id result.post
 
                 base =
                     { model
@@ -995,6 +1030,7 @@ applyImportOut out ( model, cmd ) =
                         , uploadedPosts = Dict.insert detail.id (summaryOfDetail detail) model.uploadedPosts
                         , tags = Tags.noteVersion detail.id detail.tagVersion model.tags
                         , reactions = Reactions.noteVersion detail.id detail.reactionVersion model.reactions
+                        , ratings = Ratings.noteDetail detail model.ratings
                     }
             in
             case result.collectionId of
@@ -1133,7 +1169,7 @@ openUploadPost postId summary ( model, cmd ) =
     in
     openMode Loupe
         { model
-            | sequence = Sequence.fromList [ summary ]
+            | sequence = Sequence.fromList [ effectiveRatingSummary model summary ]
             , selection = Selection.setActive postId Selection.empty
             , uploadOrigin = origin
         }
@@ -1455,6 +1491,9 @@ applySearchOut out ( model, cmd ) =
             Search.MoreArrived response ->
                 moreResultsArrived response model |> withCmd cmd
 
+            Search.PrefixArrived response ->
+                prefixResultsArrived response model |> withCmd cmd
+
             Search.SearchFailed _ ->
                 ( { model | pendingRoute = Nothing }, cmd )
 
@@ -1610,6 +1649,267 @@ applyReactionsOut out ( model, cmd ) =
             revokeAccess model |> withCmd cmd
 
 
+ratingTargetSummaries : Model -> List PostSummary
+ratingTargetSummaries model =
+    Selection.targets model.sequence model.selection
+        |> List.filterMap (\postId -> Sequence.find postId model.sequence)
+        |> List.map (effectiveRatingSummary model)
+
+
+{-| The canonical rating/version pair for an incoming summary: a known
+pair at a higher version wins atomically; every other field is untouched.
+-}
+effectiveRatingSummary : Model -> PostSummary -> PostSummary
+effectiveRatingSummary model summary =
+    case ( Ratings.knownVersion summary.id model.ratings, Ratings.knownRating summary.id model.ratings ) of
+        ( Just knownVersion_, Just knownRating_ ) ->
+            case summary.ratingVersion of
+                Just incoming ->
+                    if incoming >= knownVersion_ then
+                        summary
+
+                    else
+                        { summary | rating = knownRating_, ratingVersion = Just knownVersion_ }
+
+                Nothing ->
+                    { summary | rating = knownRating_, ratingVersion = Just knownVersion_ }
+
+        _ ->
+            summary
+
+
+{-| Remember every accepted page's version/value pair before a delayed
+Inspector read can arrive, even when the selection itself did not change.
+-}
+noteRatingSummaries : List PostSummary -> Model -> Model
+noteRatingSummaries summaries model =
+    { model | ratings = List.foldl Ratings.noteSummary model.ratings summaries }
+
+
+effectiveRatingSummaries : Model -> List PostSummary -> List PostSummary
+effectiveRatingSummaries model summaries =
+    List.map (effectiveRatingSummary model) summaries
+
+
+ratingTargets : Model -> List Ratings.TargetInfo
+ratingTargets model =
+    ratingTargetSummaries model
+        |> List.map (\summary -> { id = summary.id, rating = summary.rating, version = summary.ratingVersion })
+
+
+{-| An older detail read cannot regress a rating/version pair already
+acknowledged by a save (or seen at a newer version).
+-}
+guardRatingDetail : Model -> String -> PostDetail -> PostDetail
+guardRatingDetail model postId detail =
+    case ( Ratings.knownVersion postId model.ratings, detail.ratingVersion ) of
+        ( Just known, Just incoming ) ->
+            if incoming < known then
+                keepKnownRating model postId known detail
+
+            else
+                detail
+
+        ( Just known, Nothing ) ->
+            keepKnownRating model postId known detail
+
+        _ ->
+            detail
+
+
+keepKnownRating : Model -> String -> Int -> PostDetail -> PostDetail
+keepKnownRating model postId known detail =
+    { detail
+        | rating = Ratings.knownRating postId model.ratings |> Maybe.withDefault detail.rating
+        , ratingVersion = Just known
+        , ratingHistory =
+            case Dict.get postId model.details of
+                Just (DetailReady old) ->
+                    old.ratingHistory
+
+                _ ->
+                    detail.ratingHistory
+    }
+
+
+ratingsContext : Model -> Ratings.Context
+ratingsContext model =
+    Ratings.context
+        model.apiBase
+        (App.Access.credential model.access)
+        (App.Access.canWrite model.access)
+        model.access.generation
+        (ratingTargets model)
+
+
+delegateRatings : Ratings.Msg -> Model -> ( Model, Cmd Msg )
+delegateRatings subMsg model =
+    let
+        ( ratings, ratingsCmd, outs ) =
+            Ratings.update (ratingsContext model) subMsg model.ratings
+    in
+    handleRatingsOuts outs ( { model | ratings = ratings }, Cmd.map RatingsMsg ratingsCmd )
+
+
+handleRatingsOuts : List Ratings.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleRatingsOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleRatingsOuts rest (applyRatingsOut out ( model, cmd ))
+
+
+applyRatingsOut : Ratings.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyRatingsOut out ( model, cmd ) =
+    case out of
+        Ratings.Saved response _ ->
+            let
+                effectivePost post =
+                    case ( Ratings.knownVersion post.id model.ratings, Ratings.knownRating post.id model.ratings ) of
+                        ( Just knownVersion_, Just knownRating_ ) ->
+                            if knownVersion_ > post.version then
+                                { post | version = knownVersion_, rating = knownRating_ }
+
+                            else
+                                post
+
+                        _ ->
+                            post
+
+                effectivePosts =
+                    List.map effectivePost response.posts
+
+                sequence =
+                    List.foldl
+                        (\post sequence_ -> Sequence.updateSummary post.id (\summary -> { summary | rating = post.rating, ratingVersion = Just post.version }) sequence_)
+                        model.sequence
+                        effectivePosts
+
+                details =
+                    List.foldl
+                        (\post dict ->
+                            Dict.update post.id
+                                (\state ->
+                                    case state of
+                                        Just (DetailReady detail) ->
+                                            Just (DetailReady { detail | rating = post.rating, ratingVersion = Just post.version })
+
+                                        other ->
+                                            other
+                                )
+                                dict
+                        )
+                        model.details
+                        effectivePosts
+            in
+            let
+                ( refreshed, refreshCmd ) =
+                    refreshQueryMembership { model | sequence = sequence, details = details }
+
+                detailCmd =
+                    case model.selection.active of
+                        Just activeId ->
+                            if List.any (\post -> post.id == activeId) response.posts then
+                                Api.Post.detail model.apiBase activeId (DetailCompleted model.access.generation activeId)
+
+                            else
+                                Cmd.none
+
+                        Nothing ->
+                            Cmd.none
+            in
+            ( refreshed, Cmd.batch [ cmd, refreshCmd, detailCmd ] )
+
+        Ratings.Uncertain postIds ->
+            let
+                ( refreshed, refreshCmd ) =
+                    refreshPublicPosts postIds model
+            in
+            refreshQueryMembership refreshed |> withCmd (Cmd.batch [ cmd, refreshCmd ])
+
+        Ratings.StaleResponse postIds ->
+            let
+                ( refreshed, refreshCmd ) =
+                    refreshPublicPosts postIds model
+            in
+            refreshQueryMembership refreshed |> withCmd (Cmd.batch [ cmd, refreshCmd ])
+
+        Ratings.AccessRevoked ->
+            revokeAccess model |> withCmd cmd
+
+        Ratings.ReloadTargets postIds ->
+            refreshPublicPosts postIds model |> withCmd cmd
+
+
+{-| After a rating change the current query (never a captured one) decides
+membership again: browsed collections reload their bounded prefix and
+ordinary search re-reads its loaded prefix, preserving selection/scroll
+for posts that still match.
+-}
+refreshQueryMembership : Model -> ( Model, Cmd Msg )
+refreshQueryMembership model =
+    case Collections.browse model.collections of
+        Just _ ->
+            delegateCollections Collections.RetryRequested model
+
+        Nothing ->
+            if Search.state model.search == Search.Idle then
+                ( model, Cmd.none )
+
+            else
+                let
+                    ( search, searchCmd ) =
+                        Search.refreshPrefix (searchContext model) (Sequence.length model.sequence) model.search
+                in
+                ( { model | search = search }, Cmd.map SearchMsg searchCmd )
+
+
+prefixResultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
+prefixResultsArrived response current =
+    let
+        model =
+            noteRatingSummaries (response.posts) current
+
+        sequence =
+            Sequence.fromList (effectiveRatingSummaries model response.posts)
+
+        selection =
+            Selection.prune sequence model.selection
+
+        mode =
+            validMode sequence selection model.mode
+
+        base =
+            { model
+                | sequence = sequence
+                , collections = Collections.abandonBrowse model.collections
+                , selection = selection
+                , mode = mode
+                , pendingRoute = Nothing
+                , uploadOrigin = Nothing
+            }
+
+        top =
+            clampScroll base base.viewport.scrollTop
+
+        updated =
+            { base | viewport = setScroll top base.viewport }
+
+        ( routed, routeCmd ) =
+            case model.pendingRoute of
+                Just route ->
+                    applyRoute route updated
+
+                Nothing ->
+                    ( updated, Cmd.none )
+    in
+    ( routed
+    , Cmd.batch [ restoreGridFocusAndScroll selection.active top, routeCmd ]
+    )
+
+
 {-| Per-call collections context: the current credential and write
 state, the selection-derived add targets, and the loaded result count
 that sizes prefix-refresh targets. The feature never stores any of it.
@@ -1735,10 +2035,13 @@ applyCollectionsOut out ( model, cmd ) =
 
 
 collectionBrowseLoaded : { posts : List PostSummary, nextCursor : Maybe String } -> Model -> ( Model, Cmd Msg )
-collectionBrowseLoaded arrival model =
+collectionBrowseLoaded arrival current =
     let
+        model =
+            noteRatingSummaries (arrival.posts) current
+
         sequence =
-            Sequence.fromList arrival.posts
+            Sequence.fromList (effectiveRatingSummaries model arrival.posts)
 
         selection =
             Selection.prune sequence model.selection
@@ -1759,10 +2062,13 @@ collectionBrowseLoaded arrival model =
 
 
 collectionAppendLoaded : { posts : List PostSummary, nextCursor : Maybe String } -> Model -> ( Model, Cmd Msg )
-collectionAppendLoaded arrival model =
+collectionAppendLoaded arrival current =
     let
+        model =
+            noteRatingSummaries (arrival.posts) current
+
         sequence =
-            Sequence.append arrival.posts model.sequence
+            Sequence.append (effectiveRatingSummaries model arrival.posts) model.sequence
 
         selection =
             Selection.prune sequence model.selection
@@ -1780,17 +2086,26 @@ collectionAppendLoaded arrival model =
 
 
 collectionRefreshLoaded : { sequence : Sequence, nextCursor : Maybe String } -> Model -> ( Model, Cmd Msg )
-collectionRefreshLoaded arrival model =
+collectionRefreshLoaded arrival current =
     let
+        model =
+            noteRatingSummaries (Sequence.slice 0 (Sequence.length arrival.sequence) arrival.sequence |> List.map Tuple.second) current
+
+        guardedSequence =
+            Sequence.slice 0 (Sequence.length arrival.sequence) arrival.sequence
+                |> List.map Tuple.second
+                |> effectiveRatingSummaries model
+                |> Sequence.fromList
+
         selection =
-            CollectionLogic.refreshSelection model.sequence arrival.sequence model.selection
+            CollectionLogic.refreshSelection model.sequence guardedSequence model.selection
 
         mode =
-            validMode arrival.sequence selection model.mode
+            validMode guardedSequence selection model.mode
 
         base =
             { model
-                | sequence = arrival.sequence
+                | sequence = guardedSequence
                 , selection = selection
                 , mode = mode
                 , pendingRoute = Nothing
@@ -1829,10 +2144,13 @@ clearResults model =
 active post and selection survive when their posts are still present.
 -}
 resultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
-resultsArrived response model =
+resultsArrived response current =
     let
+        model =
+            noteRatingSummaries (response.posts) current
+
         posts =
-            response.posts
+            effectiveRatingSummaries model response.posts
 
         sequence =
             Sequence.fromList posts
@@ -1887,10 +2205,13 @@ resultsArrived response model =
 
 
 moreResultsArrived : SearchResponse -> Model -> ( Model, Cmd Msg )
-moreResultsArrived response model =
+moreResultsArrived response current =
     let
+        model =
+            noteRatingSummaries (response.posts) current
+
         sequence =
-            Sequence.append response.posts model.sequence
+            Sequence.append (effectiveRatingSummaries model response.posts) model.sequence
 
         selection =
             Selection.prune sequence model.selection
@@ -2717,6 +3038,7 @@ lockNow model hint =
             , savedSearchSaving = False
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
+            , ratings = Ratings.locked model.ratings
             , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
@@ -2740,6 +3062,7 @@ revokeAccess model =
             , savedSearchSaving = False
             , tags = Tags.locked model.tags
             , reactions = Reactions.locked model.reactions
+            , ratings = Ratings.locked model.ratings
             , metadata = Metadata.locked model.metadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
@@ -3695,6 +4018,26 @@ inspectorView model =
             , onMetadataArtist = MetadataMsg << Metadata.ArtistChanged
             , onSaveMetadata = MetadataMsg Metadata.SaveRequested
             , onReloadMetadata = MetadataMsg Metadata.ReloadRequested
+            , ratingTargetCount = List.length (ratingTargetSummaries model)
+            , ratingSelected =
+                case Ratings.display (ratingTargetSummaries model) model.ratings of
+                    Ratings.Uniform rating ->
+                        Just rating
+
+                    _ ->
+                        Nothing
+            , ratingMixed = Ratings.display (ratingTargetSummaries model) model.ratings == Ratings.Mixed
+            , ratingUnknownVersion =
+                List.length (ratingTargetSummaries model)
+                    /= List.length (Selection.targets model.sequence model.selection)
+                    || Ratings.hasUnknownVersion (ratingTargets model)
+            , ratingDraft = Ratings.draft model.ratings
+            , ratingSaving = Ratings.saving model.ratings
+            , ratingStatus = Ratings.status model.ratings
+            , ratingConflict = Ratings.conflict model.ratings
+            , onRating = RatingsMsg << Ratings.DraftChosen
+            , onSaveRating = RatingsMsg Ratings.SaveRequested
+            , onReloadRating = RatingsMsg Ratings.ReloadRequested
             }
 
     else
@@ -3855,6 +4198,9 @@ emptyState model =
 
                         Search.LoadingMore ->
                             [ p [] [ text "Loading more…" ] ]
+
+                        Search.RefreshingPrefix ->
+                            [ p [] [ text "Refreshing…" ] ]
 
                         Search.Ready ->
                             [ p [] [ text "No posts found." ] ]

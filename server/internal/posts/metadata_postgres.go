@@ -14,7 +14,7 @@ FROM posts
 WHERE id = ANY($1::bigint[])
   AND deleted_at IS NULL
   AND moderation_state = 'published'
-ORDER BY id
+ORDER BY posts.id
 FOR UPDATE
 `
 

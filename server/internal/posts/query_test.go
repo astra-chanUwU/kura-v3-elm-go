@@ -167,13 +167,27 @@ func TestParseQueryAdditionalFilters(t *testing.T) {
 	}
 }
 
+func TestParseRatingQueryField(t *testing.T) {
+	for _, value := range []string{"unrated", "safe", "questionable", "explicit"} {
+		query, err := ParseQuery("rating:" + value + " order:score")
+		if err != nil || query.Rating == nil || string(*query.Rating) != value || query.AST.Rating == nil {
+			t.Fatalf("rating:%s parsed as %#v, err=%v", value, query, err)
+		}
+	}
+	for _, raw := range []string{"rating:other", "rating:SAFE", "rating:safe rating:explicit", "-rating:safe"} {
+		if _, err := ParseQuery(raw); !errors.Is(err, ErrInvalidQuery) {
+			t.Errorf("%q: got %v, want ErrInvalidQuery", raw, err)
+		}
+	}
+}
+
 func TestSearchPostsSQLUsesBoundedParametersAndCursors(t *testing.T) {
-	for _, fragment := range []string{"websearch_to_tsquery('simple', $1)", "favorite = $2::boolean", "score >= $4::integer", "width <= $6::integer", "height = $8::integer", "file_size >= $10::bigint", "id < $12::bigint", "media_type = $13::text", "source = $14::text", "artist = $15::text", "tags @> $16::text[]", "NOT (tags && $17::text[])", "ORDER BY id DESC", "LIMIT $19"} {
+	for _, fragment := range []string{"websearch_to_tsquery('simple', $1)", "favorite = $2::boolean", "score >= $4::integer", "width <= $6::integer", "height = $8::integer", "file_size >= $10::bigint", "id < $12::bigint", "media_type = $13::text", "source = $14::text", "artist = $15::text", "tags @> $16::text[]", "NOT (tags && $17::text[])", "rating = $19::text", "ORDER BY posts.id DESC", "LIMIT $20"} {
 		if !strings.Contains(SearchPostsSQL, fragment) {
 			t.Errorf("SearchPostsSQL missing %q", fragment)
 		}
 	}
-	for _, fragment := range []string{"websearch_to_tsquery('simple', $1)", "ORDER BY score DESC, id DESC", "score < $18::integer", "id < $19::bigint", "LIMIT $20"} {
+	for _, fragment := range []string{"websearch_to_tsquery('simple', $1)", "ORDER BY posts.score DESC, posts.id DESC", "score < $18::integer", "id < $19::bigint", "rating = $20::text", "LIMIT $21"} {
 		if !strings.Contains(SearchPostsScoreSQL, fragment) {
 			t.Errorf("SearchPostsScoreSQL missing %q", fragment)
 		}

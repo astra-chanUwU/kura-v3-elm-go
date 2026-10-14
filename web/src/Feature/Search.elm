@@ -12,6 +12,8 @@ module Feature.Search exposing
     , isBusy
     , nextCursor
     , query
+    , refreshPrefix
+    , prefixPageLimit
     , requestId
     , requestMore
     , reset
@@ -40,8 +42,9 @@ query draft also stay with the page.
 
 import Api.Error as ApiError
 import Api.Post
-import Domain.Post exposing (SearchResponse)
+import Domain.Post exposing (PostSummary, SearchResponse)
 import Http
+import Set exposing (Set)
 
 
 {-| Page size for ordinary search requests.
@@ -55,6 +58,7 @@ type State
     = Idle
     | Searching
     | LoadingMore
+    | RefreshingPrefix
     | Ready
     | Failed String
 
@@ -62,6 +66,7 @@ type State
 type RequestKind
     = InitialRequest
     | MoreRequest
+    | PrefixRequest
 
 
 type alias Model =
@@ -69,6 +74,18 @@ type alias Model =
     , state : State
     , requestId : Int
     , nextCursor : Maybe String
+    , prefix : Maybe PrefixRefresh
+    }
+
+
+type alias PrefixRefresh =
+    { target : Int
+    , fetched : List PostSummary
+    , fetchedIds : Set String
+    , seenCursors : Set String
+    , pages : Int
+    , returnCursor : Maybe String
+    , returnState : State
     }
 
 
@@ -93,6 +110,7 @@ type Msg
 type OutMsg
     = InitialArrived SearchResponse
     | MoreArrived SearchResponse
+    | PrefixArrived SearchResponse
     | SearchFailed Http.Error
 
 
@@ -102,6 +120,7 @@ init =
     , state = Idle
     , requestId = 0
     , nextCursor = Nothing
+    , prefix = Nothing
     }
 
 
@@ -137,6 +156,9 @@ isBusy model =
         LoadingMore ->
             True
 
+        RefreshingPrefix ->
+            True
+
         _ ->
             False
 
@@ -162,6 +184,7 @@ reset model =
     , state = Idle
     , requestId = model.requestId + 1
     , nextCursor = Nothing
+    , prefix = Nothing
     }
 
 
@@ -173,7 +196,7 @@ start ctx newQuery model =
         id =
             model.requestId + 1
     in
-    ( { model | query = newQuery, state = Searching, requestId = id, nextCursor = Nothing }
+    ( { model | query = newQuery, state = Searching, requestId = id, nextCursor = Nothing, prefix = Nothing }
     , Api.Post.search ctx.apiBase newQuery Nothing pageSize (Completed id InitialRequest)
     )
 
@@ -201,8 +224,56 @@ requestMore ctx model =
             ( model, Cmd.none )
 
 
+{-| Re-read the currently loaded prefix (bounded to 1000 posts) without
+publishing anything until the whole prefix has arrived. Starting any fresh
+search, reset, or new prefix refresh cancels this one by generation.
+-}
+refreshPrefix : Context -> Int -> Model -> ( Model, Cmd Msg )
+refreshPrefix ctx loadedCount model =
+    if loadedCount <= 0 || model.state == Idle then
+        ( model, Cmd.none )
+
+    else
+        let
+            id =
+                model.requestId + 1
+
+            target =
+                min loadedCount 1000
+        in
+        ( { model
+            | state = RefreshingPrefix
+            , requestId = id
+            , prefix =
+                Just
+                    { target = target
+                    , fetched = []
+                    , fetchedIds = Set.empty
+                    , seenCursors = Set.empty
+                    , pages = 0
+                    , returnCursor = model.nextCursor
+                    , returnState = Ready
+                    }
+          }
+        , Api.Post.search ctx.apiBase model.query Nothing (prefixPageLimit target 0) (Completed id PrefixRequest)
+        )
+
+
+{-| Keep a refresh cursor aligned with every row published, even when the
+loaded prefix ends between normal page boundaries.
+-}
+prefixPageLimit : Int -> Int -> Int
+prefixPageLimit target fetchedCount =
+    max 1 (min pageSize (target - fetchedCount))
+
+
+maxPrefixPages : Int
+maxPrefixPages =
+    20
+
+
 update : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
-update _ msg model =
+update ctx msg model =
     case msg of
         Completed id kind result ->
             if id /= model.requestId then
@@ -223,11 +294,102 @@ update _ msg model =
                         , [ MoreArrived response ]
                         )
 
+                    ( PrefixRequest, Ok response ) ->
+                        prefixPage ctx response model
+
+                    ( PrefixRequest, Err error ) ->
+                        case model.prefix of
+                            Just prefix ->
+                                ( { model | state = prefix.returnState, nextCursor = prefix.returnCursor, prefix = Nothing }
+                                , Cmd.none
+                                , [ SearchFailed error ]
+                                )
+
+                            Nothing ->
+                                ( { model | state = Failed (errorToString error) }
+                                , Cmd.none
+                                , [ SearchFailed error ]
+                                )
+
                     ( _, Err error ) ->
                         ( { model | state = Failed (errorToString error) }
                         , Cmd.none
                         , [ SearchFailed error ]
                         )
+
+
+prefixPage : Context -> SearchResponse -> Model -> ( Model, Cmd Msg, List OutMsg )
+prefixPage ctx response model =
+    case model.prefix of
+        Nothing ->
+            ( model, Cmd.none, [] )
+
+        Just prefix ->
+            let
+                pageIds =
+                    List.map .id response.posts
+
+                duplicateIds =
+                    List.length pageIds /= Set.size (Set.fromList pageIds)
+                        || List.any (\id -> Set.member id prefix.fetchedIds) pageIds
+
+                oversizedPage =
+                    List.length response.posts > prefixPageLimit prefix.target (List.length prefix.fetched)
+
+                fresh =
+                    response.posts
+
+                fetched =
+                    prefix.fetched ++ fresh
+
+                fetchedIds =
+                    List.foldl (\post ids -> Set.insert post.id ids) prefix.fetchedIds fresh
+
+                pages =
+                    prefix.pages + 1
+
+                repeatedCursor =
+                    case response.nextCursor of
+                        Just cursor ->
+                            Set.member cursor prefix.seenCursors
+
+                        Nothing ->
+                            False
+
+                abort =
+                    ( { model | state = prefix.returnState, nextCursor = prefix.returnCursor, prefix = Nothing }
+                    , Cmd.none
+                    , [ SearchFailed (Http.BadBody "The library changed while refreshing. Retry the search.") ]
+                    )
+            in
+            if duplicateIds || oversizedPage || repeatedCursor || pages > maxPrefixPages then
+                abort
+
+            else if List.length fetched >= prefix.target || response.nextCursor == Nothing then
+                ( { model | state = Ready, nextCursor = response.nextCursor, prefix = Nothing }
+                , Cmd.none
+                , [ PrefixArrived { posts = fetched, nextCursor = response.nextCursor } ]
+                )
+
+            else
+                case response.nextCursor of
+                    Just cursor ->
+                        ( { model
+                            | prefix =
+                                Just
+                                    { prefix
+                                        | fetched = fetched
+                                        , fetchedIds = fetchedIds
+                                        , pages = pages
+                                        , seenCursors = Set.insert cursor prefix.seenCursors
+                                    }
+                          }
+                        , Api.Post.search ctx.apiBase model.query (Just cursor) (prefixPageLimit prefix.target (List.length fetched)) (Completed model.requestId PrefixRequest)
+                        , []
+                        )
+
+                    Nothing ->
+                        abort
 
 
 errorToString : Http.Error -> String

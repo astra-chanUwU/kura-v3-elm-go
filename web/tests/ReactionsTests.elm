@@ -2,6 +2,7 @@ module ReactionsTests exposing (allPassed, suite)
 
 import Dict
 import Domain.Post exposing (PostDetail)
+import Domain.Rating
 import Feature.Reactions as Reactions
 import Http
 
@@ -54,6 +55,9 @@ detailScored score =
     , derivativeStatus = Nothing
     , metadataVersion = 0
     , metadataHistory = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
+    , ratingHistory = []
     }
 
 
@@ -217,7 +221,7 @@ caseSuccessReloadsActive =
             step editCtx (Reactions.Completed 7 (Reactions.requestId savingScore) [ "p1" ] (Ok savedResponse)) savingScore
     in
     outs == [ Reactions.Saved (Just "p1") ]
-        && Reactions.status settled == Just "Rating saved."
+        && Reactions.status settled == Just "Favorite or score saved."
         && not (Reactions.saving settled)
         && Reactions.versions settled == Dict.fromList [ ( "p1", 6 ) ]
 

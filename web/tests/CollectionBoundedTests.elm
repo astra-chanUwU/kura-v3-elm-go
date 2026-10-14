@@ -1,5 +1,7 @@
 module CollectionBoundedTests exposing (allPassed, suite)
 
+import Domain.Post exposing (PostSummary)
+import Domain.Rating
 import Domain.Collection as Collection
 import Domain.CollectionLogic as Logic
 import Feature.Collections as Collections
@@ -47,9 +49,9 @@ withSummaries =
         |> Tuple.first
 
 
-post : String -> { id : String, previewUrl : String, originalUrl : String, mediaType : String, width : Int, height : Int, tags : List String }
+post : String -> PostSummary
 post id =
-    { id = id, previewUrl = "/m", originalUrl = "/o", mediaType = "image/jpeg", width = 1, height = 1, tags = [] }
+    { id = id, previewUrl = "/m", originalUrl = "/o", mediaType = "image/jpeg", width = 1, height = 1, tags = [], rating = Domain.Rating.Unrated, ratingVersion = Just 0 }
 
 
 pageOf : List String -> Maybe String -> Int -> Collection.CollectionPostsPage

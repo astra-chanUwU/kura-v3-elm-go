@@ -1,5 +1,6 @@
 module UploadQueueTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Api.Job as Job
 import Api.Upload as Upload
 import Domain.Post as Post
@@ -121,6 +122,8 @@ summary id preview =
     , width = 8
     , height = 8
     , tags = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
     }
 
 

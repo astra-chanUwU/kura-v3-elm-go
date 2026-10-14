@@ -1,5 +1,6 @@
 module CollectionRefreshTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Domain.CollectionLogic as Logic
 import Domain.Post exposing (PostSummary)
 import Domain.Selection as Selection
@@ -16,6 +17,8 @@ summary id =
     , width = 100
     , height = 100
     , tags = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
     }
 
 

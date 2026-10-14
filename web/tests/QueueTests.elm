@@ -1,5 +1,6 @@
 module QueueTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Domain.JobStatus as JobStatus
 import Feature.UploadQueue.Queue as Queue exposing (Effect(..), Event(..), Note(..))
 import Set
@@ -48,6 +49,9 @@ detail jobId status =
     , derivativeStatus = status
     , metadataVersion = 0
     , metadataHistory = []
+    , rating = Domain.Rating.Unrated
+    , ratingVersion = Just 0
+    , ratingHistory = []
     }
 
 

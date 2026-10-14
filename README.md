@@ -76,6 +76,12 @@ Edit **Source & artist** in the Inspector, then save explicitly. Clearing a
 field removes its value. Metadata history records previous values, and a
 conflicting edit keeps your draft until you reload the post.
 
+Set **Content rating** in the Inspector to Unrated, Safe, Questionable, or
+Explicit, then save. The same control applies to a selection of up to 100
+images together. Existing images and new uploads start Unrated. Rating history
+records changes; a conflicting edit requires a reload before another save.
+Ratings describe content and do not change its visibility.
+
 Navigator shows collection counts and offers paged ordering, rename, and delete.
 First/last and neighbor moves send one post at a time. Deleting a collection
 leaves its images in the library.
@@ -96,6 +102,8 @@ Plain words search the post's text. Use `tag:` to match a specific tag. Put filt
 | Posts containing the word "cat" | `cat` |
 | Posts tagged "cat" | `tag:cat` |
 | Posts tagged "cat", excluding those tagged "dog" | `tag:cat -tag:dog` |
+| Images you have marked safe | `rating:safe` |
+| Images still awaiting classification | `rating:unrated` |
 | Favorites with a score of at least 5 | `favorite:true score:>=5` |
 | Images by a particular artist | `artist:"ARTIST NAME"` |
 | Images imported from a folder | `source:"folder-import/FOLDER/image.png"` |
@@ -166,6 +174,13 @@ go -C cli run ./cmd/kura --help
 ```
 
 Commands support `--json`, `--jsonl`, and `--api-url`. Put flags before positional arguments. Search and collection posts support `--limit`, `--cursor`, and `--all`. Without `--all`, each reads one page. With it, human and JSON Lines output stream completed pages; a later failure returns a nonzero exit status, so check the status before treating that output as complete. `--all --json` is rejected because it would buffer every page in memory; use `--all --jsonl` for streaming output.
+
+Set a content rating using the independent `rating_version` shown by
+`kura post show --json ID`:
+
+```sh
+kura post rating --version 0 10 safe
+```
 
 Pagination stops on duplicate posts, repeated cursors, collection version changes, API errors, or the 1,000-page limit. It never silently restarts under a changed collection. Search pagination does not freeze a changing library. Ctrl-C cancels active requests. Writes are never automatically retried; if a write response is lost or invalid, inspect the resource before retrying. API addresses must be absolute HTTP(S) URLs without embedded credentials, query strings, or fragments; reverse-proxy path prefixes are supported and redirects are reported as errors.
 

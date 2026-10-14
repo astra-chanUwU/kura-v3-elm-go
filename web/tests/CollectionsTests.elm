@@ -1,5 +1,7 @@
 module CollectionsTests exposing (allPassed, suite)
 
+import Domain.Post exposing (PostSummary)
+import Domain.Rating
 import Domain.Collection exposing (CollectionAck, CollectionSummary)
 import Domain.Sequence as Sequence
 import Feature.Collections as Collections
@@ -47,9 +49,9 @@ opened =
     run (Collections.OpenRequested "c1") withItems |> Tuple.first
 
 
-page : List String -> Maybe String -> { posts : List { id : String, previewUrl : String, originalUrl : String, mediaType : String, width : Int, height : Int, tags : List String }, nextCursor : Maybe String, collectionVersion : Int }
+page : List String -> Maybe String -> { posts : List PostSummary, nextCursor : Maybe String, collectionVersion : Int }
 page ids cursor =
-    { posts = List.map (\id -> { id = id, previewUrl = "/m", originalUrl = "/o", mediaType = "image/jpeg", width = 1, height = 1, tags = [] }) ids
+    { posts = List.map (\id -> { id = id, previewUrl = "/m", originalUrl = "/o", mediaType = "image/jpeg", width = 1, height = 1, tags = [], rating = Domain.Rating.Unrated, ratingVersion = Just 0 }) ids
     , nextCursor = cursor
     , collectionVersion = 3
     }

@@ -12,8 +12,8 @@ package posts
 // SearchPostsSQL is the newest-ordered query contract. $1 is websearch text;
 // $2 is favorite; $3/$4 score; $5/$6 width; $7/$8 height; $9/$10 file_size;
 // $11/$12 id; $13 media_type; $14 source; $15 artist; $16 included tags;
-// $17 excluded tags; $18 keyset id; $19 limit+1. Operators are validated by
-// ParseQuery before they reach SQL.
+// $17 excluded tags; $18 keyset id; $19 rating; $20 limit+1. Operators are
+// validated by ParseQuery before they reach SQL.
 const SearchPostsSQL = `
 SELECT
     id::text,
@@ -23,7 +23,9 @@ SELECT
     width,
     height,
     tags,
-    score
+    score,
+    rating,
+    rating_version
 FROM posts
 WHERE deleted_at IS NULL
   AND moderation_state = 'published'
@@ -65,13 +67,15 @@ WHERE deleted_at IS NULL
   AND ($16::text[] IS NULL OR tags @> $16::text[])
   AND ($17::text[] IS NULL OR NOT (tags && $17::text[]))
   AND ($18::bigint IS NULL OR id < $18::bigint)
-ORDER BY id DESC
-LIMIT $19
+  AND ($19::text IS NULL OR rating = $19::text)
+ORDER BY posts.id DESC
+LIMIT $20
 `
 
 // SearchPostsScoreSQL is the score-ordered query contract. Parameters $1..$17
-// mirror SearchPostsSQL; $18 is the cursor score, $19 is the cursor id, and
-// $20 is limit+1. Ordering is deterministic score DESC then id DESC.
+// mirror SearchPostsSQL; $18 is the cursor score, $19 is the cursor id, $20
+// is rating, and $21 is limit+1. Ordering is deterministic score DESC then
+// id DESC.
 const SearchPostsScoreSQL = `
 SELECT
     id::text,
@@ -81,7 +85,9 @@ SELECT
     width,
     height,
     tags,
-    score
+    score,
+    rating,
+    rating_version
 FROM posts
 WHERE deleted_at IS NULL
   AND moderation_state = 'published'
@@ -123,8 +129,9 @@ WHERE deleted_at IS NULL
   AND ($16::text[] IS NULL OR tags @> $16::text[])
   AND ($17::text[] IS NULL OR NOT (tags && $17::text[]))
   AND ($18::integer IS NULL OR (score < $18::integer OR (score = $18::integer AND id < $19::bigint)))
-ORDER BY score DESC, id DESC
-LIMIT $20
+  AND ($20::text IS NULL OR rating = $20::text)
+ORDER BY posts.score DESC, posts.id DESC
+LIMIT $21
 `
 
 // GetPostDetailSQL fetches the complete visible Inspector shape. The ID is
@@ -148,6 +155,8 @@ SELECT
     score,
     reaction_version,
     metadata_version,
+    rating,
+    rating_version,
     COALESCE((
         SELECT jsonb_agg(
             jsonb_build_object(
@@ -162,6 +171,23 @@ SELECT
         FROM (
             SELECT version, previous_source, previous_artist, source, artist, created_at
             FROM post_metadata_revisions
+            WHERE post_id = posts.id
+            ORDER BY version DESC
+            LIMIT 50
+        ) AS history
+    ), '[]'::jsonb),
+    COALESCE((
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'version', history.version,
+                'previous_rating', history.previous_rating,
+                'rating', history.rating,
+                'created_at', history.created_at::text
+            ) ORDER BY history.version DESC
+        )
+        FROM (
+            SELECT version, previous_rating, rating, created_at
+            FROM post_rating_revisions
             WHERE post_id = posts.id
             ORDER BY version DESC
             LIMIT 50
@@ -330,7 +356,9 @@ SELECT
     p.media_type,
     p.width,
     p.height,
-    p.tags
+    p.tags,
+    p.rating,
+    p.rating_version
 FROM collection_posts cp
 JOIN posts p ON p.id = cp.post_id AND p.deleted_at IS NULL AND p.moderation_state = 'published'
 WHERE cp.collection_id = $1::bigint
@@ -414,11 +442,13 @@ SELECT
     width,
     height,
     tags,
+    rating,
+    rating_version,
     moderation_state
 FROM posts
 WHERE deleted_at IS NULL
   AND moderation_state = $1::text
-ORDER BY id DESC
+ORDER BY posts.id DESC
 LIMIT $2
 `
 

@@ -12,7 +12,7 @@ Usage:
 Commands:
   search    Search posts via GET /api/posts
   collection List collections or browse collection posts
-  post      Show post detail and mutate tags, favorites, and scores
+  post      Show post detail and mutate tags, favorites, scores, and content ratings
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
@@ -410,6 +410,7 @@ Flags:
 const postReactionHelp = `kura post reaction - set favorite and/or score via the HTTP API
 
 Usage:
+  kura post rating --version N [flags] POST_ID RATING
   kura post reaction [flags] POST_ID
 
 Sets favorite and/or score via POST /api/posts/reactions with optimistic version

@@ -30,6 +30,13 @@ var ErrReactionConflict = errors.New("post reaction version conflict")
 // ErrInvalidReactions indicates malformed favorite/score mutation input.
 var ErrInvalidReactions = errors.New("invalid reactions")
 
+// ErrRatingConflict indicates that a rating edit used an older independent
+// rating version.
+var ErrRatingConflict = errors.New("post rating version conflict")
+
+// ErrInvalidRating indicates malformed content-rating mutation input.
+var ErrInvalidRating = errors.New("invalid rating edit")
+
 var ErrInvalidCollections = errors.New("invalid collections")
 
 // ErrCollectionChanged indicates that a versioned collection cursor was

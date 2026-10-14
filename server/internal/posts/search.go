@@ -11,13 +11,15 @@ import (
 // The API deliberately exposes media URLs and display metadata instead of a
 // database row. Additional post details belong behind a detail endpoint.
 type PostSummary struct {
-	ID          string   `json:"id"`
-	PreviewURL  string   `json:"preview_url"`
-	OriginalURL string   `json:"original_url"`
-	MediaType   string   `json:"media_type"`
-	Width       int      `json:"width"`
-	Height      int      `json:"height"`
-	Tags        []string `json:"tags"`
+	ID            string   `json:"id"`
+	PreviewURL    string   `json:"preview_url"`
+	OriginalURL   string   `json:"original_url"`
+	MediaType     string   `json:"media_type"`
+	Width         int      `json:"width"`
+	Height        int      `json:"height"`
+	Tags          []string `json:"tags"`
+	Rating        Rating   `json:"rating"`
+	RatingVersion int      `json:"rating_version"`
 }
 
 // PostDetail is the stable read-only representation used by the Inspector.
@@ -36,6 +38,7 @@ type PostDetail struct {
 	CreatedAt        string             `json:"created_at"`
 	TagVersion       int                `json:"tag_version"`
 	MetadataVersion  int                `json:"metadata_version"`
+	RatingHistory    []RatingRevision   `json:"rating_history"`
 	Favorite         bool               `json:"favorite"`
 	Score            int                `json:"score"`
 	ReactionVersion  int                `json:"reaction_version"`
@@ -79,6 +82,55 @@ type MetadataRevision struct {
 	Source         string `json:"source"`
 	Artist         string `json:"artist"`
 	CreatedAt      string `json:"created_at"`
+}
+
+// RatingRevision is an immutable content-rating change shown in the Inspector.
+type RatingRevision struct {
+	Version        int    `json:"version"`
+	PreviousRating Rating `json:"previous_rating"`
+	Rating         Rating `json:"rating"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type Rating string
+
+const (
+	RatingUnrated      Rating = "unrated"
+	RatingSafe         Rating = "safe"
+	RatingQuestionable Rating = "questionable"
+	RatingExplicit     Rating = "explicit"
+)
+
+func (r Rating) Valid() bool {
+	switch r {
+	case RatingUnrated, RatingSafe, RatingQuestionable, RatingExplicit:
+		return true
+	default:
+		return false
+	}
+}
+
+// RatingEdit uses a pointer so absent and explicit-null versions are rejected
+// while JSON integer zero remains a valid initial version.
+type RatingEdit struct {
+	ID      string `json:"id"`
+	Version *int   `json:"version"`
+}
+
+type RatingRequest struct {
+	Posts  []RatingEdit `json:"posts"`
+	Rating Rating       `json:"rating"`
+}
+
+type RatingOutcome struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+	Rating  Rating `json:"rating"`
+	Changed bool   `json:"changed"`
+}
+
+type RatingResult struct {
+	Posts []RatingOutcome `json:"posts"`
 }
 
 type TagTarget struct {
@@ -210,6 +262,11 @@ type ReactionMutator interface {
 // MetadataMutator applies atomic optimistic source and artist edits.
 type MetadataMutator interface {
 	UpdateMetadata(ctx context.Context, request MetadataRequest) (MetadataResponse, error)
+}
+
+// RatingMutator applies an atomic optimistic content-rating edit.
+type RatingMutator interface {
+	UpdateRatings(ctx context.Context, request RatingRequest) (RatingResult, error)
 }
 
 // UploadRequest is the storage-facing contract for a bounded local upload.

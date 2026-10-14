@@ -34,6 +34,8 @@ func TestValidateMetadataRequest(t *testing.T) {
 	for _, request := range []MetadataRequest{
 		{Posts: []MetadataTarget{{ID: "2004", Version: 0}}},
 		{Posts: []MetadataTarget{{ID: "02004", Version: 0}}, Source: &empty},
+		{Posts: []MetadataTarget{{ID: " 2004", Version: 0}}, Source: &empty},
+		{Posts: []MetadataTarget{{ID: "2004 ", Version: 0}}, Source: &empty},
 		{Posts: []MetadataTarget{{ID: "2004", Version: -1}}, Source: &empty},
 		{Posts: []MetadataTarget{{ID: "2004", Version: 0}, {ID: "2004", Version: 0}}, Source: &empty},
 		{Posts: []MetadataTarget{{ID: "2004", Version: 0}}, Artist: &tooLong},
@@ -119,6 +121,18 @@ VALUES ('/media/meta.png', '/media/meta.png', 'image/png', 10, 10, 'old source',
 RETURNING id::text`).Scan(&ids[index]); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// A noncanonical key must be rejected before map-based metadata lookup;
+	// otherwise an ID with whitespace could use empty source/artist/tag state.
+	if _, err := backend.UpdateMetadata(ctx, MetadataRequest{
+		Posts: []MetadataTarget{{ID: " " + ids[0], Version: 0}}, Source: strPtr("bad edit"),
+	}); !errors.Is(err, ErrInvalidMetadata) {
+		t.Fatalf("noncanonical metadata target accepted: %v", err)
+	}
+	var untouchedSource, untouchedArtist string
+	if err := backend.pool.QueryRow(ctx, `SELECT source, artist FROM posts WHERE id=$1::bigint`, ids[0]).Scan(&untouchedSource, &untouchedArtist); err != nil || untouchedSource != "old source" || untouchedArtist != "old artist" {
+		t.Fatalf("malformed ID changed metadata: %q %q err=%v", untouchedSource, untouchedArtist, err)
 	}
 
 	request := MetadataRequest{Posts: []MetadataTarget{{ID: ids[0], Version: 0}, {ID: ids[1], Version: 1}}, Source: strPtr("new source"), Artist: strPtr("new artist")}

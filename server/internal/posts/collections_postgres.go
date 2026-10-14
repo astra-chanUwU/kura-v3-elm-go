@@ -108,7 +108,7 @@ func (s *PostgresBackend) SearchCollectionPosts(ctx context.Context, collectionI
 	members := make([]positionedPost, 0, limit+1)
 	for rows.Next() {
 		var member positionedPost
-		if err := rows.Scan(&member.position, &member.post.ID, &member.post.PreviewURL, &member.post.OriginalURL, &member.post.MediaType, &member.post.Width, &member.post.Height, &member.post.Tags); err != nil {
+		if err := rows.Scan(&member.position, &member.post.ID, &member.post.PreviewURL, &member.post.OriginalURL, &member.post.MediaType, &member.post.Width, &member.post.Height, &member.post.Tags, &member.post.Rating, &member.post.RatingVersion); err != nil {
 			return CollectionPostsPage{}, err
 		}
 		members = append(members, member)

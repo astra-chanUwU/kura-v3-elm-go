@@ -45,6 +45,7 @@ func main() {
 				Uploads:             pgBackend,
 				BrowserImports:      pgBackend,
 				Metadata:            pgBackend,
+				Ratings:             pgBackend,
 				Tags:                pgBackend,
 				TagRevisions:        pgBackend,
 				Reactions:           pgBackend,

@@ -1,5 +1,6 @@
 module ImportTests exposing (allPassed, suite)
 
+import Domain.Rating
 import Api.Import as ImportApi
 import Domain.Post as Post
 import Feature.Import.State as ImportState
@@ -115,6 +116,9 @@ detail =
             , derivativeStatus = Nothing
             , metadataVersion = 0
             , metadataHistory = []
+            , rating = Domain.Rating.Unrated
+            , ratingVersion = Just 0
+            , ratingHistory = []
             }
 
 

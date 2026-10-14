@@ -31,6 +31,7 @@ type QueryAST struct {
 	Excluded  []string
 	Tags      []TagPredicate
 	Favorite  *bool
+	Rating    *Rating
 	Score     *NumericFilter
 	Width     *NumericFilter
 	Height    *NumericFilter
@@ -46,6 +47,7 @@ type QueryAST struct {
 type Query struct {
 	Text      string
 	Favorite  *bool
+	Rating    *Rating
 	Score     *NumericFilter
 	Width     *NumericFilter
 	Height    *NumericFilter
@@ -112,7 +114,7 @@ func ParseQuery(raw string) (Query, error) {
 }
 
 func queryFromAST(ast QueryAST, text string) Query {
-	return Query{Text: text, Favorite: ast.Favorite, Score: ast.Score, Width: ast.Width, Height: ast.Height, FileSize: ast.FileSize, ID: ast.ID, MediaType: ast.MediaType, Source: ast.Source, Artist: ast.Artist, Tags: ast.Tags, Order: ast.Order, AST: &ast}
+	return Query{Text: text, Favorite: ast.Favorite, Rating: ast.Rating, Score: ast.Score, Width: ast.Width, Height: ast.Height, FileSize: ast.FileSize, ID: ast.ID, MediaType: ast.MediaType, Source: ast.Source, Artist: ast.Artist, Tags: ast.Tags, Order: ast.Order, AST: &ast}
 }
 
 func addFieldFilter(ast *QueryAST, field, rawValue string) error {
@@ -131,6 +133,15 @@ func addFieldFilter(ast *QueryAST, field, rawValue string) error {
 		}
 		favorite := value == "true"
 		ast.Favorite = &favorite
+	case "rating":
+		if ast.Rating != nil {
+			return invalidQuery("duplicate rating filter")
+		}
+		rating := Rating(value)
+		if !rating.Valid() {
+			return invalidQuery("rating expects unrated, safe, questionable, or explicit")
+		}
+		ast.Rating = &rating
 	case "order":
 		if ast.Order != SortNewest {
 			return invalidQuery("duplicate order expression")

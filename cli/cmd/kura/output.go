@@ -105,6 +105,18 @@ func writePostDetailHuman(d client.PostDetail, stdout io.Writer) int {
 	fmt.Fprintf(stdout, "Favorite: %v\n", d.Favorite)
 	fmt.Fprintf(stdout, "Score: %d\n", d.Score)
 	fmt.Fprintf(stdout, "Reaction Version: %d\n", d.ReactionVersion)
+	if d.Rating != "" {
+		fmt.Fprintf(stdout, "Content Rating: %s\n", d.Rating)
+	}
+	if d.RatingVersion != nil {
+		fmt.Fprintf(stdout, "Rating Version: %d\n", *d.RatingVersion)
+	}
+	if len(d.RatingHistory) > 0 {
+		fmt.Fprintln(stdout, "Rating History:")
+		for _, revision := range d.RatingHistory {
+			fmt.Fprintf(stdout, "  v%d %s -> %s %s\n", revision.Version, revision.PreviousRating, revision.Rating, revision.CreatedAt)
+		}
+	}
 	if len(d.History) == 0 {
 		fmt.Fprintln(stdout, "History: (none)")
 	} else {
