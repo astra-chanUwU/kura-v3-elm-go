@@ -526,6 +526,7 @@ button.chip:hover { border-color: var(--accent); }
 
 .nav-list { margin: 0; padding: 0; list-style: none; }
 .nav-row { display: flex; align-items: center; min-height: 38px; }
+.tag-manage-row { gap: 8px; flex-wrap: wrap; }
 .nav-item {
   flex: 1;
   min-width: 0;
