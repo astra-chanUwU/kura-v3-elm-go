@@ -76,6 +76,12 @@ Edit **Source & artist** in the Inspector, then save explicitly. Clearing a
 field removes its value. Metadata history records previous values, and a
 conflicting edit keeps your draft until you reload the post.
 
+Select up to 100 images to edit Source or Artist together. Choose which fields
+to change, review the affected images, then save. Unchosen fields keep their
+values; an empty chosen field clears it. Mixed values appear as mixed until you
+choose a replacement. If any image changed elsewhere, reload the selection
+before reviewing and saving again; the draft stays available.
+
 Set **Content rating** in the Inspector to Unrated, Safe, Questionable, or
 Explicit, then save. The same control applies to a selection of up to 100
 images together. Existing images and new uploads start Unrated. Rating history

@@ -6,7 +6,7 @@ import Domain.Post exposing (PostDetail, PostSummary, TagRevision)
 import Domain.Rating as Rating exposing (Rating)
 import Html exposing (Html, a, aside, button, dd, details, div, dl, dt, form, input, label, li, option, p, select, span, summary, text, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, href, placeholder, rel, selected, style, target, title, type_, value)
-import Html.Events exposing (on, onClick, onInput, onSubmit)
+import Html.Events exposing (on, onCheck, onClick, onInput, onSubmit)
 import Json.Decode as Decode
 import Set exposing (Set)
 import Ui.Button
@@ -66,6 +66,28 @@ type alias Config msg =
     , onMetadataArtist : String -> msg
     , onSaveMetadata : msg
     , onReloadMetadata : msg
+    , bulkCount : Int
+    , bulkOverLimit : Bool
+    , bulkLoading : Bool
+    , bulkLoaded : Bool
+    , bulkCommonSource : Maybe String
+    , bulkCommonArtist : Maybe String
+    , bulkChangeSource : Bool
+    , bulkChangeArtist : Bool
+    , bulkSourceDraft : String
+    , bulkArtistDraft : String
+    , bulkSaving : Bool
+    , bulkStatus : Maybe String
+    , bulkConflict : Bool
+    , bulkNeedsReload : Bool
+    , bulkReviewing : Bool
+    , onBulkSourceCheck : Bool -> msg
+    , onBulkArtistCheck : Bool -> msg
+    , onBulkSource : String -> msg
+    , onBulkArtist : String -> msg
+    , onBulkReview : msg
+    , onBulkSave : msg
+    , onBulkReload : msg
     , ratingTargetCount : Int
     , ratingSelected : Maybe Rating
     , ratingMixed : Bool
@@ -99,7 +121,11 @@ view config =
 
                 Just post ->
                     [ identitySection config post
-                    , metadataSection config post
+                    , if config.bulkCount >= 2 then
+                        bulkMetadataSection config
+
+                      else
+                        metadataSection config post
                     , reactionSection config post
                     , ratingSection config post
                     , Panel.section
@@ -124,6 +150,137 @@ view config =
                     , selectionSection config
                     ]
             )
+        ]
+
+
+bulkMetadataSection : Config msg -> Html msg
+bulkMetadataSection config =
+    let
+        count =
+            config.bulkCount
+
+        disabledInputs =
+            not config.writesEnabled || config.bulkSaving || not config.bulkLoaded
+
+        reviewLines =
+            (if config.bulkChangeSource then
+                [ if String.trim config.bulkSourceDraft == "" then
+                    "Clear source on " ++ String.fromInt count ++ " images"
+
+                  else
+                    "Change source to “" ++ String.trim config.bulkSourceDraft ++ "” on " ++ String.fromInt count ++ " images"
+                ]
+
+             else
+                []
+            )
+                ++ (if config.bulkChangeArtist then
+                        [ if String.trim config.bulkArtistDraft == "" then
+                            "Clear artist on " ++ String.fromInt count ++ " images"
+
+                          else
+                            "Change artist to “" ++ String.trim config.bulkArtistDraft ++ "” on " ++ String.fromInt count ++ " images"
+                        ]
+
+                    else
+                        []
+                   )
+    in
+    Panel.section "Source & artist"
+        [ form [ class "tag-editor", onSubmit config.onBulkSave ]
+            [ p [ class "panel-note" ] [ text ("Applies to " ++ String.fromInt count ++ " selected images.") ]
+            , if config.bulkOverLimit then
+                p [ class "panel-note" ]
+                    [ text ("Select at most 100 images to edit source and artist at once (" ++ String.fromInt count ++ " selected). Editing is disabled; nothing was truncated.") ]
+
+              else if config.bulkLoading then
+                p [ class "panel-note", attribute "role" "status" ] [ text "Loading source and artist…" ]
+
+              else if config.bulkLoaded then
+                div []
+                    [ p [ class "panel-note" ]
+                        [ text
+                            ("Source: "
+                                ++ (config.bulkCommonSource |> Maybe.withDefault "Mixed values")
+                                ++ " · Artist: "
+                                ++ (config.bulkCommonArtist |> Maybe.withDefault "Mixed values")
+                            )
+                        ]
+                    , label [ class "upload-label" ]
+                        [ input [ type_ "checkbox", Html.Attributes.checked config.bulkChangeSource, onCheck config.onBulkSourceCheck, disabled disabledInputs, attribute "aria-label" "Change source" ] []
+                        , text " Change source"
+                        ]
+                    , input
+                        [ class "compact-input"
+                        , Html.Attributes.id "bulk-metadata-source"
+                        , type_ "text"
+                        , placeholder "Source URL or note"
+                        , value config.bulkSourceDraft
+                        , onInput config.onBulkSource
+                        , attribute "aria-label" "Bulk source"
+                        , disabled (disabledInputs || not config.bulkChangeSource)
+                        ]
+                        []
+                    , label [ class "upload-label" ]
+                        [ input [ type_ "checkbox", Html.Attributes.checked config.bulkChangeArtist, onCheck config.onBulkArtistCheck, disabled disabledInputs, attribute "aria-label" "Change artist" ] []
+                        , text " Change artist"
+                        ]
+                    , input
+                        [ class "compact-input"
+                        , Html.Attributes.id "bulk-metadata-artist"
+                        , type_ "text"
+                        , placeholder "Artist"
+                        , value config.bulkArtistDraft
+                        , onInput config.onBulkArtist
+                        , attribute "aria-label" "Bulk artist"
+                        , disabled (disabledInputs || not config.bulkChangeArtist)
+                        ]
+                        []
+                    ]
+
+              else
+                text ""
+            , if config.bulkLoaded && not config.bulkOverLimit && not config.bulkReviewing then
+                button
+                    [ class "button"
+                    , type_ "button"
+                    , onClick config.onBulkReview
+                    , disabled (disabledInputs || config.bulkNeedsReload || (not config.bulkChangeSource && not config.bulkChangeArtist))
+                    ]
+                    [ text "Review changes" ]
+
+              else
+                text ""
+            , if config.bulkReviewing then
+                div []
+                    ([ p [ class "panel-note" ] [ text "Review:" ] ]
+                        ++ List.map (\line -> p [ class "panel-note" ] [ text line ]) reviewLines
+                        ++ [ button [ class "button", type_ "submit", disabled (config.bulkSaving || not config.writesEnabled || config.bulkNeedsReload) ]
+                                [ text
+                                    (if config.bulkSaving then
+                                        "Saving…"
+
+                                     else
+                                        "Save source & artist"
+                                    )
+                                ]
+                           ]
+                    )
+
+              else
+                text ""
+            , case config.bulkStatus of
+                Just message ->
+                    p [ class "panel-note", attribute "role" "status" ] [ text message ]
+
+                Nothing ->
+                    text ""
+            , if config.bulkConflict || config.bulkNeedsReload then
+                button [ class "button button-quiet", type_ "button", onClick config.onBulkReload, disabled config.bulkSaving ] [ text "Reload selected images" ]
+
+              else
+                text ""
+            ]
         ]
 
 

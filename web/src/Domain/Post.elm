@@ -1,4 +1,4 @@
-module Domain.Post exposing (PostDetail, PostSummary, RatingResponse, RatingResult, RatingRevision, RatingTarget, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataResponseDecoder, metadataRevisionDecoder, ratingResponseDecoder, ratingRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
+module Domain.Post exposing (MetadataReadResponse, MetadataSnapshot, PostDetail, PostSummary, RatingResponse, RatingResult, RatingRevision, RatingTarget, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataReadResponseDecoder, metadataResponseDecoder, metadataRevisionDecoder, metadataSnapshotDecoder, ratingResponseDecoder, ratingRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
 
 import Domain.Rating as Rating exposing (Rating)
 import Json.Decode as Decode exposing (Decoder)
@@ -135,6 +135,21 @@ type alias MetadataResult =
 
 type alias MetadataResponse =
     { posts : List MetadataResult }
+
+
+{-| Compact bulk-read row: source, artist and metadata version travel
+together. All fields are required on the wire; metadata may be empty.
+-}
+type alias MetadataSnapshot =
+    { id : String
+    , version : Int
+    , source : String
+    , artist : String
+    }
+
+
+type alias MetadataReadResponse =
+    { posts : List MetadataSnapshot }
 
 
 type alias RatingRevision =
@@ -455,10 +470,24 @@ metadataResultDecoder : Decoder MetadataResult
 metadataResultDecoder =
     Decode.map5 MetadataResult
         (Decode.field "id" Decode.string)
-        (Decode.field "version" Decode.int)
+        (Decode.field "version" nonNegativeInt)
         (Decode.field "source" Decode.string)
         (Decode.field "artist" Decode.string)
         (Decode.field "changed" Decode.bool)
+
+
+metadataSnapshotDecoder : Decoder MetadataSnapshot
+metadataSnapshotDecoder =
+    Decode.map4 MetadataSnapshot
+        (Decode.field "id" Decode.string)
+        (Decode.field "version" nonNegativeInt)
+        (Decode.field "source" Decode.string)
+        (Decode.field "artist" Decode.string)
+
+
+metadataReadResponseDecoder : Decoder MetadataReadResponse
+metadataReadResponseDecoder =
+    Decode.map MetadataReadResponse (Decode.field "posts" (Decode.list metadataSnapshotDecoder))
 
 
 reactionRevisionDecoder : Decoder ReactionRevision

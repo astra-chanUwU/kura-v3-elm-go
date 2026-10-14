@@ -22,6 +22,7 @@ import Feature.Compare
 import Feature.Filmstrip as Filmstrip
 import Feature.Import as BrowserImport
 import Feature.Inspector
+import Feature.BulkMetadata as BulkMetadata
 import Feature.Metadata as Metadata
 import Feature.MediaGrid as MediaGrid
 import Feature.MediaGrid.Layout as Layout exposing (Geometry, Viewport)
@@ -125,6 +126,7 @@ type alias Model =
     , upload : UploadQueue.Model
     , browserImport : BrowserImport.Model
     , metadata : Metadata.Model
+    , bulkMetadata : BulkMetadata.Model
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
     , access : App.Access.State
@@ -210,6 +212,7 @@ init flagsValue url key =
             , upload = UploadQueue.init
             , browserImport = BrowserImport.init
             , metadata = Metadata.init
+            , bulkMetadata = BulkMetadata.init
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
             , access = App.Access.init
@@ -317,6 +320,7 @@ type Msg
     | UploadMsg UploadQueue.Msg
     | ImportMsg BrowserImport.Msg
     | MetadataMsg Metadata.Msg
+    | BulkMetadataMsg BulkMetadata.Msg
     | TrashMsg Trash.Msg
     | TagManagementMsg TagManagement.Msg
     | ExportMetadataChanged Bool
@@ -358,6 +362,37 @@ update msg model =
             else
                 ( syncedRatings, Cmd.none )
 
+        bulkIds =
+            bulkTargetIds next
+
+        ( bulkSynced, bulkCmd ) =
+            if bulkIds /= BulkMetadata.ownerIds next.bulkMetadata || BulkMetadata.wantsRead next.bulkMetadata then
+                let
+                    ( bulk, bulkInnerCmd, bulkOuts ) =
+                        BulkMetadata.update (bulkMetadataContext next) (BulkMetadata.SelectionSync bulkIds) next.bulkMetadata
+                in
+                handleBulkMetadataOuts bulkOuts ( { next | bulkMetadata = bulk }, Cmd.map BulkMetadataMsg bulkInnerCmd )
+
+            else
+                ( next, Cmd.none )
+
+        ( singleRefreshed, singleCmd ) =
+            if List.length (BulkMetadata.ownerIds model.bulkMetadata) >= 2 && List.length bulkIds < 2 then
+                case bulkSynced.selection.active of
+                    Just postId ->
+                        ( { bulkSynced
+                            | metadata = Metadata.activeChanged bulkSynced.metadata
+                            , details = Dict.insert postId DetailLoading bulkSynced.details
+                          }
+                        , Api.Post.detail bulkSynced.apiBase postId (DetailCompleted bulkSynced.access.generation bulkSynced.detailEpoch postId)
+                        )
+
+                    Nothing ->
+                        ( bulkSynced, Cmd.none )
+
+            else
+                ( bulkSynced, Cmd.none )
+
         urlFollows =
             case msg of
                 UrlChanged _ ->
@@ -367,24 +402,24 @@ update msg model =
                     False
 
                 _ ->
-                    currentRoute next /= currentRoute model
+                    currentRoute singleRefreshed /= currentRoute model
 
         ( synced, syncCmd ) =
             if urlFollows then
-                ( { next | urlSeq = next.urlSeq + 1 }
-                , Process.sleep 250 |> Task.perform (\_ -> SyncUrl (next.urlSeq + 1))
+                ( { singleRefreshed | urlSeq = singleRefreshed.urlSeq + 1 }
+                , Process.sleep 250 |> Task.perform (\_ -> SyncUrl (singleRefreshed.urlSeq + 1))
                 )
 
             else
-                ( next, Cmd.none )
+                ( singleRefreshed, Cmd.none )
 
         filmstripCmd =
-            case ( next.mode, next.selection.active ) of
+            case ( synced.mode, synced.selection.active ) of
                 ( Grid, _ ) ->
                     Cmd.none
 
                 ( _, Just postId ) ->
-                    if next.selection.active /= model.selection.active || model.mode == Grid then
+                    if synced.selection.active /= model.selection.active || model.mode == Grid then
                         centerFilmstrip postId
 
                     else
@@ -394,7 +429,7 @@ update msg model =
                     Cmd.none
 
     in
-    ( synced, Cmd.batch [ cmd, syncCmd, filmstripCmd, detailCmd ] )
+    ( synced, Cmd.batch [ cmd, syncCmd, filmstripCmd, detailCmd, bulkCmd, singleCmd ] )
 
 
 updateHelp : Msg -> Model -> ( Model, Cmd Msg )
@@ -487,7 +522,7 @@ updateHelp msg model =
                     effectiveResult =
                         case result of
                             Ok detail ->
-                                Ok (guardRatingDetail model postId detail)
+                                Ok (BulkMetadata.protectDetail model.bulkMetadata (guardRatingDetail model postId detail))
 
                             Err error ->
                                 Err error
@@ -550,6 +585,13 @@ updateHelp msg model =
 
                             Err _ ->
                                 model.metadata
+                    , bulkMetadata =
+                        case effectiveResult of
+                            Ok detail ->
+                                BulkMetadata.noteDetail detail model.bulkMetadata
+
+                            Err _ ->
+                                model.bulkMetadata
                   }
                 , Cmd.none
                 )
@@ -899,6 +941,9 @@ updateHelp msg model =
         MetadataMsg subMsg ->
             delegateMetadata subMsg model
 
+        BulkMetadataMsg subMsg ->
+            delegateBulkMetadata subMsg model
+
         NoOp ->
             ( model, Cmd.none )
 
@@ -1142,7 +1187,10 @@ applyMetadataOut out ( model, cmd ) =
                         model.details
 
                 base =
-                    { model | details = details }
+                    { model
+                        | details = details
+                        , bulkMetadata = BulkMetadata.noteSnapshot { id = result.id, version = result.version, source = result.source, artist = result.artist } model.bulkMetadata
+                    }
 
                 detailCmd =
                     Api.Post.detail model.apiBase result.id (DetailCompleted model.access.generation model.detailEpoch result.id)
@@ -1173,6 +1221,105 @@ applyMetadataOut out ( model, cmd ) =
             ( { model | details = Dict.insert postId DetailLoading model.details }
             , Cmd.batch [ cmd, Api.Post.detail model.apiBase postId (DetailCompleted model.access.generation model.detailEpoch postId) ]
             )
+
+
+bulkTargetIds : Model -> List String
+bulkTargetIds model =
+    Selection.targets model.sequence model.selection
+        |> List.filterMap (\postId -> Sequence.find postId model.sequence)
+        |> List.map .id
+
+
+bulkMetadataContext : Model -> BulkMetadata.Context
+bulkMetadataContext model =
+    BulkMetadata.context
+        model.apiBase
+        (App.Access.credential model.access)
+        (App.Access.canWrite model.access)
+        model.access.generation
+
+
+delegateBulkMetadata : BulkMetadata.Msg -> Model -> ( Model, Cmd Msg )
+delegateBulkMetadata subMsg model =
+    let
+        ( bulk, bulkCmd, outs ) =
+            BulkMetadata.update (bulkMetadataContext model) subMsg model.bulkMetadata
+    in
+    handleBulkMetadataOuts outs ( { model | bulkMetadata = bulk }, Cmd.map BulkMetadataMsg bulkCmd )
+
+
+handleBulkMetadataOuts : List BulkMetadata.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleBulkMetadataOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleBulkMetadataOuts rest (applyBulkMetadataOut out ( model, cmd ))
+
+
+applyBulkMetadataOut : BulkMetadata.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyBulkMetadataOut out ( model, cmd ) =
+    case out of
+        BulkMetadata.Saved results capturedIds ->
+            let
+                details =
+                    List.foldl
+                        (\post dict ->
+                            Dict.update post.id
+                                (\state ->
+                                    case state of
+                                        Just (DetailReady detail) ->
+                                            if post.version >= detail.metadataVersion then
+                                                Just (DetailReady { detail | source = post.source, artist = post.artist, metadataVersion = post.version })
+
+                                            else
+                                                state
+
+                                        other ->
+                                            other
+                                )
+                                dict
+                        )
+                        model.details
+                        results
+
+                base =
+                    { model | details = details }
+
+                ( refreshed, refreshCmd ) =
+                    refreshQueryMembership base
+
+                detailCmd =
+                    case model.selection.active of
+                        Just activeId ->
+                            if List.member activeId capturedIds then
+                                Api.Post.detail model.apiBase activeId (DetailCompleted model.access.generation model.detailEpoch activeId)
+
+                            else
+                                Cmd.none
+
+                        Nothing ->
+                            Cmd.none
+            in
+            ( refreshed, Cmd.batch [ cmd, refreshCmd, detailCmd ] )
+
+        BulkMetadata.Uncertain postIds ->
+            let
+                ( refreshed, refreshCmd ) =
+                    refreshPublicPosts postIds model
+            in
+            refreshQueryMembership refreshed |> withCmd (Cmd.batch [ cmd, refreshCmd ])
+
+        BulkMetadata.StaleResponse postIds ->
+            let
+                ( refreshed, refreshCmd ) =
+                    refreshPublicPosts postIds model
+            in
+            refreshQueryMembership refreshed |> withCmd (Cmd.batch [ cmd, refreshCmd ])
+
+        BulkMetadata.AccessRevoked ->
+            revokeAccess model |> withCmd cmd
 
 
 openUploadPost : String -> PostSummary -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
@@ -3137,6 +3284,7 @@ lockNow model hint =
             , reactions = Reactions.locked model.reactions
             , ratings = Ratings.locked model.ratings
             , metadata = Metadata.locked model.metadata
+            , bulkMetadata = BulkMetadata.locked model.bulkMetadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
             , tagManagement = TagManagement.locked model.tagManagement
@@ -3162,6 +3310,7 @@ revokeAccess model =
             , reactions = Reactions.locked model.reactions
             , ratings = Ratings.locked model.ratings
             , metadata = Metadata.locked model.metadata
+            , bulkMetadata = BulkMetadata.locked model.bulkMetadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
             , tagManagement = TagManagement.locked model.tagManagement
@@ -4137,6 +4286,28 @@ inspectorView model =
             , onMetadataArtist = MetadataMsg << Metadata.ArtistChanged
             , onSaveMetadata = MetadataMsg Metadata.SaveRequested
             , onReloadMetadata = MetadataMsg Metadata.ReloadRequested
+            , bulkCount = List.length (bulkTargetIds model)
+            , bulkOverLimit = BulkMetadata.overLimit model.bulkMetadata
+            , bulkLoading = BulkMetadata.loading model.bulkMetadata
+            , bulkLoaded = BulkMetadata.loaded model.bulkMetadata
+            , bulkCommonSource = BulkMetadata.commonSource model.bulkMetadata
+            , bulkCommonArtist = BulkMetadata.commonArtist model.bulkMetadata
+            , bulkChangeSource = BulkMetadata.changeSource model.bulkMetadata
+            , bulkChangeArtist = BulkMetadata.changeArtist model.bulkMetadata
+            , bulkSourceDraft = BulkMetadata.sourceDraft model.bulkMetadata
+            , bulkArtistDraft = BulkMetadata.artistDraft model.bulkMetadata
+            , bulkSaving = BulkMetadata.saving model.bulkMetadata
+            , bulkStatus = BulkMetadata.status model.bulkMetadata
+            , bulkConflict = BulkMetadata.conflict model.bulkMetadata
+            , bulkNeedsReload = BulkMetadata.needsReload model.bulkMetadata
+            , bulkReviewing = BulkMetadata.reviewing model.bulkMetadata
+            , onBulkSourceCheck = BulkMetadataMsg << BulkMetadata.SourceCheckChanged
+            , onBulkArtistCheck = BulkMetadataMsg << BulkMetadata.ArtistCheckChanged
+            , onBulkSource = BulkMetadataMsg << BulkMetadata.SourceChanged
+            , onBulkArtist = BulkMetadataMsg << BulkMetadata.ArtistChanged
+            , onBulkReview = BulkMetadataMsg BulkMetadata.ReviewRequested
+            , onBulkSave = BulkMetadataMsg BulkMetadata.SaveRequested
+            , onBulkReload = BulkMetadataMsg BulkMetadata.ReloadRequested
             , ratingTargetCount = List.length (ratingTargetSummaries model)
             , ratingSelected =
                 case Ratings.display (ratingTargetSummaries model) model.ratings of

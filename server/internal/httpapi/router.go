@@ -60,6 +60,7 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Post("/posts/tags/revert", revertTags(deps.TagRevisions))
 		api.Post("/posts/reactions", editReactions(deps.Reactions))
 		api.Post("/posts/metadata", EditMetadata(deps.Metadata))
+		api.Post("/posts/metadata/read", readMetadata(deps.MetadataRead))
 		api.Post("/posts/ratings", EditRatings(deps.Ratings))
 		api.Get("/posts/{id}", postDetail(deps.PostDetails))
 		api.Get("/posts/{id}/moderation", listPostModerationActions(deps.ModerationRead))
