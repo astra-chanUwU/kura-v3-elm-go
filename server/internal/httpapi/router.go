@@ -46,6 +46,8 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		// Post browsing (posts.go), edits (tags.go, reactions.go), and
 		// moderation (moderation.go). Static paths precede the id routes.
 		api.Get("/posts", searchPosts(deps.Posts))
+		api.Get("/posts/duplicates", listDuplicateGroups(deps.Duplicates))
+		api.Get("/posts/duplicates/{hash}", getDuplicateMembers(deps.Duplicates))
 		api.Get("/tags/suggestions", suggestTags(deps.TagSuggestions))
 		api.Get("/tags/manage", listManageTags(deps.TagTaxonomy))
 		api.Post("/tags/manage/preview", previewTagOperation(deps.TagTaxonomy))

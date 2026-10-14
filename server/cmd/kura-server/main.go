@@ -64,6 +64,7 @@ func main() {
 				ModerationRead:      pgBackend,
 				Jobs:                pgBackend,
 				MediaVisibility:     pgBackend,
+				Duplicates:          pgBackend,
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store

@@ -99,6 +99,14 @@ instead of publicly exposing hidden originals. **Export selection (ZIP)** or
 suggestions appear after two characters in the Inspector's Add tags field;
 choosing a suggestion edits the draft, and **Save tags** applies it.
 
+Open **Exact copies** to review images that share identical original bytes.
+Groups and their members load in pages. **Compare copies** opens the normal
+Compare view and returns to the same library selection and scroll position.
+Choose copies with their checkboxes, then confirm **Move chosen copies to
+Trash**; nothing is chosen or removed automatically. Restore mistakes through
+Trash. Hidden and trashed images stay out of the review. Similar-looking images
+with different original bytes are outside this check.
+
 Open **Manage tags** to rename a tag or merge it into an existing tag. Preview
 the affected image count, then confirm. The operation includes hidden and
 trashed images and handles at most 1,000 images together. A change to tags after

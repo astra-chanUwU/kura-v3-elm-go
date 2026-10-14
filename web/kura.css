@@ -830,3 +830,13 @@ details[open] > summary::after { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Exact copies review */
+.duplicates-view { max-height: min(360px, 45vh); margin: 0; padding: 12px 0; overflow-y: auto; }
+.duplicates-groups, .duplicates-members { margin-top: var(--space-2); }
+.duplicates-groups, .duplicates-members { max-height: min(180px, 25vh); overflow-y: auto; }
+.duplicates-group-row, .duplicates-member-row { gap: var(--space-2); padding: 4px 0; }
+.duplicates-samples { display: inline-flex; gap: 4px; }
+.duplicates-thumb { width: 40px; height: 40px; object-fit: contain; border-radius: 2px; background: var(--cell); }
+.duplicates-group-meta, .duplicates-member-meta { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.duplicates-member-check { display: inline-flex; align-items: center; min-height: 32px; }

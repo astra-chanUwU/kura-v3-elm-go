@@ -23,6 +23,7 @@ import Feature.Filmstrip as Filmstrip
 import Feature.Import as BrowserImport
 import Feature.Inspector
 import Feature.BulkMetadata as BulkMetadata
+import Feature.Duplicates as Duplicates
 import Feature.Metadata as Metadata
 import Feature.MediaGrid as MediaGrid
 import Feature.MediaGrid.Layout as Layout exposing (Geometry, Viewport)
@@ -127,8 +128,11 @@ type alias Model =
     , browserImport : BrowserImport.Model
     , metadata : Metadata.Model
     , bulkMetadata : BulkMetadata.Model
+    , duplicates : Duplicates.Model
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
+    , duplicatesOrigin : Maybe UploadOrigin
+    , duplicateTrash : Maybe ( String, List String )
     , access : App.Access.State
     , trash : Trash.Model
     , tagManagement : TagManagement.Model
@@ -213,8 +217,11 @@ init flagsValue url key =
             , browserImport = BrowserImport.init
             , metadata = Metadata.init
             , bulkMetadata = BulkMetadata.init
+            , duplicates = Duplicates.init
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
+            , duplicatesOrigin = Nothing
+            , duplicateTrash = Nothing
             , access = App.Access.init
             , trash = Trash.init
             , tagManagement = TagManagement.init
@@ -322,6 +329,8 @@ type Msg
     | MetadataMsg Metadata.Msg
     | BulkMetadataMsg BulkMetadata.Msg
     | TrashMsg Trash.Msg
+    | DuplicatesMsg Duplicates.Msg
+    | DuplicateCompareMeasured String String String (Result Dom.Error Dom.Viewport)
     | TagManagementMsg TagManagement.Msg
     | ExportMetadataChanged Bool
     | TagSuggestionMsg TagSuggestions.Msg
@@ -612,7 +621,32 @@ updateHelp msg model =
             ( { tagged | tagSuggestions = sugg }, Cmd.batch [ tagCmd, Cmd.map TagSuggestionMsg suggCmd ] )
 
         TrashMsg subMsg ->
-            delegateTrash subMsg model
+            case subMsg of
+                Trash.TrashSelectedRequested _ ->
+                    delegateTrash subMsg { model | duplicateTrash = Nothing }
+
+                _ ->
+                    delegateTrash subMsg model
+
+        DuplicatesMsg subMsg ->
+            delegateDuplicates subMsg model
+
+        DuplicateCompareMeasured hash select candidate result ->
+            if Duplicates.currentHash model.duplicates /= Just hash
+                || not (Duplicates.isOpen model.duplicates)
+                || Duplicates.membersLoading model.duplicates
+                || not (List.all (\id -> List.member id (List.map .id (Duplicates.members model.duplicates))) [ select, candidate ]) then
+                ( model, Cmd.none )
+
+            else
+                let
+                    ( opened, command ) =
+                        openDuplicatesCompare select candidate (Duplicates.members model.duplicates) model
+
+                    top =
+                        result |> Result.map (\viewport -> viewport.viewport.y) |> Result.withDefault model.viewport.scrollTop
+                in
+                ( { opened | returnPoint = Maybe.map (\point -> { point | scrollTop = top }) opened.returnPoint }, command )
 
         TagManagementMsg subMsg ->
             delegateTagManagement subMsg model
@@ -1457,6 +1491,9 @@ runCommand command model =
             else if UploadQueue.isOpen model.upload then
                 ( { model | upload = UploadQueue.setOpen False model.upload }, Cmd.none )
 
+            else if Duplicates.isOpen model.duplicates then
+                delegateDuplicates Duplicates.CloseRequested model
+
             else if drawersOpen model then
                 ( { model | navigatorDrawer = False, inspectorDrawer = False }, Cmd.none )
 
@@ -2102,11 +2139,26 @@ trashContext model =
 delegateTrash : Trash.Msg -> Model -> ( Model, Cmd Msg )
 delegateTrash subMsg model =
     let
+        safeMsg =
+            case ( subMsg, model.duplicateTrash ) of
+                ( Trash.TrashConfirmRequested, Just ( hash, ids ) ) ->
+                    if Duplicates.currentHash model.duplicates == Just hash
+                        && Duplicates.isOpen model.duplicates
+                        && not (Duplicates.membersLoading model.duplicates)
+                        && List.sort ids == List.sort (Duplicates.trashableIds model.duplicates) then
+                        subMsg
+
+                    else
+                        Trash.TrashCancelled
+
+                _ ->
+                    subMsg
+
         ( trash, cmd, outs ) =
-            Trash.update (trashContext model) subMsg model.trash
+            Trash.update (trashContext model) safeMsg model.trash
 
         base =
-            ( { model | trash = trash }, Cmd.map TrashMsg cmd )
+            ( { model | trash = trash, duplicateTrash = if Trash.pendingTrashCount trash == Nothing then Nothing else model.duplicateTrash }, Cmd.map TrashMsg cmd )
     in
     List.foldl applyTrashOut base outs
 
@@ -2115,13 +2167,176 @@ applyTrashOut : Trash.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
 applyTrashOut out ( model, cmd ) =
     case out of
         Trash.TrashApplied ids ->
-            reconcileAfterTrash ids model |> withCmd cmd
+            let
+                ( reconciled, reconcileCmd ) =
+                    reconcileAfterTrash False ids model
+
+                ( synced, dupCmd ) =
+                    syncDuplicatesAfterTrash False ids reconciled
+            in
+            ( synced, Cmd.batch [ cmd, reconcileCmd, dupCmd ] )
 
         Trash.RestoreApplied ids ->
-            reconcileAfterTrash ids model |> withCmd cmd
+            let
+                ( reconciled, reconcileCmd ) =
+                    reconcileAfterTrash True ids model
+
+                ( synced, dupCmd ) =
+                    syncDuplicatesAfterTrash True ids reconciled
+            in
+            ( synced, Cmd.batch [ cmd, reconcileCmd, dupCmd ] )
 
         Trash.AccessRevoked ->
             revokeAccess model |> withCmd cmd
+
+
+duplicatesContext : Model -> Duplicates.Context
+duplicatesContext model =
+    Duplicates.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+
+
+delegateDuplicates : Duplicates.Msg -> Model -> ( Model, Cmd Msg )
+delegateDuplicates subMsg model =
+    let
+        ( duplicates, dupCmd, outs ) =
+            Duplicates.update (duplicatesContext model) subMsg model.duplicates
+        invalidated =
+            case model.duplicateTrash of
+                Just ( hash, ids ) ->
+                    not (Duplicates.isOpen duplicates)
+                        || Duplicates.currentHash duplicates /= Just hash
+                        || Duplicates.membersLoading duplicates
+                        || List.sort ids /= List.sort (Duplicates.trashableIds duplicates)
+
+                Nothing ->
+                    False
+
+        safe =
+            if invalidated && not model.trash.busy then
+                { model | duplicates = duplicates, duplicateTrash = Nothing, trash = cancelDuplicateTrash model }
+
+            else
+                { model | duplicates = duplicates }
+    in
+    handleDuplicatesOuts outs ( safe, Cmd.map DuplicatesMsg dupCmd )
+
+
+cancelDuplicateTrash : Model -> Trash.Model
+cancelDuplicateTrash model =
+    let
+        ( trash, _, _ ) =
+            Trash.update (trashContext model) Trash.TrashCancelled model.trash
+    in
+    trash
+
+
+handleDuplicatesOuts : List Duplicates.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleDuplicatesOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleDuplicatesOuts rest (applyDuplicatesOut out ( model, cmd ))
+
+
+applyDuplicatesOut : Duplicates.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyDuplicatesOut out ( model, cmd ) =
+    case out of
+        Duplicates.CompareCopies select candidate _ ->
+            case Duplicates.currentHash model.duplicates of
+                Just hash ->
+                    ( model, Cmd.batch [ cmd, Task.attempt (DuplicateCompareMeasured hash select candidate) (Dom.getViewportOf MediaGrid.elementId) ] )
+
+                Nothing ->
+                    ( model, cmd )
+
+        Duplicates.TrashSelected ids ->
+            -- Re-validate at forwarding time: only ids still loaded in
+            -- the open group may enter the existing Trash confirmation.
+            let
+                valid =
+                    List.filter (\postId -> List.member postId (Duplicates.trashableIds model.duplicates)) ids
+            in
+            if List.isEmpty valid then
+                ( model, cmd )
+
+            else
+                delegateTrash (Trash.TrashSelectedRequested valid) { model | duplicateTrash = Maybe.map (\hash -> ( hash, valid )) (Duplicates.currentHash model.duplicates) } |> withCmd cmd
+
+
+{-| Bounded reconciliation of the duplicates panel after a confirmed
+Trash/restore. Only the group list and the open group's first page are
+re-read; the Library sequence is handled by `reconcileAfterTrash`.
+-}
+syncDuplicatesAfterTrash : Bool -> List String -> Model -> ( Model, Cmd Msg )
+syncDuplicatesAfterTrash isRestore ids model =
+    let
+        message =
+            if isRestore then
+                Duplicates.RestoreApplied ids
+
+            else
+                Duplicates.TrashApplied ids
+
+        ( duplicates, dupCmd, _ ) =
+            Duplicates.update (duplicatesContext model) message model.duplicates
+    in
+    ( { model | duplicates = duplicates }, Cmd.map DuplicatesMsg dupCmd )
+
+
+{-| Open the regular Compare mode on a temporary member sequence.
+The Library's query, collection, loaded prefix, selection, and grid
+scroll are saved first (through the existing `openMode` capture) and
+restored by `exitToGrid`; the grid selection itself is untouched
+because the temporary selection is discarded on return.
+-}
+openDuplicatesCompare : String -> String -> List PostSummary -> Model -> ( Model, Cmd Msg )
+openDuplicatesCompare select candidate members model =
+    if model.mode /= Grid then
+        ( { model | hint = Just "Return to the grid before comparing copies." }, Cmd.none )
+
+    else if List.length members < 2 then
+        ( { model | hint = Just "Compare needs at least two copies." }, Cmd.none )
+
+    else
+        let
+            origin =
+                case model.duplicatesOrigin of
+                    Just saved ->
+                        saved
+
+                    Nothing ->
+                        { sequence = model.sequence, selection = model.selection }
+
+            tempSelection =
+                Selection.click select Selection.empty |> Selection.toggle candidate
+
+            withTemp =
+                { model
+                    | sequence = Sequence.fromList members
+                    , selection = tempSelection
+                    , duplicatesOrigin = Just origin
+                }
+        in
+        let
+            ( opened, command ) =
+                enterMode (Compare { select = select, candidate = candidate }) withTemp
+        in
+        ( { opened | returnPoint = Maybe.map (\point -> { point | activeAtEntry = origin.selection.active }) opened.returnPoint }, command )
+
+
+pruneOrigin : List String -> UploadOrigin -> UploadOrigin
+pruneOrigin ids origin =
+    let
+        sequence =
+            Sequence.fromList
+                (Sequence.slice 0 (Sequence.length origin.sequence) origin.sequence
+                    |> List.map Tuple.second
+                    |> List.filter (\post -> not (List.member post.id ids))
+                )
+    in
+    { sequence = sequence, selection = Selection.prune sequence origin.selection }
 
 
 tagManagementContext : Model -> TagManagement.Context
@@ -2204,24 +2419,66 @@ bounded prefix; ordinary search drops trashed ids deliberately, prunes
 selection, then refreshes survivors from the server (no retry of the
 mutation itself).
 -}
-reconcileAfterTrash : List String -> Model -> ( Model, Cmd Msg )
-reconcileAfterTrash ids model =
-    case Collections.browse model.collections of
-        Just _ ->
-            delegateCollections Collections.RetryRequested model
+reconcileAfterTrash : Bool -> List String -> Model -> ( Model, Cmd Msg )
+reconcileAfterTrash isRestore ids model0 =
+    let
+        -- A stale temporary origin must never restore trashed ids.
+        -- Restores do not prune origins: a restored post may rejoin.
+        model =
+            if isRestore then
+                model0
 
-        Nothing ->
+            else
+                { model0
+                    | uploadOrigin = Maybe.map (pruneOrigin ids) model0.uploadOrigin
+                    , duplicatesOrigin = Maybe.map (pruneOrigin ids) model0.duplicatesOrigin
+                }
+    in
+    case model.duplicatesOrigin of
+        Just _ ->
+            -- Inside a duplicates Compare/Loupe sequence: prune it in
+            -- place and keep (or exit) the mode instead of reloading
+            -- the whole Library query.
             let
-                survivors =
-                    Sequence.fromList (List.filter (\p -> not (List.member p.id ids)) (Sequence.slice 0 (Sequence.length model.sequence) model.sequence |> List.map Tuple.second))
+                sequence =
+                    Sequence.fromList
+                        (Sequence.slice 0 (Sequence.length model.sequence) model.sequence
+                            |> List.map Tuple.second
+                            |> List.filter (\post -> not (List.member post.id ids) || isRestore)
+                        )
 
                 selection =
-                    Selection.prune survivors model.selection
+                    Selection.prune sequence model.selection
 
                 pruned =
-                    { model | sequence = survivors, selection = selection, mode = validMode survivors selection model.mode }
+                    { model | sequence = sequence, selection = selection }
+
+                mode =
+                    validMode sequence selection model.mode
             in
-            retrySearch pruned
+            if mode == Grid && model.mode /= Grid then
+                exitToGrid pruned
+
+            else
+                ( { pruned | mode = mode }, Cmd.none )
+
+        Nothing ->
+            case Collections.browse model.collections of
+                Just _ ->
+                    delegateCollections Collections.RetryRequested model
+
+                Nothing ->
+                    let
+                        survivors =
+                            Sequence.fromList (List.filter (\p -> isRestore || not (List.member p.id ids)) (Sequence.slice 0 (Sequence.length model.sequence) model.sequence |> List.map Tuple.second))
+
+                        selection =
+                            Selection.prune survivors model.selection
+
+                        pruned =
+                            { model | sequence = survivors, selection = selection, mode = validMode survivors selection model.mode }
+                    in
+                    refreshQueryMembership pruned
 
 
 delegateCollections : Collections.Msg -> Model -> ( Model, Cmd Msg )
@@ -2665,12 +2922,26 @@ exitToGrid : Model -> ( Model, Cmd Msg )
 exitToGrid model =
     let
         restored =
-            case model.uploadOrigin of
+            case model.duplicatesOrigin of
                 Just origin ->
-                    { model | sequence = origin.sequence, selection = origin.selection, uploadOrigin = Nothing }
+                    { model
+                        | sequence = origin.sequence
+                        , selection = Selection.prune origin.sequence origin.selection
+                        , duplicatesOrigin = Nothing
+                        , uploadOrigin = Nothing
+                    }
 
                 Nothing ->
-                    model
+                    case model.uploadOrigin of
+                        Just origin ->
+                            { model
+                                | sequence = origin.sequence
+                                , selection = Selection.prune origin.sequence origin.selection
+                                , uploadOrigin = Nothing
+                            }
+
+                        Nothing ->
+                            model
 
         returnPoint =
             Maybe.withDefault { scrollTop = restored.viewport.scrollTop, activeAtEntry = Nothing } restored.returnPoint
@@ -2695,13 +2966,25 @@ exitToGrid model =
     in
     ( { restored | mode = Grid, returnPoint = Nothing, zoom = Fit, viewport = setScroll top restored.viewport }
     , Cmd.batch
-        [ Task.attempt (\_ -> NoOp) (Dom.setViewportOf MediaGrid.elementId 0 top)
-        , case restored.selection.active of
-            Just postId ->
-                focusLater (MediaGrid.cellId postId)
+        [ Task.attempt (\_ -> NoOp)
+            (if model.duplicatesOrigin /= Nothing then
+                -- Wait for the restored panel and grid geometry to settle.
+                Process.sleep 40 |> Task.andThen (\_ -> Dom.setViewportOf MediaGrid.elementId 0 top)
 
-            Nothing ->
-                Cmd.none
+             else
+                Dom.setViewportOf MediaGrid.elementId 0 top
+            )
+        , if model.duplicatesOrigin /= Nothing then
+            -- Focusing an offscreen active cell would undo the saved scroll.
+            Cmd.none
+
+          else
+            case restored.selection.active of
+                Just postId ->
+                    focusLater (MediaGrid.cellId postId)
+
+                Nothing ->
+                    Cmd.none
         ]
     )
 
@@ -3287,6 +3570,8 @@ lockNow model hint =
             , bulkMetadata = BulkMetadata.locked model.bulkMetadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
+            , duplicates = Duplicates.locked model.duplicates
+            , duplicateTrash = Nothing
             , tagManagement = TagManagement.locked model.tagManagement
             , tagSuggestions = TagSuggestions.init
             , hint = Just hint
@@ -3313,6 +3598,8 @@ revokeAccess model =
             , bulkMetadata = BulkMetadata.locked model.bulkMetadata
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
+            , duplicates = Duplicates.locked model.duplicates
+            , duplicateTrash = Nothing
             , tagManagement = TagManagement.locked model.tagManagement
             , tagSuggestions = TagSuggestions.init
             , hint = Just "The browser was locked (401). Unlock to continue writing."
@@ -4108,6 +4395,13 @@ libraryTools model =
         selectedIds =
             Selection.targets model.sequence model.selection
 
+        trashIds =
+            if model.duplicatesOrigin /= Nothing then
+                Duplicates.trashableIds model.duplicates
+
+            else
+                selectedIds
+
         selectionExport =
             Export.selectionUrl model.apiBase selectedIds model.exportMetadata
 
@@ -4120,8 +4414,9 @@ libraryTools model =
     div [ class "panel-section library-tools" ]
         ([ div [ class "library-tools-row" ]
             [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Trash" ]
+            , button [ class "button button-quiet", type_ "button", onClick (DuplicatesMsg (if Duplicates.isOpen model.duplicates then Duplicates.CloseRequested else Duplicates.OpenRequested)) ] [ text "Exact copies" ]
             , button [ class "button button-quiet", type_ "button", onClick (TagManagementMsg TagManagement.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Manage tags" ]
-            , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested selectedIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty selectedIds) ] [ text "Move selected to Trash" ]
+            , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested trashIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty trashIds) ] [ text "Move selected to Trash" ]
             , Html.label [] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text " Include metadata" ]
             , case selectionExport of
                 Just url ->
@@ -4146,6 +4441,30 @@ libraryTools model =
                             , onLoadMore = Trash.LoadMoreRequested
                             , onConfirmTrash = Trash.TrashConfirmRequested
                             , onCancelTrash = Trash.TrashCancelled
+                            }
+                        )
+                    ]
+
+                else
+                    []
+               )
+            ++ (if model.mode == Grid && Duplicates.isOpen model.duplicates then
+                    [ Html.map DuplicatesMsg
+                        (Duplicates.view model.duplicates
+                            { apiBase = model.apiBase
+                            , writesEnabled = App.Access.canWrite model.access
+                            , onClose = Duplicates.CloseRequested
+                            , onBack = Duplicates.BackRequested
+                            , onReloadGroups = Duplicates.GroupsReloadRequested
+                            , onLoadMoreGroups = Duplicates.GroupsLoadMoreRequested
+                            , onOpenGroup = Duplicates.GroupOpenRequested
+                            , onReloadMembers = Duplicates.MembersReloadRequested
+                            , onLoadMoreMembers = Duplicates.MembersLoadMoreRequested
+                            , onToggle = Duplicates.MemberToggled
+                            , onClearSelection = Duplicates.SelectionCleared
+                            , onCompare = Duplicates.CompareRequested
+                            , onTrash = Duplicates.TrashRequested
+                            , onMediaError = Duplicates.MediaFailed
                             }
                         )
                     ]

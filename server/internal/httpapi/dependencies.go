@@ -33,6 +33,7 @@ type Dependencies struct {
 	ModerationRead      posts.ModerationReader
 	Jobs                jobs.Reader
 	MediaVisibility     posts.MediaVisibilityChecker
+	Duplicates          posts.DuplicateReader
 }
 
 // legacyDependencies preserves the historical Searcher-based constructors.
@@ -66,5 +67,6 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.ModerationRead, _ = backend.(posts.ModerationReader)
 	deps.Jobs, _ = backend.(jobs.Reader)
 	deps.MediaVisibility, _ = backend.(posts.MediaVisibilityChecker)
+	deps.Duplicates, _ = backend.(posts.DuplicateReader)
 	return deps
 }
