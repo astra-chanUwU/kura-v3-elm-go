@@ -363,6 +363,27 @@ Restore requires an empty target database in `DATABASE_URL` and a new media
 destination. The utility supports local media; configured S3 storage is outside
 this backup workflow.
 
+## Release and preflight
+
+`make package` builds a Linux and macOS release with Go 1.27 and Elm 0.19.2.
+It cross-compiles the server, frontend server, and CLI with CGO disabled,
+then copies the built Elm program, CSS, backup script, and migrations into
+`dist/kura-release` with `SHA256SUMS`. The archive does not seed a database
+and does not include a media library.
+
+Before starting a packaged server, run `kura-server preflight`. It checks
+that `DATABASE_URL` is set, that PostgreSQL is reachable, that the `posts`
+and `jobs` tables exist, that `MEDIA_ROOT` is a writable local directory,
+and that `psql`, `pg_dump` 16 or newer, and `pg_restore` are on `PATH`.
+An unset backup root or a missing FFmpeg is reported as disabled. Preflight
+never prints the database URL, and it never migrates or seeds. Apply
+migrations with `scripts/db-migrate.sh` yourself. `GET /health` stays the
+liveness check; preflight is the separate readiness check.
+
+The API server allows 30 minutes to read a request so a large upload can
+finish, and it does not set a write timeout, so streamed media and ZIP
+exports are not cut off. Request headers and idle connections are bounded.
+
 ## Checks
 
 ```sh
