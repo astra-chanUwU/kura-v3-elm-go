@@ -2,6 +2,7 @@ module Domain.Session exposing
     ( ManagedUser
     , Role(..)
     , Session
+    , accountId
     , managedUserDecoder
     , roleDecoder
     , roleName
@@ -104,6 +105,28 @@ idDecoder =
         [ Decode.string
         , Decode.int |> Decode.map String.fromInt
         ]
+
+
+accountId : Session -> Maybe String
+accountId session =
+    if session.authenticated then
+        session.user |> Maybe.map .id |> Maybe.andThen presentId
+
+    else
+        Nothing
+
+
+presentId : String -> Maybe String
+presentId raw =
+    let
+        trimmed =
+            String.trim raw
+    in
+    if String.isEmpty trimmed then
+        Nothing
+
+    else
+        Just trimmed
 
 
 sessionDecoder : Decoder Session

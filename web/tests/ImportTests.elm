@@ -1007,11 +1007,23 @@ caseRestoreHashingResumesAsPending =
             False
 
 
+caseLegacyProbeDoesNotRestore : Bool
+caseLegacyProbeDoesNotRestore =
+    let
+        summary =
+            { checkpointId = 8, fileCount = 2, totalBytes = 20, apiBase = "http://localhost:8080", started = True, generation = 3, legacy = True }
+
+        ( probed, effects, _ ) =
+            step access (ImportState.SavedProbeArrived (Just summary)) ImportState.init
+    in
+    effects == [] && probed.savedSummary == Just summary && (probed.savedSummary |> Maybe.map .legacy) == Just True
+
+
 caseReplaceSavedNeedsConfirm : Bool
 caseReplaceSavedNeedsConfirm =
     let
         summary =
-            { checkpointId = 7, fileCount = 3, totalBytes = 300, apiBase = "http://localhost:8080", started = False, generation = 4 }
+            { checkpointId = 7, fileCount = 3, totalBytes = 300, apiBase = "http://localhost:8080", started = False, generation = 4, legacy = False }
 
         ( probed, _, _ ) =
             step access (ImportState.SavedProbeArrived (Just summary)) twoReady
@@ -1086,4 +1098,5 @@ suite =
     , ( "import restore rejects another API target and bad schema", caseRestoreTargetMismatchRejected )
     , ( "import restore of hashing checkpoint resumes as pending hash", caseRestoreHashingResumesAsPending )
     , ( "import replacing a different saved import needs explicit confirm", caseReplaceSavedNeedsConfirm )
+    , ( "import ownerless checkpoint is not restored until an explicit keep", caseLegacyProbeDoesNotRestore )
     ]

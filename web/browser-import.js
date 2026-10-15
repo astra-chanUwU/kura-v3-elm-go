@@ -225,11 +225,11 @@
   }
 
   /* ---- Durable saved-import persistence (opt-in, IndexedDB) ----
-     One saved import per origin. A single record {checkpoint, blobs}
-     is written in one transaction, so plain state and file bytes can
-     never be half-saved. Nothing is reported saved until the
-     transaction commits. Credentials, tokens, access state, secret
-     headers, and object URLs are rejected, never stored. */
+     One saved import per library and account. The record key is the
+     canonical API base plus the account id, never a token, cookie, or
+     password. A single record {checkpoint, blobs} is written in one
+     transaction. Ownerless schema-1 records under "current" are not
+     loaded until that account explicitly claims them. */
 
   var PERSIST_SCHEMA = 1;
   var MAX_FILES = 1000;
@@ -239,6 +239,43 @@
   var RECORD_KEY = "current";
   var FORBIDDEN_KEY = /credential|token|secret|authorization|password|api[-_]?key|objecturl|access[-_]?key/i;
   var BLOB_PHASES = { pendingHash: true, hashing: true, hashed: true, queued: true, importing: true };
+  var OWNER_ACCOUNT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+  function parseOwner(owner) {
+    if (!owner || typeof owner.library !== "string" || typeof owner.account !== "string") return null;
+    var library = owner.library.trim();
+    var account = owner.account.trim();
+    if (!library || library.length > 300 || library.indexOf("\u0000") !== -1) return null;
+    if (!OWNER_ACCOUNT.test(account) || FORBIDDEN_KEY.test(account)) return null;
+    return { library: library, account: account };
+  }
+
+  function ownerKey(owner) {
+    var parsed = parseOwner(owner);
+    if (!parsed) return null;
+    return "owner\u0000" + parsed.library + "\u0000" + parsed.account;
+  }
+
+  function ownerError() {
+    return new Error("A saved import needs a library and account.");
+  }
+
+  function savedRecord(record) {
+    if (!record || !record.checkpoint) return null;
+    if (record.checkpoint.schema !== PERSIST_SCHEMA) throw new Error("The saved import uses an unsupported format.");
+    return record;
+  }
+
+  function listen(request, onOk, onErr) {
+    if (!request) return;
+    if (typeof request.addEventListener === "function") {
+      request.addEventListener("success", function () { onOk(request.result); });
+      request.addEventListener("error", function () { onErr(request.error || new Error("Browser storage operation failed.")); });
+    } else {
+      request.onsuccess = function () { onOk(request.result); };
+      request.onerror = function () { onErr(request.error || new Error("Browser storage operation failed.")); };
+    }
+  }
 
   function assertNoSecrets(value, seen) {
     if (!value || typeof value !== "object") return;
@@ -355,31 +392,96 @@
       });
     }
 
+    function owned(owner, record) {
+      var parsed = parseOwner(owner);
+      var saved = savedRecord(record);
+      if (!parsed || !saved || !saved.owner) return null;
+      if (saved.owner.library !== parsed.library || saved.owner.account !== parsed.account) return null;
+      if (!Array.isArray(saved.blobs)) return null;
+      return saved;
+    }
+
     return {
-      probe: function () {
-        return run("readonly", function (store) { return store.get(RECORD_KEY); }).then(function (record) {
-          if (!record || !record.checkpoint) return null;
-          if (record.checkpoint.schema !== PERSIST_SCHEMA) throw new Error("The saved import uses an unsupported format.");
-          return record;
+      probe: function (owner) {
+        var key = ownerKey(owner);
+        if (!key) return Promise.reject(ownerError());
+        return run("readonly", function (store) { return store.get(key); }).then(function (record) {
+          return owned(owner, record);
         });
       },
-      save: function (checkpoint, blobs) {
+      probeLegacy: function () {
+        return run("readonly", function (store) { return store.get(RECORD_KEY); }).then(function (record) {
+          if (!record || record.owner) return null;
+          var saved = savedRecord(record);
+          if (!saved || !Array.isArray(saved.blobs)) return null;
+          return saved;
+        });
+      },
+      save: function (owner, checkpoint, blobs) {
+        var parsed = parseOwner(owner);
+        var key = ownerKey(owner);
+        if (!parsed || !key) return Promise.reject(ownerError());
         var blobsById = {};
         (blobs || []).forEach(function (item) { blobsById[item.id] = item.blob; });
         var invalid = validateCheckpointForSave(checkpoint, blobsById);
         if (invalid) return Promise.reject(new Error(invalid));
-        var record = { schema: PERSIST_SCHEMA, checkpoint: checkpoint, blobs: blobs || [] };
+        var record = { schema: PERSIST_SCHEMA, owner: parsed, checkpoint: checkpoint, blobs: blobs || [] };
         // Resolve only on transaction commit: never report durable early.
-        return run("readwrite", function (store) { return store.put(record, RECORD_KEY); }).then(function () { return record; });
+        return run("readwrite", function (store) { return store.put(record, key); }).then(function () { return record; });
       },
-      load: function () {
-        return run("readonly", function (store) { return store.get(RECORD_KEY); }).then(function (record) {
-          if (!record || !record.checkpoint || !Array.isArray(record.blobs)) return null;
-          if (record.checkpoint.schema !== PERSIST_SCHEMA) throw new Error("The saved import uses an unsupported format.");
-          return record;
+      load: function (owner) {
+        var key = ownerKey(owner);
+        if (!key) return Promise.reject(ownerError());
+        return run("readonly", function (store) { return store.get(key); }).then(function (record) {
+          return owned(owner, record);
         });
       },
-      discard: function () {
+      claimLegacy: function (owner) {
+        var parsed = parseOwner(owner);
+        var key = ownerKey(owner);
+        if (!parsed || !key) return Promise.reject(ownerError());
+        return openDb().then(function (db) {
+          return new Promise(function (resolve, reject) {
+            var tx;
+            try { tx = db.transaction(STORE_NAME, "readwrite"); } catch (error) { reject(error); return; }
+            var store = tx.objectStore(STORE_NAME);
+            var failed = null;
+            var claimed = null;
+            listen(store.get(RECORD_KEY), function (legacy) {
+              if (failed) return;
+              if (!legacy || legacy.owner) { failed = "There is no unassigned saved import to keep."; return; }
+              try { savedRecord(legacy); } catch (error) { failed = error.message; return; }
+              listen(store.get(key), function (existing) {
+                if (failed) return;
+                if (existing) { failed = "This account already has a saved import."; return; }
+                claimed = { schema: PERSIST_SCHEMA, owner: parsed, checkpoint: legacy.checkpoint, blobs: legacy.blobs || [] };
+                store.put(claimed, key);
+                store.delete(RECORD_KEY);
+              }, function (error) { failed = (error && error.message) || "Browser storage operation failed."; });
+            }, function (error) { failed = (error && error.message) || "Browser storage operation failed."; });
+            function finish() {
+              if (failed) reject(new Error(failed));
+              else resolve(claimed);
+            }
+            function fail() { reject((tx && tx.error) || new Error(failed || "Browser storage operation failed.")); }
+            if (typeof tx.addEventListener === "function") {
+              tx.addEventListener("complete", finish);
+              tx.addEventListener("error", fail);
+              tx.addEventListener("abort", fail);
+            } else {
+              tx.oncomplete = finish;
+              tx.onerror = fail;
+              tx.onabort = fail;
+            }
+          });
+        });
+      },
+      discard: function (owner) {
+        var key = ownerKey(owner);
+        if (!key) return Promise.reject(ownerError());
+        return run("readwrite", function (store) { return store.delete(key); }).then(function () { return null; });
+      },
+      discardLegacy: function () {
         return run("readwrite", function (store) { return store.delete(RECORD_KEY); }).then(function () { return null; });
       },
       close: function () {
@@ -402,17 +504,60 @@
 
     function send(value) { ports.importPersistenceEvent.send(value); }
 
-    persistence.probe().then(function (record) {
-      if (!record) { send({ kind: "probe", found: false }); return; }
-      savedGeneration = record.checkpoint.generation;
-      send({ kind: "probe", found: true, summary: summaryOf(record.checkpoint) });
-    }).catch(function (error) {
-      send({ kind: "probeFailed", message: storageErrorMessage(error) });
-    });
+    function echo(owner) {
+      var parsed = parseOwner(owner);
+      return parsed || { library: "", account: "" };
+    }
+
+    function deliver(owner, record, restoreEpoch) {
+      if (!record) { send({ kind: "restoreFailed", owner: echo(owner), message: "There is no saved import in this browser." }); return null; }
+      var cp = record.checkpoint;
+      var blobsById = {};
+      record.blobs.forEach(function (item) { blobsById[item.id] = item.blob; });
+      var jobs = cp.entries.map(function (entry) {
+        var kind = entry.phase && entry.phase.kind;
+        var blob = blobsById[entry.id];
+        if (!BLOB_PHASES[kind] || !blob) return Promise.resolve({ id: entry.id, file: null, hasBlob: false, hashVerified: false });
+        var file = blob;
+        try { file = new File([blob], entry.name || "file", { type: entry.mime || blob.type || "", lastModified: entry.lastModified || 0 }); } catch (error) { file = blob; }
+        if (!entry.hash || !global.crypto || !global.crypto.subtle) return Promise.resolve({ id: entry.id, file: file, hasBlob: true, hashVerified: false });
+        return file.arrayBuffer().then(function (buffer) { return global.crypto.subtle.digest("SHA-256", buffer); }).then(function (digest) {
+          return { id: entry.id, file: file, hasBlob: true, hashVerified: "sha256:" + toHex(digest) === entry.hash };
+        }).catch(function () { return { id: entry.id, file: file, hasBlob: true, hashVerified: false }; });
+      });
+      return Promise.all(jobs).then(function (verified) {
+        if (restoreEpoch !== epoch) return;
+        savedGeneration = cp.generation;
+        setRestoredFiles(cp.generation, verified);
+        send({
+          kind: "restore",
+          owner: echo(owner),
+          checkpoint: cp,
+          files: verified.filter(function (item) { return item.file; }).map(function (item) {
+            return { id: item.id, file: item.file, hasBlob: item.hasBlob, hashVerified: item.hashVerified };
+          })
+        });
+      });
+    }
 
     ports.importPersistenceRequested.subscribe(function (request) {
       if (!request || typeof request.action !== "string") return;
-      if (request.action === "save") {
+      var owner = request.owner;
+      if (request.action === "probe") {
+        persistence.probe(owner).then(function (record) {
+          if (record) {
+            savedGeneration = record.checkpoint.generation;
+            send({ kind: "probe", found: true, legacy: false, owner: echo(owner), summary: summaryOf(record.checkpoint) });
+            return null;
+          }
+          return persistence.probeLegacy().then(function (legacy) {
+            if (legacy) send({ kind: "probe", found: false, legacy: true, owner: echo(owner), summary: summaryOf(legacy.checkpoint) });
+            else send({ kind: "probe", found: false, legacy: false, owner: echo(owner) });
+          });
+        }).catch(function (error) {
+          send({ kind: "probeFailed", owner: echo(owner), message: storageErrorMessage(error) });
+        });
+      } else if (request.action === "save") {
         var saveEpoch = epoch;
         var checkpoint = request.checkpoint;
         var entryIds = Array.isArray(request.entryIds) ? request.entryIds : [];
@@ -425,64 +570,37 @@
           else blobs.push({ id: id, blob: file });
         });
         if (missing !== null || !checkpoint) {
-          send({ kind: "storeFailed", checkpointId: request.checkpointId || 0, message: "A picked file is no longer available to save." });
+          send({ kind: "storeFailed", owner: echo(owner), checkpointId: request.checkpointId || 0, message: "A picked file is no longer available to save." });
           return;
         }
-        persistence.save(checkpoint, blobs).then(function () {
+        persistence.save(owner, checkpoint, blobs).then(function () {
           if (saveEpoch !== epoch) return;
           savedGeneration = checkpoint.generation;
-          send({ kind: "stored", checkpointId: request.checkpointId });
+          send({ kind: "stored", owner: echo(owner), checkpointId: request.checkpointId });
         }).catch(function (error) {
           if (saveEpoch !== epoch) return;
-          send({ kind: "storeFailed", checkpointId: request.checkpointId || 0, message: storageErrorMessage(error) });
+          send({ kind: "storeFailed", owner: echo(owner), checkpointId: request.checkpointId || 0, message: storageErrorMessage(error) });
         });
       } else if (request.action === "restore") {
         var restoreEpoch = epoch;
-        persistence.load().then(function (record) {
-          if (!record) { send({ kind: "restoreFailed", message: "There is no saved import in this browser." }); return null; }
-          var cp = record.checkpoint;
-          var blobsById = {};
-          record.blobs.forEach(function (item) { blobsById[item.id] = item.blob; });
-          var jobs = cp.entries.map(function (entry) {
-            var kind = entry.phase && entry.phase.kind;
-            var blob = blobsById[entry.id];
-            if (!BLOB_PHASES[kind] || !blob) return Promise.resolve({ id: entry.id, file: null, hasBlob: false, hashVerified: false });
-            var file = blob;
-            try { file = new File([blob], entry.name || "file", { type: entry.mime || blob.type || "", lastModified: entry.lastModified || 0 }); } catch (error) { file = blob; }
-            if (!entry.hash || !global.crypto || !global.crypto.subtle) return Promise.resolve({ id: entry.id, file: file, hasBlob: true, hashVerified: false });
-            return file.arrayBuffer().then(function (buffer) { return global.crypto.subtle.digest("SHA-256", buffer); }).then(function (digest) {
-              return { id: entry.id, file: file, hasBlob: true, hashVerified: "sha256:" + toHex(digest) === entry.hash };
-            }).catch(function () { return { id: entry.id, file: file, hasBlob: true, hashVerified: false }; });
-          });
-          return Promise.all(jobs).then(function (verified) {
-            if (restoreEpoch !== epoch) return;
-            savedGeneration = cp.generation;
-            setRestoredFiles(cp.generation, verified);
-            send({
-              kind: "restore",
-              checkpoint: cp,
-              files: verified.filter(function (item) { return item.file; }).map(function (item) {
-                return { id: item.id, file: item.file, hasBlob: item.hasBlob, hashVerified: item.hashVerified };
-              })
-            });
-          });
-        }).catch(function (error) {
+        var pending = request.claim ? persistence.claimLegacy(owner) : persistence.load(owner);
+        pending.then(function (record) { return deliver(owner, record, restoreEpoch); }).catch(function (error) {
           if (restoreEpoch !== epoch) return;
-          send({ kind: "restoreFailed", message: storageErrorMessage(error) });
+          send({ kind: "restoreFailed", owner: echo(owner), message: storageErrorMessage(error) });
         });
       } else if (request.action === "discard") {
         epoch += 1;
         var discardEpoch = epoch;
-        persistence.discard().then(function () {
+        var removal = request.legacy ? persistence.discardLegacy() : persistence.discard(owner);
+        removal.then(function () {
           if (discardEpoch !== epoch) return;
-          // Only the stored browser copies are removed; files already
+          // Only this account's stored browser copies are removed.
+          // Another account's checkpoint stays put, and files already
           // live in this tab keep working as a memory-only import.
-          // The epoch bump rejects any save/restore still in flight
-          // for the discarded generation.
           savedGeneration = null;
-          send({ kind: "discarded" });
+          send({ kind: "discarded", owner: echo(owner) });
         }).catch(function (error) {
-          send({ kind: "discardFailed", message: storageErrorMessage(error) });
+          send({ kind: "discardFailed", owner: echo(owner), message: storageErrorMessage(error) });
         });
       }
     });
@@ -492,6 +610,7 @@
     wire: wire,
     wirePersistence: wirePersistence,
     createPersistence: createPersistence,
+    ownerKey: ownerKey,
     validateCheckpointForSave: validateCheckpointForSave,
     checkpointTotals: checkpointTotals,
     summaryOf: summaryOf,

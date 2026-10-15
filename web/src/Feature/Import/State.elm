@@ -222,6 +222,7 @@ type alias SavedSummary =
     , apiBase : String
     , started : Bool
     , generation : Int
+    , legacy : Bool
     }
 
 

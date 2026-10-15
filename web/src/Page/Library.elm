@@ -15,6 +15,7 @@ import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
 import Domain.Moderation
+import Domain.Session as AccountSession
 import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, summaryOfDetail)
 import Domain.CollectionLogic as CollectionLogic
 import Domain.Query as Query
@@ -1131,7 +1132,20 @@ grid restores the origin untouched.
 
 importContext : Model -> BrowserImport.Context
 importContext model =
-    BrowserImport.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation
+    BrowserImport.context model.apiBase (App.Access.credential model.access) (App.Access.canWrite model.access) model.access.generation (importOwner model)
+
+
+importOwner : Model -> String
+importOwner model =
+    case model.access.status of
+        App.Access.OpenLocal ->
+            "local"
+
+        App.Access.Unlocked ->
+            model.session.session |> Maybe.andThen AccountSession.accountId |> Maybe.withDefault ""
+
+        _ ->
+            ""
 
 
 delegateImport : BrowserImport.Msg -> Model -> ( Model, Cmd Msg )
@@ -2363,8 +2377,17 @@ delegateSession subMsg model =
     let
         ( session, cmd, outs ) =
             Session.update (sessionContext model) subMsg model.session
+
+        ( next, nextCmd ) =
+            handleSessionOuts outs ( { model | session = session }, Cmd.map SessionMsg cmd )
+
+        ( importModel, importCmd, importOuts ) =
+            BrowserImport.sync (importContext next) next.browserImport
+
+        ( withImport, importCmds ) =
+            handleImportOuts importOuts ( { next | browserImport = importModel }, Cmd.map ImportMsg importCmd )
     in
-    handleSessionOuts outs ( { model | session = session }, Cmd.map SessionMsg cmd )
+    ( withImport, Cmd.batch [ nextCmd, importCmds ] )
 
 
 handleSessionOuts : List Session.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
@@ -2408,6 +2431,7 @@ accessRevokedNow model =
                 , moderation = Moderation.locked model.moderation
                 , similarity = Similarity.locked model.similarity
                 , recovery = Recovery.locked model.recovery
+                , browserImport = BrowserImport.init
                 , similarityTrash = Nothing
                 , similarityCompare = Nothing
                 , duplicateTrash = Nothing
@@ -4028,6 +4052,7 @@ lockNow model hint =
             , moderation = Moderation.locked model.moderation
             , similarity = Similarity.locked model.similarity
             , recovery = Recovery.locked model.recovery
+            , browserImport = BrowserImport.init
             , similarityTrash = Nothing
             , similarityCompare = Nothing
             , duplicateTrash = Nothing
@@ -4066,6 +4091,7 @@ revokeAccess model =
                 , moderation = Moderation.locked model.moderation
                 , similarity = Similarity.locked model.similarity
                 , recovery = Recovery.locked model.recovery
+                , browserImport = BrowserImport.init
                 , similarityTrash = Nothing
                 , similarityCompare = Nothing
                 , duplicateTrash = Nothing

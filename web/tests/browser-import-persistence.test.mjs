@@ -26,6 +26,7 @@ class FakeStore {
 
   _request(op) {
     const request = new FakeRequest();
+    this.tx.pending += 1;
     queueMicrotask(() => {
       try {
         if (this.db.failWith) {
@@ -35,12 +36,13 @@ class FakeStore {
         }
         request.result = op();
         request.dispatchEvent(new Event("success"));
-        queueMicrotask(() => this.tx.dispatchEvent(new Event("complete")));
       } catch (error) {
         request.error = error;
         this.tx.error = error;
         request.dispatchEvent(new Event("error"));
-        queueMicrotask(() => this.tx.dispatchEvent(new Event("error")));
+      } finally {
+        this.tx.pending -= 1;
+        this.tx.settle();
       }
     });
     return request;
@@ -70,6 +72,16 @@ class FakeTransaction extends EventTarget {
     super();
     this.db = db;
     this.error = null;
+    this.pending = 0;
+    this.finished = false;
+  }
+
+  settle() {
+    if (this.pending === 0 && !this.finished) {
+      this.finished = true;
+      const name = this.error ? "error" : "complete";
+      queueMicrotask(() => this.dispatchEvent(new Event(name)));
+    }
   }
 
   objectStore() {
@@ -143,6 +155,10 @@ function checkpoint(overrides = {}) {
   };
 }
 
+const owner = { library: "http://localhost:8080", account: "user-1" };
+const other = { library: "http://localhost:8080", account: "user-2" };
+const localOwner = { library: "http://localhost:8080", account: "local" };
+
 function setup() {
   const db = new FakeDb();
   const persistence = api.createPersistence({ indexedDB: fakeIndexedDB(db), dbName: "test" });
@@ -152,8 +168,8 @@ function setup() {
 test("save commits checkpoint and blob bytes atomically and probe summarizes it", async () => {
   const { persistence } = setup();
   const blob = new Blob(["abc"], { type: "image/jpeg" });
-  await persistence.save(checkpoint(), [{ id: 0, blob }]);
-  const probed = await persistence.probe();
+  await persistence.save(owner, checkpoint(), [{ id: 0, blob }]);
+  const probed = await persistence.probe(owner);
   assert.equal(probed.checkpoint.apiBase, "http://localhost:8080");
   assert.equal(probed.blobs.length, 1);
   assert.equal(probed.blobs[0].blob.size, 3);
@@ -170,8 +186,8 @@ test("save commits checkpoint and blob bytes atomically and probe summarizes it"
 test("secrets are refused and nothing is stored", async () => {
   const { persistence } = setup();
   const poisoned = checkpoint({ entries: [{ ...checkpoint().entries[0], credential: "hunter2" }] });
-  await assert.rejects(() => persistence.save(poisoned, [{ id: 0, blob: new Blob(["abc"]) }]), /Refusing to save/);
-  assert.equal(await persistence.probe(), null);
+  await assert.rejects(() => persistence.save(owner, poisoned, [{ id: 0, blob: new Blob(["abc"]) }]), /Refusing to save/);
+  assert.equal(await persistence.probe(owner), null);
 });
 
 test("file-count and aggregate byte bounds are enforced before writing", async () => {
@@ -179,12 +195,12 @@ test("file-count and aggregate byte bounds are enforced before writing", async (
   const many = checkpoint({
     entries: Array.from({ length: 1001 }, (_, id) => ({ ...checkpoint().entries[0], id, phase: { kind: "imported", postId: "1" } })),
   });
-  await assert.rejects(() => persistence.save(many, []), /at most 1000 files/);
+  await assert.rejects(() => persistence.save(owner, many, []), /at most 1000 files/);
   const huge = checkpoint({
     entries: [{ ...checkpoint().entries[0], size: 250 * 1024 * 1024 + 1, phase: { kind: "imported", postId: "1" } }],
   });
-  await assert.rejects(() => persistence.save(huge, []), /250 MiB/);
-  assert.equal(await persistence.probe(), null);
+  await assert.rejects(() => persistence.save(owner, huge, []), /250 MiB/);
+  assert.equal(await persistence.probe(owner), null);
 });
 
 test("blob size mismatch is rejected", () => {
@@ -194,35 +210,81 @@ test("blob size mismatch is rejected", () => {
 
 test("quota failure leaves the previous saved import intact", async () => {
   const { db, persistence } = setup();
-  await persistence.save(checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
+  await persistence.save(owner, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
   const quota = new Error("quota");
   quota.name = "QuotaExceededError";
   db.failWith = quota;
   await assert.rejects(
-    () => persistence.save(checkpoint({ checkpointId: 2 }), [{ id: 0, blob: new Blob(["abc"]) }]),
+    () => persistence.save(owner, checkpoint({ checkpointId: 2 }), [{ id: 0, blob: new Blob(["abc"]) }]),
     /quota/i,
   );
-  const probed = await persistence.probe();
+  const probed = await persistence.probe(owner);
   assert.equal(probed.checkpoint.checkpointId, 1);
   assert.match(api.storageErrorMessage(quota), /quota exceeded/i);
 });
 
 test("corrupt or unsupported saved data is reported, not trusted", async () => {
   const { db, persistence } = setup();
-  db.records.set("current", { schema: 1, checkpoint: checkpoint({ schema: 99 }), blobs: [] });
-  await assert.rejects(() => persistence.probe(), /unsupported format/);
+  db.records.set(api.ownerKey(owner), { schema: 1, owner, checkpoint: checkpoint({ schema: 99 }), blobs: [] });
+  await assert.rejects(() => persistence.probe(owner), /unsupported format/);
 });
 
 test("discard removes only the stored copy and probe then finds nothing", async () => {
   const { persistence } = setup();
-  await persistence.save(checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
-  await persistence.discard();
-  assert.equal(await persistence.probe(), null);
-  assert.equal(await persistence.load(), null);
+  await persistence.save(owner, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
+  await persistence.discard(owner);
+  assert.equal(await persistence.probe(owner), null);
+  assert.equal(await persistence.load(owner), null);
 });
 
 test("unavailable IndexedDB fails honestly", async () => {
   const persistence = api.createPersistence({ indexedDB: null });
-  await assert.rejects(() => persistence.probe(), /IndexedDB is unavailable/);
-  await assert.rejects(() => persistence.save(checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]), /IndexedDB is unavailable/);
+  await assert.rejects(() => persistence.probe(owner), /IndexedDB is unavailable/);
+  await assert.rejects(() => persistence.save(owner, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]), /IndexedDB is unavailable/);
+});
+
+test("another account cannot read this account's checkpoint or file names", async () => {
+  const { persistence } = setup();
+  await persistence.save(owner, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
+  assert.equal(await persistence.probe(other), null);
+  assert.equal(await persistence.load(other), null);
+  assert.equal(await persistence.probe(localOwner), null);
+  const mine = await persistence.load(owner);
+  assert.equal(mine.checkpoint.entries[0].name, "a.jpg");
+  await persistence.discard(other);
+  assert.equal((await persistence.load(owner)).checkpoint.entries[0].name, "a.jpg");
+});
+
+test("an ownerless current record is not adopted until that account claims it", async () => {
+  const { db, persistence } = setup();
+  const legacy = { schema: 1, checkpoint: checkpoint({ checkpointId: 4 }), blobs: [{ id: 0, blob: new Blob(["abc"]) }] };
+  db.records.set("current", legacy);
+  assert.equal(await persistence.probe(owner), null);
+  assert.equal(await persistence.load(owner), null);
+  const found = await persistence.probeLegacy();
+  assert.equal(found.checkpoint.checkpointId, 4);
+  const claimed = await persistence.claimLegacy(owner);
+  assert.equal(claimed.owner.account, "user-1");
+  assert.equal(claimed.checkpoint.entries[0].relativePath, "photos/a.jpg");
+  assert.equal(db.records.has("current"), false);
+  assert.equal(await persistence.probe(other), null);
+  assert.equal((await persistence.load(owner)).checkpoint.checkpointId, 4);
+});
+
+test("claim refuses to replace an account that already has a saved import", async () => {
+  const { db, persistence } = setup();
+  await persistence.save(owner, checkpoint({ checkpointId: 9 }), [{ id: 0, blob: new Blob(["abc"]) }]);
+  db.records.set("current", { schema: 1, checkpoint: checkpoint({ checkpointId: 3 }), blobs: [] });
+  await assert.rejects(() => persistence.claimLegacy(owner), /already has a saved import/);
+  assert.equal(db.records.has("current"), true);
+  assert.equal((await persistence.load(owner)).checkpoint.checkpointId, 9);
+});
+
+test("credentials are not accepted as an account key", async () => {
+  const { persistence } = setup();
+  await assert.rejects(
+    () => persistence.save({ library: "http://localhost:8080", account: "password" }, checkpoint(), []),
+    /library and account/,
+  );
+  await assert.rejects(() => persistence.probe({ library: "http://localhost:8080", account: "" }), /library and account/);
 });
