@@ -8,6 +8,7 @@ import Api.Collection
 import Api.SavedSearch
 import App.Access
 import App.Keyboard as Keyboard exposing (KeyEvent, Modifiers, Target(..))
+import App.PanelEscape as PanelEscape
 import App.Prefs as Prefs exposing (Prefs)
 import App.Route as Route exposing (Route, View(..))
 import Browser
@@ -1534,26 +1535,44 @@ runCommand command model =
                 exitToGrid model
 
         Escape ->
-            if BrowserImport.isOpen model.browserImport then
-                ( { model | browserImport = BrowserImport.setOpen False model.browserImport }, Cmd.none )
+            case
+                PanelEscape.next
+                    { browserImport = BrowserImport.isOpen model.browserImport
+                    , upload = UploadQueue.isOpen model.upload
+                    , duplicates = Duplicates.isOpen model.duplicates
+                    , similarity = Similarity.isOpen model.similarity
+                    , moderation = Moderation.isOpen model.moderation
+                    , recovery = Recovery.isOpen model.recovery
+                    , drawers = drawersOpen model
+                    , grid = model.mode == Grid
+                    }
+            of
+                PanelEscape.CloseImport ->
+                    ( { model | browserImport = BrowserImport.setOpen False model.browserImport }, Cmd.none )
 
-            else if UploadQueue.isOpen model.upload then
-                ( { model | upload = UploadQueue.setOpen False model.upload }, Cmd.none )
+                PanelEscape.CloseUpload ->
+                    ( { model | upload = UploadQueue.setOpen False model.upload }, Cmd.none )
 
-            else if Duplicates.isOpen model.duplicates then
-                delegateDuplicates Duplicates.CloseRequested model
+                PanelEscape.CloseDuplicates ->
+                    delegateDuplicates Duplicates.CloseRequested model
 
-            else if Similarity.isOpen model.similarity then
-                delegateSimilarity Similarity.CloseRequested model
+                PanelEscape.CloseSimilarity ->
+                    delegateSimilarity Similarity.CloseRequested model
 
-            else if drawersOpen model then
-                ( { model | navigatorDrawer = False, inspectorDrawer = False }, Cmd.none )
+                PanelEscape.CloseModeration ->
+                    delegateModeration Moderation.CloseRequested model
 
-            else if model.mode /= Grid then
-                exitToGrid model
+                PanelEscape.CloseRecovery ->
+                    delegateRecovery Recovery.CloseRequested model
 
-            else
-                ( model, Cmd.none )
+                PanelEscape.CloseDrawers ->
+                    ( { model | navigatorDrawer = False, inspectorDrawer = False }, Cmd.none )
+
+                PanelEscape.ExitMode ->
+                    exitToGrid model
+
+                PanelEscape.Idle ->
+                    ( model, Cmd.none )
 
         EscapeField ->
             ( { model | draftQuery = Search.query model.search }, Task.attempt (\_ -> NoOp) (Dom.blur QueryEditor.fieldId) )

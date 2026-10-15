@@ -1,4 +1,4 @@
-module Feature.Recovery exposing (Context, Model, Msg(..), OutMsg(..), context, init, locked, update, view)
+module Feature.Recovery exposing (Context, Model, Msg(..), OutMsg(..), context, init, isOpen, locked, update, view)
 
 import Api.Recovery
 import Domain.Recovery exposing (Backup, Job, Listing, Receipt)
@@ -42,6 +42,11 @@ type alias Model =
 init : Model
 init =
     { open = False, backups = [], configured = False, truncated = False, loading = False, verifying = Nothing, receipt = Nothing, job = Nothing, creating = False, polls = 0, status = Nothing, requestId = 0 }
+
+
+isOpen : Model -> Bool
+isOpen model =
+    model.open
 
 
 type Msg
