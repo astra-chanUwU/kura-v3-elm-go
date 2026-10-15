@@ -342,6 +342,7 @@ type Msg
     | TagClicked String Bool
     | TermRemoved Int
     | ThumbChanged Int
+    | ThemeToggled
     | OrderChanged String
     | SaveSearch
     | RemoveSavedSearch String
@@ -548,6 +549,9 @@ updateHelp msg model =
 
         SearchMsg subMsg ->
             delegateSearch subMsg model
+
+        ThemeToggled ->
+            savePrefs (\prefs -> { prefs | darkMode = not prefs.darkMode }) model
 
         DetailCompleted generation detailEpoch postId result ->
             if not (App.Access.isCurrent generation model.access) || detailEpoch /= model.detailEpoch then
@@ -4670,6 +4674,7 @@ topBar model =
         , div [ class "topbar-actions" ]
             [ uploadButton model
             , importButton model
+            , themeButton model
             , accessControls model
             , Ui.Button.icon "info" [ class "button-quiet inspector-toggle" ]
                 { label = "Toggle image details"
@@ -4680,6 +4685,25 @@ topBar model =
                 }
             ]
         ]
+
+
+themeButton : Model -> Html Msg
+themeButton model =
+    let
+        label =
+            if model.prefs.darkMode then
+                "Switch to light mode"
+
+            else
+                "Switch to dark mode"
+    in
+    Ui.Button.icon (if model.prefs.darkMode then "sun" else "moon") [ class "button-quiet theme-toggle" ]
+        { label = label
+        , key = Nothing
+        , onPress = Just ThemeToggled
+        , pressed = Just model.prefs.darkMode
+        , hint = Just label
+        }
 
 
 importButton : Model -> Html Msg

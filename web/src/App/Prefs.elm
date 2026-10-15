@@ -35,6 +35,7 @@ type alias Prefs =
     , inspectorDocked : Bool
     , filterBar : Bool
     , savedSearches : List String
+    , darkMode : Bool
     }
 
 
@@ -46,6 +47,7 @@ default =
     , inspectorDocked = True
     , filterBar = True
     , savedSearches = []
+    , darkMode = False
     }
 
 
@@ -109,13 +111,14 @@ decoder =
         field name fieldDecoder fallback =
             Decode.oneOf [ Decode.field name fieldDecoder, Decode.succeed fallback ]
     in
-    Decode.map6 Prefs
+    Decode.map7 Prefs
         (field "thumbSize" (Decode.map (clamp thumbMin thumbMax) Decode.int) default.thumbSize)
         (field "cellExtras" extrasDecoder default.cellExtras)
         (field "navigatorDocked" Decode.bool default.navigatorDocked)
         (field "inspectorDocked" Decode.bool default.inspectorDocked)
         (field "filterBar" Decode.bool default.filterBar)
         (field "savedSearches" (Decode.list Decode.string) default.savedSearches)
+        (field "darkMode" Decode.bool default.darkMode)
 
 
 extrasDecoder : Decoder CellExtras
@@ -145,5 +148,6 @@ save prefs =
             , ( "inspectorDocked", Encode.bool prefs.inspectorDocked )
             , ( "filterBar", Encode.bool prefs.filterBar )
             , ( "savedSearches", Encode.list Encode.string prefs.savedSearches )
+            , ( "darkMode", Encode.bool prefs.darkMode )
             ]
         )

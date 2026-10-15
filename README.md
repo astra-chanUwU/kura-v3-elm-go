@@ -62,6 +62,8 @@ The seed loads demo posts and replaces existing demo rows. Three sample rows hav
 
 ## Using the library
 
+Use the moon/sun button in the top bar to switch between light and dark mode. Your choice is saved in this browser.
+
 Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe for originals, Compare for two posts, and Survey for a small selection. Press `?` for keyboard shortcuts.
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.

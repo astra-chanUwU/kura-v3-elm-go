@@ -4,6 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Kura</title>
+    <script>
+      var storedPrefs = null;
+      try { storedPrefs = JSON.parse(localStorage.getItem("kura.prefs")); } catch (e) {}
+      function applyTheme(prefs) {
+        document.documentElement.dataset.theme = prefs && prefs.darkMode === true ? "dark" : "light";
+      }
+      applyTheme(storedPrefs);
+    </script>
     <link rel="icon" type="image/svg+xml" href="/static/icons/shelf.svg">
     <link rel="stylesheet" href="/kura.css">
   </head>
@@ -12,8 +20,6 @@
     <script src="/browser-import.js"></script>
   <script src="/moderation-preview.js"></script>
     <script>
-      var storedPrefs = null;
-      try { storedPrefs = JSON.parse(localStorage.getItem("kura.prefs")); } catch (e) {}
       var app = Elm.Main.init({
         flags: {
           apiBase: "",
@@ -26,6 +32,7 @@
       if (window.KuraModerationPreview) { window.KuraModerationPreview.wire(app); }
       if (app.ports && app.ports.savePrefs) {
         app.ports.savePrefs.subscribe(function (prefs) {
+          applyTheme(prefs);
           try { localStorage.setItem("kura.prefs", JSON.stringify(prefs)); } catch (e) {}
         });
       }

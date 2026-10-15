@@ -1,6 +1,7 @@
 module WorkspaceControlTests exposing (suite)
 
 import App.Keyboard as Keyboard
+import App.Prefs as Prefs
 import Domain.Query as Query
 import Json.Decode as Decode
 
@@ -17,7 +18,19 @@ suite =
     , ( "select keys stay editable", target "SELECT" == Just Keyboard.Editable )
     , ( "video keys stay with playback controls", target "VIDEO" == Just Keyboard.MediaControl )
     , ( "audio keys stay with playback controls", target "AUDIO" == Just Keyboard.MediaControl )
+    , ( "legacy preferences keep their settings and default to light", legacyPreferences )
+    , ( "saved dark preference is restored", Decode.decodeString Prefs.decoder "{\"darkMode\":true}" |> Result.map .darkMode |> Result.withDefault False )
     ]
+
+
+legacyPreferences : Bool
+legacyPreferences =
+    case Decode.decodeString Prefs.decoder "{\"thumbSize\":200,\"navigatorDocked\":false,\"savedSearches\":[\"tag:cat\"]}" of
+        Ok prefs ->
+            not prefs.darkMode && prefs.thumbSize == 200 && not prefs.navigatorDocked && prefs.savedSearches == [ "tag:cat" ]
+
+        Err _ ->
+            False
 
 
 target : String -> Maybe Keyboard.Target
