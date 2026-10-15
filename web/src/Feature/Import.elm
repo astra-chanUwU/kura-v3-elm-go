@@ -10,6 +10,7 @@ port module Feature.Import exposing
     , isOpen
     , resume
     , setOpen
+    , sync
     , state
     , subscriptions
     , update
@@ -72,15 +73,17 @@ type alias Context =
     , credential : Maybe String
     , writesEnabled : Bool
     , accessGeneration : Int
+    , ownerAccount : String
     }
 
 
-context : String -> Maybe String -> Bool -> Int -> Context
-context apiBase credential writesEnabled accessGeneration =
+context : String -> Maybe String -> Bool -> Int -> String -> Context
+context apiBase credential writesEnabled accessGeneration ownerAccount =
     { apiBase = apiBase
     , credential = credential
     , writesEnabled = writesEnabled
     , accessGeneration = accessGeneration
+    , ownerAccount = ownerAccount
     }
 
 
@@ -94,6 +97,7 @@ type alias Model =
     , pickerPending : Bool
     , pickerGeneration : Int
     , restoredGeneration : Maybe Int
+    , ownerAccount : String
     }
 
 
@@ -132,7 +136,44 @@ type OutMsg
 
 init : Model
 init =
-    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0, restoredGeneration = Nothing }
+    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0, restoredGeneration = Nothing, ownerAccount = "" }
+
+
+sync : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
+sync ctx model =
+    if ctx.ownerAccount == "" then
+        if model.ownerAccount == "" && List.isEmpty model.state.entries && model.state.savedSummary == Nothing then
+            ( model, Cmd.none, [] )
+
+        else
+            ( { init | state = State.setOpen model.state.open State.init }, Cmd.none, [] )
+
+    else if model.ownerAccount == ctx.ownerAccount then
+        ( model, Cmd.none, [] )
+
+    else
+        ( { init | ownerAccount = ctx.ownerAccount, state = State.setOpen model.state.open State.init }
+        , probeCmd ctx
+        , []
+        )
+
+
+probeCmd : Context -> Cmd Msg
+probeCmd ctx =
+    importPersistenceRequested
+        (Encode.object
+            [ ( "action", Encode.string "probe" )
+            , ( "owner", encodeOwner ctx )
+            ]
+        )
+
+
+encodeOwner : Context -> Encode.Value
+encodeOwner ctx =
+    Encode.object
+        [ ( "library", Encode.string ctx.apiBase )
+        , ( "account", Encode.string ctx.ownerAccount )
+        ]
 
 
 isOpen : Model -> Bool
@@ -162,6 +203,18 @@ toAccess ctx =
 
 update : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
 update ctx msg model =
+    let
+        ( scoped, syncCmd, syncOuts ) =
+            sync ctx model
+
+        ( next, cmd, outs ) =
+            updateScoped ctx msg scoped
+    in
+    ( next, Cmd.batch [ syncCmd, cmd ], syncOuts ++ outs )
+
+
+updateScoped : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
+updateScoped ctx msg model =
     case msg of
         OpenPanel ->
             run ctx model State.PanelOpened
@@ -363,10 +416,16 @@ toSuccess result =
 resume : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
 resume ctx model =
     let
+        ( scoped, syncCmd, syncOuts ) =
+            sync ctx model
+
         ( nextState, effects, notes ) =
-            State.resume (toAccess ctx) model.state
+            State.resume (toAccess ctx) scoped.state
+
+        ( next, cmd, outs ) =
+            runEffects ctx { scoped | state = nextState } effects notes
     in
-    runEffects ctx { model | state = nextState } effects notes
+    ( next, Cmd.batch [ syncCmd, cmd ], syncOuts ++ outs )
 
 
 run : Context -> Model -> State.Event -> ( Model, Cmd Msg, List OutMsg )
@@ -503,6 +562,7 @@ execute ctx model effect =
             importPersistenceRequested
                 (Encode.object
                     [ ( "action", Encode.string "save" )
+                    , ( "owner", encodeOwner ctx )
                     , ( "checkpointId", Encode.int checkpointId )
                     , ( "generation", Encode.int model.state.generation )
                     , ( "checkpoint", encodeCheckpoint checkpoint )
@@ -511,78 +571,100 @@ execute ctx model effect =
                 )
 
         State.DeleteSavedCheckpoint ->
-            importPersistenceRequested (Encode.object [ ( "action", Encode.string "discard" ) ])
+            importPersistenceRequested
+                (Encode.object
+                    [ ( "action", Encode.string "discard" )
+                    , ( "owner", encodeOwner ctx )
+                    , ( "legacy", Encode.bool (model.state.savedSummary |> Maybe.map .legacy |> Maybe.withDefault False) )
+                    ]
+                )
 
         State.RestoreSavedCheckpoint ->
-            importPersistenceRequested (Encode.object [ ( "action", Encode.string "restore" ) ])
+            importPersistenceRequested
+                (Encode.object
+                    [ ( "action", Encode.string "restore" )
+                    , ( "owner", encodeOwner ctx )
+                    , ( "claim", Encode.bool (model.state.savedSummary |> Maybe.map .legacy |> Maybe.withDefault False) )
+                    ]
+                )
 
 
 persistenceEvent : Context -> Decode.Value -> Model -> ( Model, Cmd Msg, List OutMsg )
 persistenceEvent ctx value model =
-    case Decode.decodeValue (Decode.field "kind" Decode.string) value of
-        Err _ ->
-            ( model, Cmd.none, [] )
+    if not (eventForOwner ctx value) then
+        ( model, Cmd.none, [] )
 
-        Ok "probe" ->
-            case Decode.decodeValue probeDecoder value of
-                Ok summary ->
-                    run ctx model (State.SavedProbeArrived summary)
+    else
+        case Decode.decodeValue (Decode.field "kind" Decode.string) value of
+            Err _ ->
+                ( model, Cmd.none, [] )
 
-                Err _ ->
-                    ( model, Cmd.none, [] )
+            Ok "probe" ->
+                case Decode.decodeValue probeDecoder value of
+                    Ok summary ->
+                        run ctx model (State.SavedProbeArrived summary)
 
-        Ok "probeFailed" ->
-            run ctx model (State.SavedProbeFailed (decodeMessage value))
+                    Err _ ->
+                        ( model, Cmd.none, [] )
 
-        Ok "stored" ->
-            case Decode.decodeValue (Decode.field "checkpointId" Decode.int) value of
-                Ok checkpointId ->
-                    run ctx model (State.CheckpointStored checkpointId)
+            Ok "probeFailed" ->
+                run ctx model (State.SavedProbeFailed (decodeMessage value))
 
-                Err _ ->
-                    ( model, Cmd.none, [] )
+            Ok "stored" ->
+                case Decode.decodeValue (Decode.field "checkpointId" Decode.int) value of
+                    Ok checkpointId ->
+                        run ctx model (State.CheckpointStored checkpointId)
 
-        Ok "storeFailed" ->
-            case Decode.decodeValue checkpointFailureDecoder value of
-                Ok ( checkpointId, message ) ->
-                    run ctx model (State.CheckpointFailed checkpointId message)
+                    Err _ ->
+                        ( model, Cmd.none, [] )
 
-                Err _ ->
-                    ( model, Cmd.none, [] )
+            Ok "storeFailed" ->
+                case Decode.decodeValue checkpointFailureDecoder value of
+                    Ok ( checkpointId, message ) ->
+                        run ctx model (State.CheckpointFailed checkpointId message)
 
-        Ok "restore" ->
-            case Decode.decodeValue restoreDecoder value of
-                Ok restored ->
-                    let
-                        files =
-                            Dict.fromList (List.map (\item -> ( item.id, item.file )) restored.files)
+                    Err _ ->
+                        ( model, Cmd.none, [] )
 
-                        flags =
-                            Dict.fromList (List.map (\item -> ( item.id, item )) restored.files)
+            Ok "restore" ->
+                case Decode.decodeValue restoreDecoder value of
+                    Ok restored ->
+                        let
+                            files =
+                                Dict.fromList (List.map (\item -> ( item.id, item.file )) restored.files)
 
-                        checkpoint =
-                            mergeRestoreFlags flags restored.checkpoint
-                    in
-                    run ctx
-                        { model | files = files, restoredGeneration = Just checkpoint.generation }
-                        (State.SavedRestored ctx.apiBase checkpoint)
+                            flags =
+                                Dict.fromList (List.map (\item -> ( item.id, item )) restored.files)
 
-                Err _ ->
-                    run ctx model (State.SavedRestoreFailed "The saved import data could not be read.")
+                            checkpoint =
+                                mergeRestoreFlags flags restored.checkpoint
+                        in
+                        run ctx
+                            { model | files = files, restoredGeneration = Just checkpoint.generation }
+                            (State.SavedRestored ctx.apiBase checkpoint)
 
-        Ok "restoreFailed" ->
-            run ctx model (State.SavedRestoreFailed (decodeMessage value))
+                    Err _ ->
+                        run ctx model (State.SavedRestoreFailed "The saved import data could not be read.")
 
-        Ok "discarded" ->
-            -- Only the stored browser copies go away; files already
-            -- live in this tab keep working as a memory-only import.
-            run ctx model State.SavedDiscarded
+            Ok "restoreFailed" ->
+                run ctx model (State.SavedRestoreFailed (decodeMessage value))
 
-        Ok "discardFailed" ->
-            run ctx model (State.SavedDiscardFailed (decodeMessage value))
+            Ok "discarded" ->
+                -- Only this account's stored copies go away. Files already
+                -- in this tab keep working as a memory-only import.
+                run ctx model State.SavedDiscarded
 
-        Ok _ ->
-            ( model, Cmd.none, [] )
+            Ok "discardFailed" ->
+                run ctx model (State.SavedDiscardFailed (decodeMessage value))
+
+            Ok _ ->
+                ( model, Cmd.none, [] )
+
+
+eventForOwner : Context -> Decode.Value -> Bool
+eventForOwner ctx value =
+    Decode.decodeValue (Decode.at [ "owner", "account" ] Decode.string) value
+        == Ok ctx.ownerAccount
 
 
 decodeMessage : Decode.Value -> String
@@ -600,26 +682,29 @@ checkpointFailureDecoder =
 
 probeDecoder : Decode.Decoder (Maybe State.SavedSummary)
 probeDecoder =
-    Decode.field "found" Decode.bool
+    Decode.map2 Tuple.pair
+        (Decode.field "found" Decode.bool)
+        (Decode.field "legacy" Decode.bool)
         |> Decode.andThen
-            (\found ->
-                if found then
-                    Decode.field "summary" summaryDecoder |> Decode.map Just
+            (\( found, legacy ) ->
+                if found || legacy then
+                    Decode.field "summary" (summaryDecoder legacy) |> Decode.map Just
 
                 else
                     Decode.succeed Nothing
             )
 
 
-summaryDecoder : Decode.Decoder State.SavedSummary
-summaryDecoder =
-    Decode.map6 State.SavedSummary
+summaryDecoder : Bool -> Decode.Decoder State.SavedSummary
+summaryDecoder legacy =
+    Decode.map7 State.SavedSummary
         (Decode.field "checkpointId" Decode.int)
         (Decode.field "fileCount" Decode.int)
         (Decode.field "totalBytes" Decode.int)
         (Decode.field "apiBase" Decode.string)
         (Decode.field "started" Decode.bool)
         (Decode.field "generation" Decode.int)
+        (Decode.succeed legacy)
 
 
 type alias RestoredItem =
@@ -1140,20 +1225,36 @@ persistenceSection importState =
                     Just summary ->
                         [ p [ class "panel-note" ]
                             [ text
-                                ("A saved import is available in this browser: "
-                                    ++ String.fromInt summary.fileCount
-                                    ++ " files, "
-                                    ++ formatBytes summary.totalBytes
-                                    ++ (if summary.started then
-                                            ", started."
+                                (if summary.legacy then
+                                    "An older saved import is in this browser and is not loaded: "
+                                        ++ String.fromInt summary.fileCount
+                                        ++ " files, "
+                                        ++ formatBytes summary.totalBytes
+                                        ++ ". Keep it for this account only if it is yours."
 
-                                        else
-                                            ", not started."
-                                       )
+                                 else
+                                    "A saved import is available for this account: "
+                                        ++ String.fromInt summary.fileCount
+                                        ++ " files, "
+                                        ++ formatBytes summary.totalBytes
+                                        ++ (if summary.started then
+                                                ", started."
+
+                                            else
+                                                ", not started."
+                                           )
                                 )
                             ]
                         , div [ class "upload-item-actions" ]
-                            [ button [ class "button", type_ "button", onClick ResumeSavedClicked ] [ text "Resume saved import" ]
+                            [ button [ class "button", type_ "button", onClick ResumeSavedClicked ]
+                                [ text
+                                    (if summary.legacy then
+                                        "Keep for this account"
+
+                                     else
+                                        "Resume saved import"
+                                    )
+                                ]
                             , button [ class "button button-quiet", type_ "button", onClick DiscardSavedClicked ] [ text "Discard saved import" ]
                             ]
                         ]
