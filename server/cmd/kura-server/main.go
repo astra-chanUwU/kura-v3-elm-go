@@ -139,6 +139,11 @@ func main() {
 			}
 		}
 	}
+	if dependencies.Recovery != nil {
+		if err := dependencies.Recovery.Reconcile(); err != nil {
+			log.Printf("backup restart recovery failed")
+		}
+	}
 	if privateMode && (dependencies.Accounts == nil || dependencies.Accounts.Service == nil) {
 		log.Fatalf("KURA_PRIVATE_LIBRARY requires an account service: private mode fails closed without it")
 	}

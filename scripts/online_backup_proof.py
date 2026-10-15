@@ -202,7 +202,7 @@ def run_online_backup(media_root, output, open_snapshot, *, after_ready=None, be
     stage = None
     published = False
     try:
-        protocol = Path(tempfile.mkdtemp(prefix="kura-proof-snap-", dir=parent))
+        protocol = Path(tempfile.mkdtemp(prefix=".kura-proof-snap-", dir=parent))
         os.chmod(protocol, 0o700)
         hold = open_snapshot(protocol)
         if getattr(hold, "busy", False):
@@ -250,14 +250,15 @@ def run_online_backup(media_root, output, open_snapshot, *, after_ready=None, be
             shutil.rmtree(stage, ignore_errors=True)
 
 
-def open_postgres_snapshot(env):
+def open_postgres_snapshot(env, *, external_lock=False):
     """Return an opener that exports one REPEATABLE READ snapshot.
 
     The snapshot transaction stays open through pg_dump. A second opener for
     the same database gets the advisory lock's busy result and does not dump.
+    external_lock means the caller already holds that lock for this attempt.
     """
     def opener(protocol):
-        session = PostgresSnapshot(env, Path(protocol))
+        session = PostgresSnapshot(env, Path(protocol), external_lock)
         try:
             session.open()
         except Exception:
@@ -268,9 +269,10 @@ def open_postgres_snapshot(env):
 
 
 class PostgresSnapshot:
-    def __init__(self, env, work):
+    def __init__(self, env, work, external_lock=False):
         self.env = env
         self.work = work
+        self.external_lock = external_lock
         self.document = None
         self.snapshot_id = None
         self.busy = False
@@ -285,7 +287,7 @@ class PostgresSnapshot:
         self._read_marker(self.work / "releaser-ready.txt", "releaser", self._releaser)
         self._holder = self._spawn("holder.sql", _holder_sql(self.work, self._barrier, self._release))
         self._read_marker(self.work / "holder-ready.txt", "holder", self._holder)
-        self._snapshot = self._spawn("snapshot.sql", _snapshot_sql(self.work, self._barrier))
+        self._snapshot = self._spawn("snapshot.sql", _snapshot_sql(self.work, self._barrier, self.external_lock))
         marker = self._read_marker(self.work / "ready.txt", "snapshot", self._snapshot)
         if marker == "busy":
             self.busy = True
@@ -319,6 +321,7 @@ class PostgresSnapshot:
         if self._closed:
             return
         self._closed = True
+        self._terminate_backend(self.work / "releaser-pid.txt")
         self._stop(getattr(self, "_releaser", None))
         self._wait(getattr(self, "_holder", None))
         self._wait(getattr(self, "_snapshot", None))
@@ -348,6 +351,22 @@ class PostgresSnapshot:
                 raise ProofError(f"{label} session ended early: {self._stderr(label)}")
             time.sleep(0.05)
         raise ProofError(f"{label} session timed out: {self._stderr(label)}")
+
+    def _terminate_backend(self, pid_path):
+        try:
+            pid = pid_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if not pid.isdigit():
+            return
+        try:
+            subprocess.run(
+                ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(" + pid + ")"],
+                env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=10, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
 
     def _stderr(self, label):
         path = self.work / f"{label}.sql.err"
@@ -536,6 +555,9 @@ def _releaser_sql(work, release):
     ready = _psql_quote(work / "releaser-ready.txt")
     return _psql_preamble() + "\n".join([
         f"SELECT pg_advisory_lock({release[0]}, {release[1]});",
+        f"\\o '{_psql_quote(work / 'releaser-pid.txt')}'",
+        "SELECT pg_backend_pid();",
+        "\\o",
         f"\\o '{ready}'",
         "SELECT 'held';",
         "\\o",
@@ -557,11 +579,27 @@ def _holder_sql(work, barrier, release):
     ])
 
 
-def _snapshot_sql(work, barrier):
+def _snapshot_sql(work, barrier, external_lock=False):
     snap = _psql_quote(work / "snapshot.txt")
     refs = _psql_quote(work / "refs.json")
     ready = _psql_quote(work / "ready.txt")
     lock_a, lock_b = BACKUP_LOCK_KEYS
+    if external_lock:
+        return _psql_preamble() + "\n".join([
+            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;",
+            f"\\o '{snap}'",
+            "SELECT pg_export_snapshot();",
+            "\\o",
+            f"\\o '{refs}'",
+            REFERENCE_SQL + ";",
+            "\\o",
+            f"\\o '{ready}'",
+            "SELECT 'ready';",
+            "\\o",
+            f"SELECT pg_advisory_lock({barrier[0]}, {barrier[1]});",
+            "COMMIT;",
+            "",
+        ])
     return _psql_preamble() + "\n".join([
         f"SELECT CASE WHEN pg_try_advisory_lock({lock_a}, {lock_b}) THEN 1 ELSE 0 END AS got_lock \\gset",
         "\\if :got_lock",

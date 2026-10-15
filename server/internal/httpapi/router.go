@@ -99,6 +99,9 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 
 		// Recovery admin reads (handlers re-check admin themselves).
 		api.Get("/recovery/backups", RecoveryList(deps.Recovery))
+		api.Post("/recovery/backups", RecoveryCreate(deps.Recovery))
+		api.Get("/recovery/backups/{id}", RecoveryJob(deps.Recovery))
+		api.Delete("/recovery/backups/{id}", RecoveryCancel(deps.Recovery))
 		api.Post("/recovery/backups/{id}/verify", RecoveryVerify(deps.Recovery))
 
 		// Post browsing (posts.go), edits (tags.go, reactions.go), and

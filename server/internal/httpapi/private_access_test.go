@@ -85,6 +85,15 @@ func TestPrivateModeBoundariesAndCSRF(t *testing.T) {
 	if rec := serve(req); rec.Code != 200 {
 		t.Fatalf("editor write trusted origin status=%d", rec.Code)
 	}
+	req = cookieReq(t, stub, acfg, "admin", "admin-password-1", http.MethodPost, "/api/recovery/backups")
+	if rec := serve(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("admin backup create without origin status=%d", rec.Code)
+	}
+	req = cookieReq(t, stub, acfg, "admin", "admin-password-1", http.MethodPost, "/api/recovery/backups")
+	req.Header.Set("Origin", "https://kura.example")
+	if rec := serve(req); rec.Code != 200 {
+		t.Fatalf("admin backup create trusted origin status=%d", rec.Code)
+	}
 	// Editor cannot moderate or administer users.
 	req = cookieReq(t, stub, acfg, "editor", "editor-password-1", http.MethodGet, "/api/posts/moderation")
 	if rec := serve(req); rec.Code != http.StatusForbidden {

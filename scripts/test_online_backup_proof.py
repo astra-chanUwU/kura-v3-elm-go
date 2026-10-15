@@ -101,7 +101,7 @@ class OnlineBackupProofTests(unittest.TestCase):
     def assert_unpublished(self, name="proof-backup"):
         self.assertFalse((self.root / name).exists())
         self.assertEqual(list(self.root.glob(proof.STAGING_PREFIX + "*")), [])
-        self.assertEqual(list(self.root.glob("kura-proof-snap-*")), [])
+        self.assertEqual(list(self.root.glob(".kura-proof-snap-*")), [])
 
     def test_link_put_keeps_the_first_complete_object(self):
         key = "uploads/same.bin"

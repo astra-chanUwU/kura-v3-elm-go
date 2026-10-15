@@ -1,5 +1,6 @@
-// Package recovery lists and verifies the local backup format written by
-// scripts/library-backup.py. It never creates, restores, or deletes data.
+// Package recovery lists, verifies, and creates local backups in the format
+// written by scripts/library-backup.py. It never restores a backup and never
+// deletes a backup that has already been published.
 package recovery
 
 import (
@@ -17,8 +18,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -32,6 +33,8 @@ const (
 var (
 	ErrUnconfigured = errors.New("backup root is not configured")
 	ErrBusy         = errors.New("a backup verification is already running")
+	ErrActive       = errors.New("a backup is already running")
+	ErrUnsupported  = errors.New("S3 backups are not supported")
 	ErrNotFound     = errors.New("backup not found")
 	ErrInvalid      = errors.New("backup is invalid")
 	ErrCanceled     = errors.New("backup verification canceled")
@@ -71,7 +74,13 @@ type fileEntry struct {
 type Service struct {
 	root      string
 	verifying atomic.Bool
+	creating  atomic.Bool
 	now       func() time.Time
+	run       backupRunner
+	lock      lockHolder
+	mu        sync.Mutex
+	active    string
+	cancel    context.CancelFunc
 }
 
 // New reads only the operator-provided KURA_BACKUP_ROOT value. The API never
@@ -219,7 +228,7 @@ func readManifest(dir string) (manifest, error) {
 	if err != nil || !st.Mode().IsRegular() || st.Mode()&os.ModeSymlink != 0 || st.Size() > MaxManifestBytes {
 		return manifest{}, ErrInvalid
 	}
-	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(name, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
 		return manifest{}, ErrInvalid
 	}
@@ -394,7 +403,7 @@ func hashFile(ctx context.Context, root, rel string) (int64, string, error) {
 			return 0, "", ErrInvalid
 		}
 	}
-	f, e := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, e := os.OpenFile(p, os.O_RDONLY|openNoFollow, 0)
 	if e != nil {
 		return 0, "", ErrInvalid
 	}

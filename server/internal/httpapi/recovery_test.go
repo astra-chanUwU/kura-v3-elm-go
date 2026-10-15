@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
@@ -58,6 +59,28 @@ func TestRecoveryHandlersRequireAdminAndReturnNoPaths(t *testing.T) {
 	b, _ := json.Marshal(listing)
 	if string(b) == "" {
 		t.Fatal("empty listing")
+	}
+}
+
+func TestRecoveryCreateRequiresAdmin(t *testing.T) {
+	service := recovery.New(t.TempDir())
+	req := httptest.NewRequest(http.MethodPost, "/api/recovery/backups", nil)
+	w := httptest.NewRecorder()
+	RecoveryCreate(service).ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status %d", w.Code)
+	}
+	req = withActor(httptest.NewRequest(http.MethodPost, "/api/recovery/backups", nil), Actor{ID: "user:3", Role: auth.RoleViewer})
+	w = httptest.NewRecorder()
+	RecoveryCreate(service).ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("viewer status %d", w.Code)
+	}
+	req = withActor(httptest.NewRequest(http.MethodPost, "/api/recovery/backups", strings.NewReader("{\"output\":\"/tmp\"}")), Actor{ID: "admin", Role: auth.RoleAdmin})
+	w = httptest.NewRecorder()
+	RecoveryCreate(service).ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("body status %d", w.Code)
 	}
 }
 
