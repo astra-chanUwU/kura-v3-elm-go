@@ -16,9 +16,11 @@ milestone's original scope and historical acceptance checks.
 - Browse a virtualized grid, open originals in Loupe, compare two posts, or survey a selection.
 - Search by tags and metadata; save searches and organize posts into ordered collections.
 - Edit tags, rename or merge tags across the library, revert revisions, set favorites, and score posts.
-- Upload JPEG, PNG, GIF, and static WebP files, up to 25 MiB each, with a sequential queue and transfer progress.
+- Upload JPEG, PNG, GIF, and static WebP files, plus optional AVIF, animated WebP, MP4, and WebM support through FFmpeg; files are capped at 25 MiB.
+- Keep a browser import for reload, review exact copies or visual matches, and recover mistakes through Trash.
+- Share a private library with viewer, editor, and admin accounts.
 - Generate thumbnails through durable PostgreSQL jobs with retries and crash recovery.
-- Moderate posts through the API. Hidden, rejected, and deleted posts are excluded from public browsing and local media access.
+- Moderate posts in the browser with protected previews and an action history. Hidden, rejected, and deleted posts are excluded from ordinary browsing and local media access.
 
 ## Run locally
 
@@ -48,7 +50,7 @@ make web-serve
 
 This starts a Go static-file server for the built frontend on port 8000. Keep both terminals running while using the app.
 
-Open [localhost:8000](http://localhost:8000). The frontend connects to the API at `http://localhost:8080`; its address is set in `web/index.html`.
+Open [localhost:8000](http://localhost:8000). The frontend proxies API and media requests to `http://127.0.0.1:8080`, keeping account cookies on the same origin. Set `KURA_API_PROXY_URL` for a different API address.
 
 Optional demo data:
 
@@ -64,13 +66,12 @@ Click a post to select it; Cmd/Ctrl-click toggles multiple selection. Use Loupe 
 
 The Upload panel accepts multiple files with shared tags, source, and artist. Each upload shows its saved post and thumbnail status. **View** opens the uploaded original; returning restores the previous results and selection. Uploading does not add unrelated posts to a filtered search or collection.
 
-**Import folder** previews up to 1,000 JPEG, PNG, GIF, or static WebP images before you start.
+**Import folder** previews up to 1,000 supported files before you start.
 Hidden files, photo-library packages, and unsupported files are excluded. The
 preview checks for exact duplicates; choose shared tags, artist, a source
 prefix, and an optional destination collection. Import runs one image at a
 time. With **Skip duplicates**, existing images can join the destination
-collection without changing their metadata. Files stay in the tab's memory;
-use the CLI importer below when you need a resume manifest that survives reloads.
+collection without changing their metadata. Turn on **Keep this import for reload** to save the files and receipts in this browser, up to 250 MiB total. Wait for **Saved for reload**, then use **Resume saved import** after reloading. Restoring a queue never starts uploads automatically. Files whose previous outcome is uncertain need review before another attempt. Saved copies remain on this device until discarded; credentials are not saved with them. Without this option, files stay in the tab's memory only.
 
 Edit **Source & artist** in the Inspector, then save explicitly. Clearing a
 field removes its value. Metadata history records previous values, and a
@@ -106,6 +107,10 @@ Choose copies with their checkboxes, then confirm **Move chosen copies to
 Trash**; nothing is chosen or removed automatically. Restore mistakes through
 Trash. Hidden and trashed images stay out of the review. Similar-looking images
 with different original bytes are outside this check.
+
+Select a post and choose **Find similar** to review resized or recompressed visual matches. This uses a small perceptual fingerprint, so even distance zero can match a different image. Compare before choosing anything for Trash. New uploads are indexed automatically; **Build index for library** queues missing fingerprints for older images. Failed indexing requires an explicit retry after correcting the cause. Cropped, rotated, and semantic matches are outside this algorithm.
+
+Admins can use **Moderation** to review Published, Pending, Hidden, or Rejected posts. Protected thumbnail previews stay available while originals are hidden. Hide/reject and bulk actions require confirmation; history records the actor and reason.
 
 Open **Manage tags** to rename a tag or merge it into an existing tag. Preview
 the affected image count, then confirm. The operation includes hidden and
@@ -143,13 +148,30 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 | `MEDIA_ROOT` | Local media directory; default `web/static/media` when using `make server-run`. |
 | `KURA_API_TOKEN` | Require a bearer token for API writes. Unset means open local mode. |
 | `KURA_API_URL` | CLI API address; default `http://localhost:8080`. |
+| `KURA_API_PROXY_URL` | Frontend proxy target; default `http://127.0.0.1:8080`. |
+| `KURA_PRIVATE_LIBRARY` | Set `true` to require an account or deployment bearer for library reads and writes. |
+| `KURA_AUTH_ALLOW_HTTP_LOCAL` | Explicitly allow account cookies over HTTP on loopback hosts for local development. |
+| `KURA_AUTH_TRUSTED_ORIGIN` | Exact public origin for cookie write checks, for example `https://library.example`. |
+| `KURA_PRIVATE_READS` | CLI opt-in to send the deployment bearer on ordinary reads and ZIP exports. Requires `KURA_API_TOKEN`. |
+| `KURA_BACKUP_ROOT` | Existing local backup directory shown in the admin recovery panel. |
+| `KURA_FFPROBE_PATH`, `KURA_FFMPEG_PATH` | Optional tool paths for extended formats; otherwise resolved from `PATH`. |
 | `KURA_HTTP_TIMEOUT` | CLI timeout per HTTP request; default `10s`, accepts durations such as `30s` or `1m`. |
 
 Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
 
 Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
 
-The CLI sends `KURA_API_TOKEN` on writes and protected Trash reads. In protected mode, use **Unlock** in the browser's top bar to enter that token; **Lock** or a reload clears it. Open local mode needs no token. There is no password, OAuth, or passkey login flow yet.
+The CLI sends `KURA_API_TOKEN` on writes and protected reads such as Trash. For a private library, also set `KURA_PRIVATE_READS=true`; this uses the deployment admin identity. Viewer/editor account login is currently browser-only. Legacy token mode retains **Unlock**/**Lock** in the top bar, and open local mode needs no token.
+
+For a private shared library, migrate the database and bootstrap the first admin offline:
+
+```sh
+go -C server run ./cmd/kura-account bootstrap --handle owner
+```
+
+The bootstrap tool reads a 12–72 byte password from standard input, never a command argument. It refuses a second initial admin. To retain saved searches owned by an existing local identity, use `--adopt-legacy local` instead of `--handle owner`. Start the API with `KURA_PRIVATE_LIBRARY=true`, then sign in through the browser. Use HTTPS in deployment; for local HTTP only, explicitly set `KURA_AUTH_ALLOW_HTTP_LOCAL=true`. Admins manage accounts under **Accounts** in Library tools. Viewers browse; editors change library content; admins also moderate and manage users. Role, password, or disabled-state changes revoke that user's sessions.
+
+Private mode currently requires local media and refuses S3 or persisted external media URLs at startup. Public object URLs cannot be protected by an API cookie. OAuth and passkeys are not implemented.
 
 The native CLI can edit metadata, recover images, and save original ZIP exports:
 
@@ -198,7 +220,7 @@ To add a folder of local test images without changing the source files, run:
 python3 scripts/import-test-media.py "SOURCE_FOLDER" --api-url http://127.0.0.1:8080
 ```
 
-The importer accepts JPEG, PNG, GIF, and static WebP files up to 25 MiB, skips hidden and Photos library content, and records each file's relative path as source metadata. It adds the `test-data` and `folder-test` tags; search for imported posts with `tag:folder-test`. Animated WebP and video files are unsupported. Static WebP originals keep their bytes and produce JPEG thumbnails. Duplicate detection checks hashes from browse-visible posts; hidden or deleted posts are outside that API listing. If the API requires a bearer token, set `KURA_API_TOKEN` in the environment. A local resume manifest is kept at `.local/test-media-manifest.json` and is ignored by Git.
+The importer accepts JPEG, PNG, GIF, and static WebP files up to 25 MiB, skips hidden and Photos library content, and records each file's relative path as source metadata. It adds the `test-data` and `folder-test` tags; search for imported posts with `tag:folder-test`. With FFmpeg installed on the server, static AVIF, animated WebP, MP4 (H.264/AAC), and WebM (VP8/VP9 with Opus/Vorbis) are also supported. Videos are limited to five minutes and use JPEG poster thumbnails; Loupe provides native playback controls. Animated AVIF is unsupported. Originals keep their bytes, and basic image formats work without FFmpeg. Duplicate detection checks hashes from browse-visible posts; hidden or deleted posts are outside that API listing. If the API requires a bearer token, set `KURA_API_TOKEN` in the environment. A local resume manifest is kept at `.local/test-media-manifest.json` and is ignored by Git.
 
 The manifest belongs to one source folder and API URL. Use a separate ignored
 manifest for another import. Interrupted or ambiguous uploads are verified before
@@ -277,6 +299,8 @@ python3 scripts/library-backup.py verify --input /ABSOLUTE/BACKUP_PATH
 Restore requires an empty target database in `DATABASE_URL` and a new media
 destination. The utility supports local media; configured S3 storage is outside
 this backup workflow.
+
+The admin **Recovery** panel lists existing local backups under `KURA_BACKUP_ROOT` and verifies their manifests and file hashes. It does not create or restore backups while Kura is running; one-click online backup creation remains unfinished.
 
 ## Checks
 
