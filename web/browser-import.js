@@ -241,11 +241,26 @@
   var BLOB_PHASES = { pendingHash: true, hashing: true, hashed: true, queued: true, importing: true };
   var OWNER_ACCOUNT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+  function canonicalApiBase(raw) {
+    var value = String(raw || "").trim();
+    while (value.length > 1 && value.charAt(value.length - 1) === "/") value = value.slice(0, -1);
+    var separator = value.indexOf("://");
+    if (separator < 0) return value;
+    var scheme = value.slice(0, separator);
+    var remainder = value.slice(separator + 3);
+    var slash = remainder.indexOf("/");
+    var authority = slash < 0 ? remainder : remainder.slice(0, slash);
+    var path = slash < 0 ? "" : remainder.slice(slash);
+    return scheme.toLowerCase() + "://" + authority.toLowerCase() + path;
+  }
+
   function parseOwner(owner) {
     if (!owner || typeof owner.library !== "string" || typeof owner.account !== "string") return null;
-    var library = owner.library.trim();
+    var library = canonicalApiBase(owner.library);
     var account = owner.account.trim();
-    if (!library || library.length > 300 || library.indexOf("\u0000") !== -1) return null;
+    // An empty API base means same-origin. IndexedDB is already scoped to
+    // that active origin, so the empty string is a safe stable library key.
+    if (library.length > 300 || library.indexOf("\u0000") !== -1) return null;
     if (!OWNER_ACCOUNT.test(account) || FORBIDDEN_KEY.test(account)) return null;
     return { library: library, account: account };
   }
@@ -611,6 +626,7 @@
     wirePersistence: wirePersistence,
     createPersistence: createPersistence,
     ownerKey: ownerKey,
+    canonicalApiBase: canonicalApiBase,
     validateCheckpointForSave: validateCheckpointForSave,
     checkpointTotals: checkpointTotals,
     summaryOf: summaryOf,

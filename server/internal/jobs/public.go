@@ -18,9 +18,9 @@ const (
 	// existing similarity index request is the explicit retry; this view
 	// does not add another one.
 	ActionIndexPost = "index_post"
-	// ActionOriginalSaved means a thumbnail row is terminally failed. The
-	// original upload remains, and failed thumbnail rows are not reset.
-	ActionOriginalSaved = "original_saved"
+	// ActionThumbnailFailed means thumbnail generation is terminally failed.
+	// The action makes no claim about whether the original is still available.
+	ActionThumbnailFailed = "thumbnail_failed"
 	// ActionStopped means some other kind is terminally failed.
 	ActionStopped = "stopped"
 )
@@ -197,7 +197,7 @@ func publicAction(job Job) string {
 	case StatusFailed:
 		switch job.Kind {
 		case kindDerivative:
-			return ActionOriginalSaved
+			return ActionThumbnailFailed
 		case kindFingerprint:
 			return ActionIndexPost
 		default:

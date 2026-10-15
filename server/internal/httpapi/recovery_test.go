@@ -82,6 +82,14 @@ func TestRecoveryCreateRequiresAdmin(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("body status %d", w.Code)
 	}
+	for _, body := range []string{" \n{\"output\":\"/tmp\"}", strings.Repeat(" ", 1025)} {
+		req = withActor(httptest.NewRequest(http.MethodPost, "/api/recovery/backups", strings.NewReader(body)), Actor{ID: "admin", Role: auth.RoleAdmin})
+		w = httptest.NewRecorder()
+		RecoveryCreate(service).ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("nonempty or oversized body accepted: %d", w.Code)
+		}
+	}
 }
 
 func TestRecoveryVerifyRouteReturnsReceipt(t *testing.T) {

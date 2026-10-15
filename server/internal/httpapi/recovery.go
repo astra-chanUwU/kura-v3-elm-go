@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -43,9 +44,8 @@ func RecoveryCreate(service *recovery.Service) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "recovery unavailable")
 			return
 		}
-		buf := make([]byte, 1)
-		n, _ := r.Body.Read(buf)
-		if n > 0 && strings.TrimSpace(string(buf[:n])) != "" {
+		body, readErr := io.ReadAll(io.LimitReader(r.Body, 1025))
+		if readErr != nil || len(body) > 1024 || strings.TrimSpace(string(body)) != "" {
 			writeJSONError(w, http.StatusBadRequest, "backup creation does not accept a request body")
 			return
 		}

@@ -127,6 +127,32 @@ func TestStartFailureCancelAndBusyNeverPublish(t *testing.T) {
 	}
 }
 
+func TestSuccessfulRunnerWithoutValidPublicationFails(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MEDIA_ROOT", t.TempDir())
+	t.Setenv("DATABASE_URL", "postgresql://postgres@127.0.0.1:1/kura_test?sslmode=disable")
+	service := New(root)
+	service.SetTestBackend(
+		func(context.Context, []string, string, string) error { return nil },
+		func(context.Context, []string) (func(), error) { return func() {}, nil },
+	)
+	job, err := service.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, err = service.Job(job.ID)
+		if err == nil && job.Status != statusRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if job.Status != statusFailed || job.Error != "backup failed" {
+		t.Fatalf("empty successful runner result was trusted: %+v", job)
+	}
+}
+
 func TestSuccessfulPublicationIsListedAndVerified(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", t.TempDir())
@@ -164,6 +190,17 @@ func TestSuccessfulPublicationIsListedAndVerified(t *testing.T) {
 		body, _ := os.ReadFile(filepath.Join(root, ".kura-backup-jobs", id+".json"))
 		t.Fatalf("job=%+v err=%v body=%s", job, err, body)
 	}
+	service.SetTestBackend(nil, func(context.Context, []string) (func(), error) { return func() {}, nil })
+	if err := service.writeJob(root, Job{ID: job.ID, Status: statusRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := service.Job(job.ID)
+	if err != nil || reconciled.Status != statusSucceeded {
+		t.Fatalf("valid published snapshot was not reconciled: job=%+v err=%v", reconciled, err)
+	}
 	listing, err := service.List(context.Background())
 	if err != nil || len(listing.Backups) != 1 || listing.Backups[0].ID != job.ID || listing.Backups[0].Status != "available" {
 		t.Fatalf("listing=%+v err=%v", listing, err)
@@ -183,7 +220,9 @@ func TestSuccessfulPublicationIsListedAndVerified(t *testing.T) {
 
 func TestReconcileDoesNotPromoteAnInterruptedAttempt(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("DATABASE_URL", "postgresql://postgres@127.0.0.1:1/kura_test?sslmode=disable")
 	service := New(root)
+	service.SetTestBackend(nil, func(context.Context, []string) (func(), error) { return func() {}, nil })
 	if err := service.writeJob(root, Job{ID: "backup-interrupted", Status: statusRunning}); err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +245,176 @@ func TestReconcileDoesNotPromoteAnInterruptedAttempt(t *testing.T) {
 	listing, err := service.List(context.Background())
 	if err != nil || len(listing.Backups) != 0 {
 		t.Fatalf("listing=%+v err=%v", listing, err)
+	}
+}
+
+func TestReconcileDoesNotPromoteInvalidPublication(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DATABASE_URL", "postgresql://postgres@127.0.0.1:1/kura_test?sslmode=disable")
+	service := New(root)
+	service.SetTestBackend(nil, func(context.Context, []string) (func(), error) { return func() {}, nil })
+	job := Job{ID: "backup-invalid", Status: statusRunning}
+	if err := service.writeJob(root, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, job.ID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, job.ID, "database.dump"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	job, err := service.Job(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != statusFailed {
+		t.Fatalf("invalid publication was promoted: %+v", job)
+	}
+}
+
+func TestReconcileSkipsLiveJobOwnedByAnotherService(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MEDIA_ROOT", t.TempDir())
+	t.Setenv("DATABASE_URL", "postgresql://postgres@127.0.0.1:1/kura_test?sslmode=disable")
+	var mu sync.Mutex
+	held := false
+	lock := func(context.Context, []string) (func(), error) {
+		mu.Lock()
+		if held {
+			mu.Unlock()
+			return nil, ErrActive
+		}
+		held = true
+		mu.Unlock()
+		return func() {
+			mu.Lock()
+			held = false
+			mu.Unlock()
+		}, nil
+	}
+	started := make(chan struct{})
+	serviceA := New(root)
+	serviceA.SetTestBackend(func(ctx context.Context, _ []string, _, _ string) error {
+		staging := filepath.Join(root, ".kura-backup-live")
+		if err := os.Mkdir(staging, 0o700); err != nil {
+			return err
+		}
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}, lock)
+	serviceB := New(root)
+	serviceB.SetTestBackend(nil, lock)
+	job, err := serviceA.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := serviceB.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := serviceA.Job(job.ID)
+	if err != nil || current.Status != statusRunning {
+		t.Fatalf("live job changed by second service: job=%+v err=%v", current, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kura-backup-live")); err != nil {
+		t.Fatalf("live staging was removed: %v", err)
+	}
+	if _, err := serviceA.Cancel(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err = serviceA.Job(job.ID)
+		if err == nil && current.Status == statusCanceled {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("active job did not finish cancellation: job=%+v err=%v", current, err)
+}
+
+func TestJobStateRejectsSymlinkPathsAndUsesPrivateModes(t *testing.T) {
+	root := t.TempDir()
+	service := New(root)
+	job := Job{ID: "backup-safe", Status: statusRunning}
+	if err := service.writeJob(root, job); err != nil {
+		t.Fatal(err)
+	}
+	dir := service.jobDir(root)
+	if info, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("job directory is not private: mode=%v", info.Mode().Perm())
+	}
+	path := service.jobPath(root, job.ID)
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("job state is not private: mode=%v", info.Mode().Perm())
+	}
+
+	other := t.TempDir()
+	target := filepath.Join(other, "target.json")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := service.writeJob(root, Job{ID: job.ID, Status: statusFailed}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("symlink job file err=%v", err)
+	}
+	if _, err := service.readJob(root, job.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("read symlink job file err=%v", err)
+	}
+	if body, err := os.ReadFile(target); err != nil || string(body) != "untouched" {
+		t.Fatalf("symlink target changed: %q err=%v", body, err)
+	}
+}
+
+func TestJobDirectoryAndCancelMarkerRejectSymlinks(t *testing.T) {
+	root := t.TempDir()
+	service := New(root)
+	other := t.TempDir()
+	if err := os.Symlink(other, service.jobDir(root)); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	if err := service.writeJob(root, Job{ID: "backup-dir", Status: statusRunning}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("symlink job directory err=%v", err)
+	}
+	if _, err := service.readJob(root, "backup-dir"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("read symlink job directory err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(other, "backup-dir.json")); !os.IsNotExist(err) {
+		t.Fatal("write through job directory symlink")
+	}
+
+	if err := os.Remove(service.jobDir(root)); err != nil {
+		t.Fatal(err)
+	}
+	job := Job{ID: "backup-cancel", Status: statusRunning}
+	if err := service.writeJob(root, job); err != nil {
+		t.Fatal(err)
+	}
+	markerTarget := filepath.Join(other, "marker")
+	if err := os.WriteFile(markerTarget, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(markerTarget, service.cancelPath(root, job.ID)); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+	if _, err := service.Cancel(job.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("symlink cancel marker err=%v", err)
+	}
+	if body, err := os.ReadFile(markerTarget); err != nil || string(body) != "untouched" {
+		t.Fatalf("cancel marker target changed: %q err=%v", body, err)
 	}
 }
 

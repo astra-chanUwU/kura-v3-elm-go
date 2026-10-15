@@ -314,7 +314,26 @@ original bytes. Hidden or trashed posts are excluded, and collection exports
 check the observed version. Original hashes and sizes are verified before the
 archive is sent.
 
-For a complete local backup, stop the API, workers, and other writers first:
+Administrators can create local backups while Kura stays online from the
+**Recovery** panel. Set `KURA_BACKUP_ROOT` to an existing dedicated backup
+directory outside `MEDIA_ROOT`, and set `MEDIA_ROOT` to the library's actual
+directory without symlink components. The server needs Python 3.9+ and
+compatible `psql` and `pg_dump` tools on `PATH`. It locates the backup script
+from the repository or server directory; packaged deployments should set
+`KURA_ONLINE_BACKUP_SCRIPT` to the installed `scripts/online_backup_proof.py`,
+with `library-backup.py` beside it.
+
+The panel tracks creation and cancellation, lists published backups, and
+verifies their manifests and hashes. Creation uses one PostgreSQL snapshot
+and copies its referenced local media while writes continue. Only one
+creation runs per library across server processes. A request is complete
+only after verification and atomic publication; failed or canceled attempts
+remain incomplete. Creation has a 30-minute timeout. S3 backups and online
+restore remain unsupported; platforms without atomic no-overwrite directory
+publication refuse creation.
+
+For the standalone offline utility, stop the API, workers, and other writers
+first:
 
 ```sh
 python3 scripts/library-backup.py create --offline --output /ABSOLUTE/BACKUP_PATH --media-root /ABSOLUTE/MEDIA_ROOT
@@ -324,8 +343,6 @@ python3 scripts/library-backup.py verify --input /ABSOLUTE/BACKUP_PATH
 Restore requires an empty target database in `DATABASE_URL` and a new media
 destination. The utility supports local media; configured S3 storage is outside
 this backup workflow.
-
-The admin **Recovery** panel lists existing local backups under `KURA_BACKUP_ROOT` and verifies their manifests and file hashes. It does not create or restore backups while Kura is running; one-click online backup creation remains unfinished.
 
 ## Checks
 

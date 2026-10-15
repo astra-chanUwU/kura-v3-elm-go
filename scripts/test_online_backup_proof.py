@@ -109,6 +109,23 @@ class OnlineBackupProofTests(unittest.TestCase):
         self.assertFalse(proof.link_immutable(self.media, key, b"second-different"))
         self.assertEqual((self.media / "uploads" / "same.bin").read_bytes(), b"first-complete")
 
+    def test_parent_directory_symlink_cannot_supply_backup_media(self):
+        document = self.document_for({"uploads/a.bin": b"fixture"})
+        (self.media / "uploads" / "a.bin").unlink()
+        (self.media / "uploads").rmdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "a.bin").write_bytes(b"fixture")
+        try:
+            (self.media / "uploads").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("directory symlinks are unavailable")
+        opener, hold = self.hold_for(document)
+        with self.assertRaisesRegex(backup.BackupError, "symlink"):
+            proof.run_online_backup(self.media, self.root / "linked", opener)
+        self.assertTrue(hold.closed)
+        self.assert_unpublished("linked")
+
     def test_concurrent_links_do_not_tear_a_key(self):
         key = "uploads/raced.bin"
         payloads = [bytes([byte]) * 200_000 for byte in (1, 2)]

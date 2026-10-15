@@ -18,14 +18,16 @@ import (
 )
 
 const (
-	createTimeout   = 30 * time.Minute
-	jobDirName      = ".kura-backup-jobs"
-	statusRunning   = "running"
-	statusSucceeded = "succeeded"
-	statusFailed    = "failed"
-	statusCanceled  = "canceled"
-	backupLockClass = 87203461
-	backupLockObj   = 102341
+	createTimeout    = 30 * time.Minute
+	reconcileTimeout = 2 * time.Minute
+	lockTimeout      = 30 * time.Second
+	jobDirName       = ".kura-backup-jobs"
+	statusRunning    = "running"
+	statusSucceeded  = "succeeded"
+	statusFailed     = "failed"
+	statusCanceled   = "canceled"
+	backupLockClass  = 87203461
+	backupLockObj    = 102341
 )
 
 var remoteSettingKeys = []string{
@@ -125,7 +127,11 @@ func (s *Service) Cancel(id string) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	if err := os.WriteFile(s.cancelPath(root, id), []byte("1\n"), 0o600); err != nil {
+	dir, err := s.ensureJobDir(root)
+	if err != nil {
+		return Job{}, err
+	}
+	if err := writeStateFile(dir, s.cancelPath(root, id), []byte("1\n")); err != nil {
 		return Job{}, err
 	}
 	s.mu.Lock()
@@ -150,25 +156,58 @@ func (s *Service) Reconcile() error {
 	if s.creating.Load() {
 		return nil
 	}
-	entries, err := os.ReadDir(s.jobDir(root))
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	env, err := pgProcessEnv(databaseURL)
 	if err != nil {
-		if os.IsNotExist(err) {
-			s.sweepStaging(root)
-			return nil
-		}
+		return err
+	}
+	lockCtx, cancelLock := context.WithTimeout(context.Background(), lockTimeout)
+	defer cancelLock()
+	release, err := s.locker()(lockCtx, env)
+	if errors.Is(err, ErrActive) {
+		// Another server owns the shared database lock. Its job and staging
+		// directory are live state, so leave them entirely alone.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer release()
+	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), reconcileTimeout)
+	defer cancelReconcile()
+	dir, err := checkedJobDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		s.sweepStaging(root)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
+		if err := reconcileCtx.Err(); err != nil {
+			return err
+		}
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(name, ".json")
+		if !backupID.MatchString(id) {
+			continue
+		}
 		job, err := s.readJob(root, id)
 		if err != nil || job.Status != statusRunning {
 			continue
 		}
-		if info, statErr := os.Lstat(filepath.Join(root, id)); statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		validationErr := validatePublishedBackup(reconcileCtx, filepath.Join(root, id))
+		if errors.Is(validationErr, context.DeadlineExceeded) || errors.Is(validationErr, context.Canceled) {
+			return validationErr
+		}
+		if validationErr == nil {
 			job.Status = statusSucceeded
 			job.Error = ""
 		} else {
@@ -199,19 +238,19 @@ func (s *Service) finish(ctx context.Context, cancel context.CancelFunc, release
 	}
 	s.mu.Unlock()
 	_ = os.Remove(s.cancelPath(root, id))
-	job := Job{ID: id, Status: statusSucceeded}
-	published := false
-	if info, statErr := os.Lstat(output); statErr == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-		published = true
-	}
+	job := Job{ID: id, Status: statusFailed, Error: "backup failed"}
+	_, publicationErr := validatePublishedDirectory(context.Background(), output)
+	published := publicationErr == nil
 	switch {
 	case published:
 		job.Status = statusSucceeded
+		job.Error = ""
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		job.Status = statusFailed
 		job.Error = "backup timed out"
 	case errors.Is(ctx.Err(), context.Canceled):
 		job.Status = statusCanceled
+		job.Error = ""
 	case err != nil:
 		job.Status = statusFailed
 		job.Error = safeBackupError(err)
@@ -229,7 +268,7 @@ func (s *Service) watchCancel(ctx context.Context, done <-chan struct{}, root, i
 		case <-done:
 			return
 		case <-ticker.C:
-			if _, err := os.Lstat(s.cancelPath(root, id)); err == nil {
+			if readCancelMarker(root, id) {
 				cancel()
 				return
 			}
@@ -285,9 +324,51 @@ func (s *Service) cancelPath(root, id string) string {
 	return filepath.Join(s.jobDir(root), id+".cancel")
 }
 
-func (s *Service) writeJob(root string, job Job) error {
+func (s *Service) ensureJobDir(root string) (string, error) {
 	dir := s.jobDir(root)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", ErrInvalid
+	}
+	f, err := os.OpenFile(dir, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.IsDir() || !os.SameFile(info, opened) {
+		return "", ErrInvalid
+	}
+	if err := f.Chmod(0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func checkedJobDir(root string) (string, error) {
+	dir := filepath.Join(root, jobDirName)
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", ErrInvalid
+	}
+	return dir, nil
+}
+
+func (s *Service) writeJob(root string, job Job) error {
+	if !backupID.MatchString(job.ID) {
+		return ErrInvalid
+	}
+	dir, err := s.ensureJobDir(root)
+	if err != nil {
 		return err
 	}
 	body, err := json.Marshal(job)
@@ -295,22 +376,158 @@ func (s *Service) writeJob(root string, job Job) error {
 		return err
 	}
 	body = append(body, '\n')
-	return os.WriteFile(s.jobPath(root, job.ID), body, 0o600)
+	return writeStateFile(dir, s.jobPath(root, job.ID), body)
 }
 
 func (s *Service) readJob(root, id string) (Job, error) {
-	body, err := os.ReadFile(s.jobPath(root, id))
+	if !backupID.MatchString(id) {
+		return Job{}, ErrNotFound
+	}
+	dir, err := checkedJobDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	name := filepath.Join(dir, id+".json")
+	info, err := os.Lstat(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Job{}, ErrNotFound
 		}
 		return Job{}, err
 	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return Job{}, ErrInvalid
+	}
+	f, err := os.OpenFile(name, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return Job{}, ErrInvalid
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return Job{}, ErrInvalid
+	}
+	body, err := io.ReadAll(io.LimitReader(f, 16<<10))
+	if err != nil || len(body) >= 16<<10 {
+		return Job{}, ErrInvalid
+	}
 	var job Job
 	if err := json.Unmarshal(body, &job); err != nil || job.ID != id {
 		return Job{}, ErrInvalid
 	}
 	return job, nil
+}
+
+func writeStateFile(dir, path string, body []byte) error {
+	if filepath.Dir(path) != dir {
+		return ErrInvalid
+	}
+	if target, err := os.Lstat(path); err == nil {
+		if !target.Mode().IsRegular() || target.Mode()&os.ModeSymlink != 0 {
+			return ErrInvalid
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".kura-state-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err == nil {
+		return nil
+	} else {
+		// Windows does not replace an existing destination with Rename. Keep
+		// the target constrained to a regular file before using the portable
+		// remove-and-rename fallback there.
+		if target, statErr := os.Lstat(path); statErr != nil || !target.Mode().IsRegular() || target.Mode()&os.ModeSymlink != 0 {
+			return err
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+		return os.Rename(tmpName, path)
+	}
+}
+
+func readCancelMarker(root, id string) bool {
+	dir, err := checkedJobDir(root)
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(dir, id+".cancel")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNoFollow, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4))
+	return err == nil && string(data) == "1\n"
+}
+
+func validatePublishedBackup(ctx context.Context, dir string) error {
+	m, err := validatePublishedDirectory(ctx, dir)
+	if err != nil {
+		return err
+	}
+	for _, item := range m.Files {
+		size, hash, err := hashFile(ctx, dir, item.Path)
+		if err != nil {
+			return err
+		}
+		if size != item.Size || hash != item.SHA256 {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+func validatePublishedDirectory(ctx context.Context, dir string) (manifest, error) {
+	if err := ctx.Err(); err != nil {
+		return manifest{}, err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return manifest{}, ErrInvalid
+	}
+	m, err := readManifest(dir)
+	if err != nil {
+		return manifest{}, err
+	}
+	if err := inventoryMatchesContext(ctx, dir, m); err != nil {
+		return manifest{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return manifest{}, err
+	}
+	return m, nil
 }
 
 func (s *Service) sweepStaging(root string) {
@@ -331,8 +548,24 @@ func (s *Service) sweepStaging(root string) {
 
 func pgProcessEnv(databaseURL string) ([]string, error) {
 	parsed, err := url.Parse(databaseURL)
-	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Fragment != "" {
 		return nil, ErrUnconfigured
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return nil, ErrUnconfigured
+	}
+	connectionOptions := map[string]string{
+		"host": "PGHOST", "port": "PGPORT", "user": "PGUSER", "password": "PGPASSWORD",
+		"sslmode": "PGSSLMODE", "sslrootcert": "PGSSLROOTCERT", "sslcert": "PGSSLCERT",
+		"sslkey": "PGSSLKEY", "sslcrl": "PGSSLCRL", "connect_timeout": "PGCONNECT_TIMEOUT",
+		"application_name": "PGAPPNAME", "target_session_attrs": "PGTARGETSESSIONATTRS",
+		"service": "PGSERVICE", "servicefile": "PGSERVICEFILE", "options": "PGOPTIONS",
+	}
+	for name, values := range query {
+		if connectionOptions[name] == "" || len(values) != 1 {
+			return nil, ErrUnconfigured
+		}
 	}
 	database := strings.TrimPrefix(parsed.Path, "/")
 	if database == "" || strings.Contains(database, "/") {
@@ -346,6 +579,9 @@ func pgProcessEnv(databaseURL string) ([]string, error) {
 	}
 	for _, key := range remoteSettingKeys {
 		drop[key] = true
+	}
+	for name := range query {
+		drop[connectionOptions[name]] = true
 	}
 	env := make([]string, 0, 32)
 	for _, entry := range os.Environ() {
@@ -370,8 +606,18 @@ func pgProcessEnv(databaseURL string) ([]string, error) {
 			env = append(env, "PGPASSWORD="+password)
 		}
 	}
-	if mode := parsed.Query().Get("sslmode"); mode != "" {
-		env = append(env, "PGSSLMODE="+mode)
+	// A libpq query option overrides the authority component. Replace prior
+	// entries rather than emitting duplicate environment keys.
+	for name, values := range query {
+		key := connectionOptions[name]
+		prefix := key + "="
+		filtered := env[:0]
+		for _, entry := range env {
+			if !strings.HasPrefix(entry, prefix) {
+				filtered = append(filtered, entry)
+			}
+		}
+		env = append(filtered, prefix+values[0])
 	}
 	return env, nil
 }
@@ -472,7 +718,10 @@ func holdBackupLock(ctx context.Context, env []string) (func(), error) {
 }
 
 const pythonLauncher = `
-import importlib.util, os, sys
+import importlib.util, os, signal, sys
+def interrupted(_signal, _frame):
+    raise KeyboardInterrupt("backup canceled")
+signal.signal(signal.SIGTERM, interrupted)
 path = sys.argv[1]
 spec = importlib.util.spec_from_file_location("kura_online_backup_proof", path)
 mod = importlib.util.module_from_spec(spec)
@@ -484,7 +733,15 @@ mod.run_online_backup(sys.argv[2], sys.argv[3], mod.open_postgres_snapshot(os.en
 func defaultBackupRun(ctx context.Context, env []string, mediaRoot, output string) error {
 	script := strings.TrimSpace(os.Getenv("KURA_ONLINE_BACKUP_SCRIPT"))
 	if script == "" {
-		script = filepath.Join("scripts", "online_backup_proof.py")
+		for _, candidate := range []string{
+			filepath.Join("scripts", "online_backup_proof.py"),
+			filepath.Join("..", "scripts", "online_backup_proof.py"),
+		} {
+			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+				script = candidate
+				break
+			}
+		}
 	}
 	if _, err := os.Stat(script); err != nil {
 		return fmt.Errorf("backup tool is unavailable")
@@ -494,6 +751,8 @@ func defaultBackupRun(ctx context.Context, env []string, mediaRoot, output strin
 		return fmt.Errorf("backup tool is unavailable")
 	}
 	cmd := exec.CommandContext(ctx, python, "-c", pythonLauncher, script, mediaRoot, output)
+	configureBackupProcess(cmd)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = env
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard

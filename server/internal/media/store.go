@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,19 @@ type Store interface {
 // Reader is the read-only facet of Store used by derivative processing.
 type Reader interface {
 	Open(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+// RangeReader is the HTTP read facet of a store. Stat never reads object
+// bytes; OpenRange streams exactly length bytes starting at offset. This
+// keeps HEAD and byte-range responses independent of the object's size.
+type RangeReader interface {
+	Stat(ctx context.Context, key string) (size int64, err error)
+	OpenRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error)
+}
+
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // LocalStore stores objects below Root and exposes them through URLPrefix.
@@ -123,6 +137,42 @@ func (s *LocalStore) Open(_ context.Context, key string) (io.ReadCloser, error) 
 		return nil, fmt.Errorf("media object path is a directory: %s", key)
 	}
 	return file, nil
+}
+
+func (s *LocalStore) Stat(ctx context.Context, key string) (int64, error) {
+	if err := validateKey(key); err != nil {
+		return 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(filepath.Join(s.Root, filepath.FromSlash(key)))
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, errors.New("media object is not a regular file")
+	}
+	return info.Size(), nil
+}
+
+func (s *LocalStore) OpenRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 || length <= 0 || offset > math.MaxInt64-length {
+		return nil, errors.New("invalid media byte range")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	body, err := s.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	file := body.(*os.File)
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &limitedReadCloser{Reader: io.LimitReader(file, length), Closer: file}, nil
 }
 
 func (s *LocalStore) Delete(ctx context.Context, key string) error {

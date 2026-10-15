@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -254,6 +255,63 @@ func (s *S3Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("media object not found: %s", key)
 	}
 	return nil, fmt.Errorf("s3 get %s: %d %s", key, resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+// Stat uses S3 HEAD, so metadata probes never transfer the object body.
+func (s *S3Store) Stat(ctx context.Context, key string) (int64, error) {
+	if err := validateKey(key); err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.requestURL(key), nil)
+	if err != nil {
+		return 0, err
+	}
+	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
+	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
+	s.signRequest(req, emptyHash)
+	resp, err := s.do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("s3 head %s: %d", key, resp.StatusCode)
+	}
+	size, err := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	if err != nil || size < 0 {
+		return 0, errors.New("s3 head returned no valid content length")
+	}
+	return size, nil
+}
+
+func (s *S3Store) OpenRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if err := validateKey(key); err != nil {
+		return nil, err
+	}
+	if offset < 0 || length <= 0 || offset > math.MaxInt64-length {
+		return nil, errors.New("invalid media byte range")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.requestURL(key), nil)
+	if err != nil {
+		return nil, err
+	}
+	end := offset + length - 1
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, end))
+	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
+	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
+	s.signRequest(req, emptyHash)
+	resp, err := s.do(req)
+	if err != nil {
+		return nil, err
+	}
+	// Do not accidentally serve a whole object, or a different byte range,
+	// when an endpoint ignores or changes the signed range request.
+	wantRange := fmt.Sprintf("bytes %d-%d/", offset, end)
+	if resp.StatusCode != http.StatusPartialContent || !strings.HasPrefix(resp.Header.Get("Content-Range"), wantRange) || (resp.ContentLength >= 0 && resp.ContentLength != length) {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("s3 get %s returned an invalid byte range", key)
+	}
+	return &limitedReadCloser{Reader: io.LimitReader(resp.Body, length), Closer: resp.Body}, nil
 }
 
 func (s *S3Store) Delete(ctx context.Context, key string) error {

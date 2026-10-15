@@ -83,6 +83,65 @@ suite =
             && (after.status |> Maybe.map (String.contains "not complete") |> Maybe.withDefault False)
             && (after.status |> Maybe.map (String.contains "published") |> Maybe.withDefault False) == False
       )
+    , ( "closing while backup creation is pending preserves the accepted job for the next open"
+      , let
+            initial =
+                Feature.init
+
+            base =
+                { initial | open = True, configured = True }
+
+            ( requesting, _ ) =
+                step ctx Feature.CreateRequested base
+
+            closed =
+                requesting |> step ctx Feature.CloseRequested |> Tuple.first
+
+            accepted =
+                closed
+                    |> step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-2", status = "running", error = Nothing }))
+                    |> Tuple.first
+
+            reopened =
+                accepted |> step ctx Feature.OpenRequested |> Tuple.first
+        in
+        requesting.creating
+            && closed.creating
+            && closed.requestId == requesting.requestId
+            && not accepted.open
+            && not accepted.creating
+            && (accepted.job |> Maybe.map .id) == Just "backup-2"
+            && reopened.open
+            && reopened.loading
+            && reopened.requestId > accepted.requestId
+            && (reopened.job |> Maybe.map .status) == Just "running"
+      )
+    , ( "reopening during a pending create does not invalidate its response"
+      , let
+            initial =
+                Feature.init
+
+            base =
+                { initial | open = True, configured = True }
+
+            ( requesting, _ ) =
+                step ctx Feature.CreateRequested base
+
+            closed =
+                requesting |> step ctx Feature.CloseRequested |> Tuple.first
+
+            ( reopened, _ ) =
+                step ctx Feature.OpenRequested closed
+
+            ( accepted, _ ) =
+                step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-3", status = "running", error = Nothing })) reopened
+        in
+        reopened.open
+            && reopened.creating
+            && reopened.requestId == requesting.requestId
+            && not accepted.creating
+            && (accepted.job |> Maybe.map .id) == Just "backup-3"
+      )
     , ( "publication is the only completed backup state"
       , let
             base =

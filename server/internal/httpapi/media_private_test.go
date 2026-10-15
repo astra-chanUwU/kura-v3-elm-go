@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
@@ -40,6 +41,29 @@ func (m *memoryStore) Open(_ context.Context, key string) (io.ReadCloser, error)
 		return nil, errors.New("missing")
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (m *memoryStore) Stat(_ context.Context, key string) (int64, error) {
+	data, ok := m.objects[key]
+	if !ok {
+		return 0, errors.New("missing")
+	}
+	return int64(len(data)), nil
+}
+
+func (m *memoryStore) OpenRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	body, err := m.Open(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.CopyN(io.Discard, body, offset); err != nil {
+		_ = body.Close()
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{Reader: io.LimitReader(body, length), Closer: body}, nil
 }
 
 func (m *memoryStore) Delete(_ context.Context, key string) error {
@@ -173,7 +197,7 @@ func TestPrivateMediaAuthorizesVisibilityAndIgnoresBrowserKeys(t *testing.T) {
 		t.Fatalf("admin bearer %d body=%q", rec.Code, rec.Body.String())
 	}
 	store.opened = nil
-	if rec := serve(mediaRequest(http.MethodHead, published, "", viewer, "")); rec.Code != http.StatusOK || rec.Body.Len() != 0 || len(store.opened) != 1 {
+	if rec := serve(mediaRequest(http.MethodHead, published, "", viewer, "")); rec.Code != http.StatusOK || rec.Body.Len() != 0 || len(store.opened) != 0 || rec.Header().Get("Content-Length") != "15" {
 		t.Fatalf("head %d body=%d opened=%v", rec.Code, rec.Body.Len(), store.opened)
 	}
 
@@ -262,23 +286,17 @@ func TestPrivateMediaReadsDisposableS3Endpoint(t *testing.T) {
 			return
 		}
 		switch r.Method {
-		case http.MethodHead:
-			if _, ok := objects[key]; !ok {
-				http.NotFound(w, r)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
 		case http.MethodPut:
 			data, _ := io.ReadAll(r.Body)
 			objects[key] = append([]byte(nil), data...)
 			w.WriteHeader(http.StatusOK)
-		case http.MethodGet:
+		case http.MethodGet, http.MethodHead:
 			data, ok := objects[key]
 			if !ok {
 				http.NotFound(w, r)
 				return
 			}
-			_, _ = w.Write(data)
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 		default:
 			http.NotFound(w, r)
 		}

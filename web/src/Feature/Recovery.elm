@@ -79,6 +79,12 @@ update ctx msg model =
             if not ctx.canAdmin then
                 ( { model | status = Just "Admin access is required to inspect recovery backups." }, Cmd.none, [] )
 
+            else if model.creating then
+                ( { model | open = True, loading = True }
+                , Api.Recovery.list ctx.apiBase ctx.credential (Loaded ctx.generation model.requestId)
+                , []
+                )
+
             else
                 load ctx { model | open = True, receipt = Nothing }
 
@@ -93,7 +99,19 @@ update ctx msg model =
                 load ctx { model | receipt = Nothing }
 
         CloseRequested ->
-            ( { init | requestId = model.requestId + 1, job = model.job }, Cmd.none, [] )
+            ( { init
+                | requestId =
+                    if model.creating then
+                        model.requestId
+
+                    else
+                        model.requestId + 1
+                , creating = model.creating
+                , job = model.job
+              }
+            , Cmd.none
+            , []
+            )
 
         VerifyRequested id ->
             if not ctx.canAdmin then
@@ -274,17 +292,28 @@ acceptJob ctx model job =
             { model | creating = False, job = Just job, status = Just (jobSentence job) }
     in
     if job.status == "running" then
-        ( next, schedule model.requestId, [] )
+        ( next
+        , if model.open then
+            schedule model.requestId
 
-    else if job.status == "succeeded" then
-        let
-            request =
-                model.requestId + 1
-        in
-        ( { next | requestId = request, loading = True }
-        , Api.Recovery.list ctx.apiBase ctx.credential (Loaded ctx.generation request)
+          else
+            Cmd.none
         , []
         )
+
+    else if job.status == "succeeded" then
+        if model.open then
+            let
+                request =
+                    model.requestId + 1
+            in
+            ( { next | requestId = request, loading = True }
+            , Api.Recovery.list ctx.apiBase ctx.credential (Loaded ctx.generation request)
+            , []
+            )
+
+        else
+            ( next, Cmd.none, [] )
 
     else
         ( next, Cmd.none, [] )

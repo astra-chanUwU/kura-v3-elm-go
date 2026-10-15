@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -81,7 +82,11 @@ func TestRealCreatorLockAndFailedPublication(t *testing.T) {
 		t.Fatal("backup script is unavailable")
 	}
 	t.Setenv("KURA_ONLINE_BACKUP_SCRIPT", script)
-	t.Setenv("MEDIA_ROOT", t.TempDir())
+	mediaRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MEDIA_ROOT", mediaRoot)
 	t.Setenv("DATABASE_URL", databaseURL)
 
 	release, err := holdBackupLock(context.Background(), dbEnv)
@@ -96,6 +101,13 @@ func TestRealCreatorLockAndFailedPublication(t *testing.T) {
 
 	root := t.TempDir()
 	service := New(root)
+	service.SetTestBackend(func(ctx context.Context, env []string, media, output string) error {
+		err := defaultBackupRun(ctx, env, media, output)
+		if err != nil {
+			t.Logf("backup tool failed: %s", redactTool(err.Error()))
+		}
+		return err
+	}, nil)
 	job := waitBackup(t, service)
 	if job.Status != statusSucceeded {
 		if _, err := os.Lstat(filepath.Join(root, job.ID)); !os.IsNotExist(err) {
@@ -115,6 +127,75 @@ func TestRealCreatorLockAndFailedPublication(t *testing.T) {
 	} else if _, err := service.Verify(context.Background(), job.ID); err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("cancel releases snapshot and subprocesses", func(t *testing.T) {
+		original, err := filepath.Abs(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapper := filepath.Join(t.TempDir(), "slow_creator.py")
+		body := fmt.Sprintf(`
+import importlib.util, pathlib, time
+spec = importlib.util.spec_from_file_location("real_proof", %q)
+real = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(real)
+open_postgres_snapshot = real.open_postgres_snapshot
+def run_online_backup(media, output, opener):
+    def pause(ready):
+        pathlib.Path(output + ".ready").write_text("ready")
+        time.sleep(60)
+    return real.run_online_backup(media, output, opener, after_ready=pause)
+`, original)
+		if err := os.WriteFile(wrapper, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("KURA_ONLINE_BACKUP_SCRIPT", wrapper)
+		cancelService := New(root)
+		attempt, err := cancelService.Start(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready := filepath.Join(root, attempt.ID+".ready")
+		t.Cleanup(func() { _ = os.Remove(ready) })
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(ready); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				_, _ = cancelService.Cancel(attempt.ID)
+				t.Fatal("snapshot was not opened")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if _, err := cancelService.Cancel(attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		deadline = time.Now().Add(10 * time.Second)
+		for {
+			job, err := cancelService.Job(attempt.ID)
+			if err == nil && job.Status == statusCanceled {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("cancellation did not finish: %+v %v", job, err)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if _, err := os.Lstat(filepath.Join(root, attempt.ID)); !os.IsNotExist(err) {
+			t.Fatal("cancellation published a backup")
+		}
+		// Both the outer creator lock and inner exported snapshot must close.
+		released, err := holdBackupLock(context.Background(), dbEnv)
+		if err != nil {
+			t.Fatal("cancellation retained the creation lock")
+		}
+		released()
+		psqlExec(t, dbEnv, `DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid())
+			THEN RAISE EXCEPTION 'snapshot backend survived cancellation'; END IF;
+		END $$`)
+	})
 
 	psqlExec(t, dbEnv, `INSERT INTO posts (preview_url, original_url, media_type, width, height, hash, file_size)
 		VALUES ('/media/missing.png', '/media/missing.png', 'image/png', 1, 1, 'sha256:0000000000000000000000000000000000000000000000000000000000000000', 1)`)

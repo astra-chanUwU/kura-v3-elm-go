@@ -74,7 +74,7 @@ func TestPublicJobOmitsPayloadAndNamesTheNextAction(t *testing.T) {
 	job.Attempts = job.MaxAttempts
 	job.NextRetryAt = nil
 	failed := job.Public()
-	if failed.Action != ActionOriginalSaved || failed.LastError != "The file could not be read." {
+	if failed.Action != ActionThumbnailFailed || failed.LastError != "The file could not be read." {
 		t.Fatalf("terminal thumbnail view = %#v", failed)
 	}
 

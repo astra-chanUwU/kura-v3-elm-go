@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
@@ -120,24 +123,129 @@ func servePrivateStoredMedia(w http.ResponseWriter, r *http.Request, checker pos
 		writeJSONError(w, http.StatusNotFound, "media not found")
 		return true
 	}
-	body, err := store.Open(r.Context(), mapped)
-	if err != nil || body == nil {
+	ranges, ok := store.(media.RangeReader)
+	if !ok {
+		writeJSONError(w, http.StatusServiceUnavailable, "media range reads unavailable")
+		return true
+	}
+	size, err := ranges.Stat(r.Context(), mapped)
+	if err != nil || size < 0 {
 		writeJSONError(w, http.StatusNotFound, "media not found")
 		return true
 	}
-	defer body.Close()
+	readContext, cancel := context.WithCancel(r.Context())
+	reader := &storedMediaReader{ctx: readContext, cancel: cancel, store: ranges, key: mapped, size: size}
+	defer reader.Close()
+	// Validate the object GET before committing response headers. Seeking
+	// later closes this stream and resumes at the requested offset; no bytes
+	// are buffered or discarded while seeking. HEAD only stats.
+	if r.Method == http.MethodGet && size > 0 {
+		reader.body, err = ranges.OpenRange(readContext, mapped, 0, size)
+		if err != nil || reader.body == nil {
+			writeJSONError(w, http.StatusNotFound, "media not found")
+			return true
+		}
+	}
 	w.Header().Set("Content-Type", safeMediaType(mediaType))
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Add("Vary", "Cookie")
 	w.Header().Add("Vary", "Authorization")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		_, _ = io.Copy(io.Discard, body)
-		return true
-	}
-	_, _ = io.Copy(w, body)
+	http.ServeContent(privateMediaResponseWriter{w}, r, "", time.Time{}, reader)
 	return true
+}
+
+type privateMediaResponseWriter struct{ http.ResponseWriter }
+
+func (w privateMediaResponseWriter) WriteHeader(status int) {
+	// ServeContent removes Cache-Control on errors (including 416). Keep
+	// the private library's policy on those responses as well.
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// storedMediaReader adapts streaming store ranges to ServeContent without
+// loading the object into memory. Size seeks and HEAD do not open a body.
+type storedMediaReader struct {
+	mu           sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	store        media.RangeReader
+	key          string
+	size         int64
+	position     int64
+	bodyPosition int64
+	body         io.ReadCloser
+	closed       bool
+}
+
+func (s *storedMediaReader) Close() error {
+	// A multipart ServeContent writer may still be blocked in a store read
+	// when the client disconnects. Cancel it before waiting for its lock.
+	s.cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	return s.closeBody()
+}
+
+func (s *storedMediaReader) closeBody() error {
+	if s.body != nil {
+		err := s.body.Close()
+		s.body = nil
+		return err
+	}
+	return nil
+}
+
+func (s *storedMediaReader) Seek(offset int64, whence int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, os.ErrClosed
+	}
+	base := int64(0)
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		base = s.position
+	case io.SeekEnd:
+		base = s.size
+	default:
+		return 0, errors.New("invalid media seek")
+	}
+	if offset < -base || offset > s.size-base {
+		return 0, errors.New("invalid media seek")
+	}
+	s.position = base + offset
+	return s.position, nil
+}
+
+func (s *storedMediaReader) Read(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return 0, os.ErrClosed
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if s.position >= s.size {
+		return 0, io.EOF
+	}
+	if s.body == nil || s.bodyPosition != s.position {
+		_ = s.closeBody()
+		body, err := s.store.OpenRange(s.ctx, s.key, s.position, s.size-s.position)
+		if err != nil {
+			return 0, err
+		}
+		s.body = body
+		s.bodyPosition = s.position
+	}
+	n, err := s.body.Read(p)
+	s.position += int64(n)
+	s.bodyPosition += int64(n)
+	return n, err
 }
 
 func canonicalMediaReference(r *http.Request) (string, bool) {

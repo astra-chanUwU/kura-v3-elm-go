@@ -100,7 +100,7 @@ func TestGeneratedMediaJobFailureStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertJobTextHasNoSecret(t, "public status", string(encoded), key, detail.Hash, root, "original_key", "payload")
-		if public.Action != jobs.ActionOriginalSaved || public.Status != jobs.StatusFailed {
+		if public.Action != jobs.ActionThumbnailFailed || public.Status != jobs.StatusFailed {
 			t.Fatalf("permanent public action=%s status=%s", public.Action, public.Status)
 		}
 		if runDerivativeOnce(t, backend) {

@@ -16,7 +16,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
-import random
 import shutil
 import stat
 import subprocess
@@ -279,15 +278,11 @@ class PostgresSnapshot:
         self._procs = []
         self._logs = []
         self._closed = False
-        self._barrier = _random_lock()
-        self._release = _random_lock()
 
     def open(self):
-        self._releaser = self._spawn("releaser.sql", _releaser_sql(self.work, self._release))
-        self._read_marker(self.work / "releaser-ready.txt", "releaser", self._releaser)
-        self._holder = self._spawn("holder.sql", _holder_sql(self.work, self._barrier, self._release))
-        self._read_marker(self.work / "holder-ready.txt", "holder", self._holder)
-        self._snapshot = self._spawn("snapshot.sql", _snapshot_sql(self.work, self._barrier, self.external_lock))
+        # psql waits for more input while the exported snapshot is open. EOF
+        # releases the transaction even when the Python parent is terminated.
+        self._snapshot = self._spawn("snapshot.sql", _snapshot_sql(self.work, self.external_lock))
         marker = self._read_marker(self.work / "ready.txt", "snapshot", self._snapshot)
         if marker == "busy":
             self.busy = True
@@ -321,25 +316,26 @@ class PostgresSnapshot:
         if self._closed:
             return
         self._closed = True
-        self._terminate_backend(self.work / "releaser-pid.txt")
-        self._stop(getattr(self, "_releaser", None))
-        self._wait(getattr(self, "_holder", None))
-        self._wait(getattr(self, "_snapshot", None))
         for proc in self._procs:
-            self._stop(proc)
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except (OSError, BrokenPipeError):
+                    pass
+            self._wait(proc)
         for handle in self._logs:
             handle.close()
 
     def _spawn(self, name, script):
-        path = self.work / name
-        path.write_text(script, encoding="utf-8", newline="\n")
         log = (self.work / (name + ".err")).open("w", encoding="utf-8")
         self._logs.append(log)
         proc = subprocess.Popen(
-            ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(path)],
-            env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+            ["psql", "-X", "-v", "ON_ERROR_STOP=1"],
+            env=self.env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
         )
         self._procs.append(proc)
+        proc.stdin.write(script.encode("utf-8"))
+        proc.stdin.flush()
         return proc
 
     def _read_marker(self, path, label, proc):
@@ -351,22 +347,6 @@ class PostgresSnapshot:
                 raise ProofError(f"{label} session ended early: {self._stderr(label)}")
             time.sleep(0.05)
         raise ProofError(f"{label} session timed out: {self._stderr(label)}")
-
-    def _terminate_backend(self, pid_path):
-        try:
-            pid = pid_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return
-        if not pid.isdigit():
-            return
-        try:
-            subprocess.run(
-                ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(" + pid + ")"],
-                env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, timeout=10, check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return
 
     def _stderr(self, label):
         path = self.work / f"{label}.sql.err"
@@ -390,7 +370,7 @@ class PostgresSnapshot:
         if proc is None:
             return
         try:
-            proc.wait(timeout=20)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             PostgresSnapshot._stop(proc)
 
@@ -417,7 +397,16 @@ def _pin_media(media_root, expectations):
         if path.is_symlink() or not path.is_file():
             raise ProofError(f"missing referenced media: {key}")
         signature = backup.stat_signature(path.lstat())
-        size, sha = backup.digest_file(path)
+        with _open_media_file(path) as stream:
+            before = backup.stat_signature(os.fstat(stream.fileno()))
+            digest = hashlib.sha256()
+            size = 0
+            for chunk in iter(lambda: stream.read(backup.CHUNK), b""):
+                size += len(chunk)
+                digest.update(chunk)
+            if backup.stat_signature(os.fstat(stream.fileno())) != before or before != signature:
+                raise ProofError("referenced media changed during backup")
+            sha = digest.hexdigest()
         if backup.stat_signature(path.lstat()) != signature:
             raise ProofError("referenced media changed during backup")
         if item.sha256 is not None and sha != item.sha256:
@@ -441,12 +430,29 @@ def _copy_pinned(copier, source, target, size, sha, signature):
     return _copy_handle_stable(source, target, size, sha)
 
 
+def _open_media_file(source):
+    """Open through directory handles so parent links cannot escape the root."""
+    source = Path(source)
+    backup.reject_symlink_ancestors(source, "Referenced media")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    if os.open not in os.supports_dir_fd or not hasattr(os, "O_DIRECTORY"):
+        return os.fdopen(os.open(source, flags), "rb")
+    directory = os.open(source.anchor, flags | os.O_DIRECTORY)
+    try:
+        for part in source.parts[1:-1]:
+            child = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(source.name, flags, dir_fd=directory)
+        return os.fdopen(fd, "rb")
+    finally:
+        os.close(directory)
+
+
 def _copy_handle_stable(source, target, size, sha):
     digest = hashlib.sha256()
     total = 0
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(source, flags)
-    src = os.fdopen(fd, "rb")
+    src = _open_media_file(source)
     try:
         before = os.fstat(src.fileno())
         if not stat.S_ISREG(before.st_mode):
@@ -510,7 +516,9 @@ def _publish(stage, destination, allow_platform_rename):
 
 def _run_tool(args, env, label):
     try:
-        result = subprocess.run(args, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(args, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30 * 60)
+    except subprocess.TimeoutExpired:
+        raise ProofError(f"required tool timed out: {label}")
     except FileNotFoundError:
         raise ProofError(f"required tool is missing: {label}")
     except OSError:
@@ -531,13 +539,6 @@ def _key_path(root, key):
     return root.joinpath(*key.split("/"))
 
 
-def _random_lock():
-    while True:
-        pair = (random.randint(1, 2_000_000_000), random.randint(1, 2_000_000_000))
-        if pair != BACKUP_LOCK_KEYS:
-            return pair
-
-
 def _psql_quote(path):
     return Path(path).as_posix().replace("'", "''")
 
@@ -551,58 +552,21 @@ def _psql_preamble():
     ])
 
 
-def _releaser_sql(work, release):
-    ready = _psql_quote(work / "releaser-ready.txt")
-    return _psql_preamble() + "\n".join([
-        f"SELECT pg_advisory_lock({release[0]}, {release[1]});",
-        f"\\o '{_psql_quote(work / 'releaser-pid.txt')}'",
-        "SELECT pg_backend_pid();",
-        "\\o",
-        f"\\o '{ready}'",
-        "SELECT 'held';",
-        "\\o",
-        "SELECT pg_sleep(3600);",
-        "",
-    ])
-
-
-def _holder_sql(work, barrier, release):
-    ready = _psql_quote(work / "holder-ready.txt")
-    return _psql_preamble() + "\n".join([
-        f"SELECT pg_advisory_lock({barrier[0]}, {barrier[1]});",
-        f"\\o '{ready}'",
-        "SELECT 'held';",
-        "\\o",
-        f"SELECT pg_advisory_lock({release[0]}, {release[1]});",
-        f"SELECT pg_advisory_unlock({barrier[0]}, {barrier[1]});",
-        "",
-    ])
-
-
-def _snapshot_sql(work, barrier, external_lock=False):
+def _snapshot_sql(work, external_lock=False):
     snap = _psql_quote(work / "snapshot.txt")
     refs = _psql_quote(work / "refs.json")
     ready = _psql_quote(work / "ready.txt")
     lock_a, lock_b = BACKUP_LOCK_KEYS
-    if external_lock:
-        return _psql_preamble() + "\n".join([
-            "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;",
-            f"\\o '{snap}'",
-            "SELECT pg_export_snapshot();",
-            "\\o",
-            f"\\o '{refs}'",
-            REFERENCE_SQL + ";",
-            "\\o",
-            f"\\o '{ready}'",
-            "SELECT 'ready';",
-            "\\o",
-            f"SELECT pg_advisory_lock({barrier[0]}, {barrier[1]});",
-            "COMMIT;",
-            "",
-        ])
-    return _psql_preamble() + "\n".join([
-        f"SELECT CASE WHEN pg_try_advisory_lock({lock_a}, {lock_b}) THEN 1 ELSE 0 END AS got_lock \\gset",
-        "\\if :got_lock",
+    statements = [
+        "SET statement_timeout = '30s';",
+        "SET idle_in_transaction_session_timeout = '35min';",
+    ]
+    if not external_lock:
+        statements += [
+            f"SELECT CASE WHEN pg_try_advisory_lock({lock_a}, {lock_b}) THEN 1 ELSE 0 END AS got_lock \\gset",
+            "\\if :got_lock",
+        ]
+    statements += [
         "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;",
         f"\\o '{snap}'",
         "SELECT pg_export_snapshot();",
@@ -613,14 +577,15 @@ def _snapshot_sql(work, barrier, external_lock=False):
         f"\\o '{ready}'",
         "SELECT 'ready';",
         "\\o",
-        f"SELECT pg_advisory_lock({barrier[0]}, {barrier[1]});",
-        "COMMIT;",
-        f"SELECT pg_advisory_unlock({lock_a}, {lock_b});",
-        "\\else",
-        f"\\o '{ready}'",
-        "SELECT 'busy';",
-        "\\o",
-        "\\endif",
-        "",
-    ])
-
+    ]
+    if not external_lock:
+        statements += [
+            "\\else",
+            f"\\o '{ready}'",
+            "SELECT 'busy';",
+            "\\o",
+            "\\endif",
+        ]
+    # No COMMIT here: psql's idle command loop owns the transaction until
+    # close() closes stdin. Unlike pg_sleep, it observes parent pipe closure.
+    return _psql_preamble() + "\n".join(statements) + "\n"

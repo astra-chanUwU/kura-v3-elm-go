@@ -82,7 +82,7 @@ func TestGetJobStatusHidesRawFailure(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &public); err != nil {
 		t.Fatal(err)
 	}
-	if public.Action != jobs.ActionOriginalSaved || public.LastError != "The file could not be read." || public.Attempts != 25 {
+	if public.Action != jobs.ActionThumbnailFailed || public.LastError != "The file could not be read." || public.Attempts != 25 {
 		t.Fatalf("public failure = %#v", public)
 	}
 }

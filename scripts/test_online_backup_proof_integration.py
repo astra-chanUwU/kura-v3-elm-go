@@ -155,6 +155,8 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
 
     def stop_procs(self):
         for proc in self.procs:
+            if proc.stdin is not None:
+                proc.stdin.close()
             if proc.poll() is None:
                 proc.terminate()
                 try:
@@ -288,6 +290,22 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
         self.assertIn(result.publication, {"exclusive-rename", "platform-rename-proof-only"})
         backup.verify_backup(result.output)
 
+    def test_completed_and_failed_attempts_release_database_snapshot_lock(self):
+        database = self.clone("released")
+        media = self.root / "media"
+        media.mkdir()
+        self.seed_original(database, media, "uploads/one.png", png(6))
+        self.run_backup(database, media, self.root / "complete")
+        self.assertEqual(self.psql(database, ["-c", "SELECT pg_try_advisory_lock(87203461,102341)"]), "t")
+        (media / "uploads" / "one.png").unlink()
+        with self.assertRaisesRegex(proof.ProofError, "missing referenced media"):
+            self.run_backup(database, media, self.root / "failed")
+        self.assertEqual(self.psql(database, ["-c", "SELECT pg_try_advisory_lock(87203461,102341)"]), "t")
+        self.assertEqual(self.psql(database, ["-c", (
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+        )]), "0")
+
     def test_concurrent_uploads_and_derivatives_match_one_snapshot(self):
         if shutil.which("go") is None:
             self.fail("Go is required to exercise the running media worker")
@@ -323,6 +341,10 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
 
         worker = threading.Thread(target=keep_uploading)
         worker.start()
+        def stop_uploads():
+            stop.set()
+            worker.join(timeout=15)
+        self.addCleanup(stop_uploads)
         deadline = time.monotonic() + 10
         while not background and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -350,6 +372,12 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
             self.request(base, "POST", "/api/posts/trash", {"post_ids": [published["id"]], "reason": "during snapshot"})
             late = self.upload(base, png(22))
             observed["late_id"] = late["id"]
+            self.wait_ready(base, late["id"])
+            observed["late_worker_variants"] = self.json_query(database, (
+                "SELECT json_agg(object_key) FROM asset_variants "
+                f"WHERE post_id = {int(late['id'])} AND status = 'ready'"
+            ))
+            self.assertTrue(observed["late_worker_variants"], "real derivative worker did not complete during the snapshot")
             observed["uploads_during_open_snapshot"] = len(background)
             self.assertGreater(int(ready_view.document["posts"][0]["id"]), 0)
 
@@ -374,6 +402,7 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
         restored_ids = {str(post["id"]) for post in restored["posts"]}
         self.assertTrue({published["id"], hidden["id"], trashed["id"], ready["id"]} <= restored_ids)
         self.assertNotIn(observed["late_id"], restored_ids)
+        self.assertTrue(set(observed["late_worker_variants"]).isdisjoint(result.keys))
         self.assertNotIn(pending_id, restored_ids)
         by_id = {str(post["id"]): post for post in restored["posts"]}
         self.assertFalse(by_id[published["id"]]["trashed"])
@@ -430,16 +459,17 @@ class OnlineBackupSnapshotDrill(unittest.TestCase):
             f"\\o '{(work / 'ready.txt').as_posix()}'",
             "SELECT 'open';",
             "\\o",
-            "SELECT pg_sleep(3600);",
             "",
-        ]), encoding="utf-8", newline="\n")
+        ]), encoding="utf-8")
         log = (work / "pending.err").open("w", encoding="utf-8")
         self.logs.append(log)
         proc = subprocess.Popen(
-            ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-f", str(script)],
-            env=self.proof_env(database), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+            ["psql", "-X", "-v", "ON_ERROR_STOP=1"],
+            env=self.proof_env(database), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=log,
         )
         self.procs.append(proc)
+        proc.stdin.write(script.read_bytes())
+        proc.stdin.flush()
         deadline = time.monotonic() + 20
         ready = work / "ready.txt"
         while time.monotonic() < deadline:

@@ -73,6 +73,7 @@ type alias Context =
     , credential : Maybe String
     , writesEnabled : Bool
     , accessGeneration : Int
+    , ownerLibrary : String
     , ownerAccount : String
     }
 
@@ -83,6 +84,7 @@ context apiBase credential writesEnabled accessGeneration ownerAccount =
     , credential = credential
     , writesEnabled = writesEnabled
     , accessGeneration = accessGeneration
+    , ownerLibrary = State.canonicalApiBase apiBase
     , ownerAccount = ownerAccount
     }
 
@@ -97,6 +99,7 @@ type alias Model =
     , pickerPending : Bool
     , pickerGeneration : Int
     , restoredGeneration : Maybe Int
+    , ownerLibrary : String
     , ownerAccount : String
     }
 
@@ -136,7 +139,7 @@ type OutMsg
 
 init : Model
 init =
-    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0, restoredGeneration = Nothing, ownerAccount = "" }
+    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0, restoredGeneration = Nothing, ownerLibrary = "", ownerAccount = "" }
 
 
 sync : Context -> Model -> ( Model, Cmd Msg, List OutMsg )
@@ -148,11 +151,11 @@ sync ctx model =
         else
             ( { init | state = State.setOpen model.state.open State.init }, Cmd.none, [] )
 
-    else if model.ownerAccount == ctx.ownerAccount then
+    else if model.ownerLibrary == ctx.ownerLibrary && model.ownerAccount == ctx.ownerAccount then
         ( model, Cmd.none, [] )
 
     else
-        ( { init | ownerAccount = ctx.ownerAccount, state = State.setOpen model.state.open State.init }
+        ( { init | ownerLibrary = ctx.ownerLibrary, ownerAccount = ctx.ownerAccount, state = State.setOpen model.state.open State.init }
         , probeCmd ctx
         , []
         )
@@ -171,7 +174,7 @@ probeCmd ctx =
 encodeOwner : Context -> Encode.Value
 encodeOwner ctx =
     Encode.object
-        [ ( "library", Encode.string ctx.apiBase )
+        [ ( "library", Encode.string ctx.ownerLibrary )
         , ( "account", Encode.string ctx.ownerAccount )
         ]
 
@@ -663,8 +666,13 @@ persistenceEvent ctx value model =
 
 eventForOwner : Context -> Decode.Value -> Bool
 eventForOwner ctx value =
-    Decode.decodeValue (Decode.at [ "owner", "account" ] Decode.string) value
-        == Ok ctx.ownerAccount
+    Decode.decodeValue
+        (Decode.map2 Tuple.pair
+            (Decode.at [ "owner", "library" ] Decode.string)
+            (Decode.at [ "owner", "account" ] Decode.string)
+        )
+        value
+        == Ok ( ctx.ownerLibrary, ctx.ownerAccount )
 
 
 decodeMessage : Decode.Value -> String

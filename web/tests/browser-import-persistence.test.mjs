@@ -255,6 +255,25 @@ test("another account cannot read this account's checkpoint or file names", asyn
   assert.equal((await persistence.load(owner)).checkpoint.entries[0].name, "a.jpg");
 });
 
+test("the same account cannot read another library's saved import", async () => {
+  const { persistence } = setup();
+  const otherLibrary = { library: "https://library-b.example", account: owner.account };
+  await persistence.save(owner, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
+  assert.equal(await persistence.probe(otherLibrary), null);
+  assert.equal(await persistence.load(otherLibrary), null);
+  assert.notEqual(api.ownerKey(owner), api.ownerKey(otherLibrary));
+});
+
+test("library owner keys share Elm canonicalization and support same-origin APIs", async () => {
+  const canonical = { library: "https://example.com/api", account: owner.account };
+  const normalized = { library: " HTTPS://EXAMPLE.COM/api/// ", account: owner.account };
+  assert.equal(api.ownerKey(canonical), api.ownerKey(normalized));
+  assert.equal(api.ownerKey({ library: "", account: owner.account }), api.ownerKey({ library: "   ", account: owner.account }));
+  const { persistence } = setup();
+  await persistence.save({ library: "", account: owner.account }, checkpoint(), [{ id: 0, blob: new Blob(["abc"]) }]);
+  assert.equal((await persistence.load({ library: "", account: owner.account })).checkpoint.checkpointId, 1);
+});
+
 test("an ownerless current record is not adopted until that account claims it", async () => {
   const { db, persistence } = setup();
   const legacy = { schema: 1, checkpoint: checkpoint({ checkpointId: 4 }), blobs: [{ id: 0, blob: new Blob(["abc"]) }] };

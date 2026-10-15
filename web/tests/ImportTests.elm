@@ -3,8 +3,10 @@ module ImportTests exposing (allPassed, suite)
 import Domain.Rating
 import Api.Import as ImportApi
 import Domain.Post as Post
+import Feature.Import as BrowserImport
 import Feature.Import.State as ImportState
 import Json.Decode as Decode
+import Json.Encode as Encode
 
 
 access : ImportState.Access
@@ -1041,6 +1043,59 @@ caseReplaceSavedNeedsConfirm =
         && confirmed.durableEnabled
 
 
+probeEvent : String -> Encode.Value
+probeEvent library =
+    Encode.object
+        [ ( "kind", Encode.string "probe" )
+        , ( "found", Encode.bool False )
+        , ( "legacy", Encode.bool True )
+        , ( "owner", Encode.object [ ( "library", Encode.string library ), ( "account", Encode.string "same-user" ) ] )
+        , ( "summary"
+          , Encode.object
+                [ ( "checkpointId", Encode.int 7 )
+                , ( "fileCount", Encode.int 1 )
+                , ( "totalBytes", Encode.int 10 )
+                , ( "apiBase", Encode.string "https://library-a.example" )
+                , ( "started", Encode.bool False )
+                , ( "generation", Encode.int 4 )
+                ]
+          )
+        ]
+
+
+casePersistenceEventRequiresLibraryAndAccount =
+    let
+        context =
+            BrowserImport.context "https://library-b.example/" Nothing False 1 "same-user"
+
+        ( model, _, _ ) =
+            BrowserImport.update context (BrowserImport.PersistenceEvent (probeEvent "https://library-a.example")) BrowserImport.init
+    in
+    model.state.savedSummary == Nothing
+        && model.ownerLibrary == "https://library-b.example"
+        && model.ownerAccount == "same-user"
+
+
+caseSameAccountLibrarySwitchResetsImport =
+    let
+        firstContext =
+            BrowserImport.context "https://library-a.example" Nothing False 1 "same-user"
+
+        ( firstOwner, _, _ ) =
+            BrowserImport.update firstContext (BrowserImport.PersistenceEvent (probeEvent "https://library-a.example")) BrowserImport.init
+
+        secondContext =
+            BrowserImport.context "https://library-b.example" Nothing False 2 "same-user"
+
+        ( switched, _, _ ) =
+            BrowserImport.sync secondContext firstOwner
+    in
+    firstOwner.state.savedSummary /= Nothing
+        && switched.state.savedSummary == Nothing
+        && switched.ownerLibrary == secondContext.ownerLibrary
+        && switched.ownerAccount == "same-user"
+
+
 allPassed : Bool
 allPassed =
     List.all Tuple.second suite
@@ -1099,4 +1154,6 @@ suite =
     , ( "import restore of hashing checkpoint resumes as pending hash", caseRestoreHashingResumesAsPending )
     , ( "import replacing a different saved import needs explicit confirm", caseReplaceSavedNeedsConfirm )
     , ( "import ownerless checkpoint is not restored until an explicit keep", caseLegacyProbeDoesNotRestore )
+    , ( "import persistence response must match library and account", casePersistenceEventRequiresLibraryAndAccount )
+    , ( "import switching libraries resets same-account checkpoint state", caseSameAccountLibrarySwitchResetsImport )
     ]

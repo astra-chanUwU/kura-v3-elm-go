@@ -29,6 +29,7 @@ web-test: web-import-check
 	cd web && elm make tests/TestRunner.elm --output=dist/elm-tests.js
 	cd web && node tests/run.mjs
 	cd web && node --test tests/browser-import-persistence.test.mjs
+	cd web && node --test tests/narrow-keyboard.test.mjs
 
 web-serve:
 	go -C server run ./cmd/kura-web

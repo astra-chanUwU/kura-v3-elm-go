@@ -164,7 +164,7 @@ func TestGeneratedMediaJobFailures(t *testing.T) {
 		body := getJobBody(t, router, detail.DerivativeJobID)
 		assertNoSecret(t, "public status", body, key, detail.Hash, root, "original_key", "payload")
 		public := decodePublic(t, body)
-		if public.Action != jobs.ActionOriginalSaved || public.LastError != "The file could not be read." || public.Status != jobs.StatusFailed {
+		if public.Action != jobs.ActionThumbnailFailed || public.LastError != "The file could not be read." || public.Status != jobs.StatusFailed {
 			t.Fatalf("permanent public action=%s status=%s", public.Action, public.Status)
 		}
 		if runDerivative(t, backend) {
