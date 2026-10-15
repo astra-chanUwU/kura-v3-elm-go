@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -88,7 +89,7 @@ func TestPrivateReadsExplicitFalseNeedsNoToken(t *testing.T) {
 		if value != "" {
 			env["KURA_PRIVATE_READS"] = value
 		}
-		c, err := newAPIClient(srv.URL, func(k string) string { return env[k] })
+		c, err := newAPIClient(context.Background(), srv.URL, "", func(k string) string { return env[k] })
 		if err != nil {
 			srv.Close()
 			t.Fatalf("value %q unexpected error: %v", value, err)
@@ -107,7 +108,7 @@ func TestPrivateReadsExplicitFalseNeedsNoToken(t *testing.T) {
 
 func TestPrivateReadsVariantsOptInWithToken(t *testing.T) {
 	for _, value := range []string{"true", "1", "TRUE", "True"} {
-		c, err := newAPIClient("http://localhost:8080", func(k string) string {
+		c, err := newAPIClient(context.Background(), "http://localhost:8080", "", func(k string) string {
 			switch k {
 			case "KURA_API_TOKEN":
 				return "supplied-token"
@@ -125,7 +126,7 @@ func TestPrivateReadsVariantsOptInWithToken(t *testing.T) {
 func TestCustomGetenvCannotLeakAmbientPrivateReads(t *testing.T) {
 	t.Setenv("KURA_API_TOKEN", "ambient-token-must-not-be-used")
 	t.Setenv("KURA_PRIVATE_READS", "true")
-	c, err := newAPIClient("http://localhost:8080", func(string) string { return "" })
+	c, err := newAPIClient(context.Background(), "http://localhost:8080", "", func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}

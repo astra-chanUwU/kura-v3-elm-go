@@ -82,7 +82,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer, get
 		fmt.Fprintln(stderr, "error: flag --output is required")
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -136,7 +136,7 @@ func runCollectionExport(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintln(stderr, "error: flag --output is required")
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

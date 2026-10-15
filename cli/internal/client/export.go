@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // maxExportZipBytes caps a downloaded export archive (256 MiB).
@@ -75,7 +74,11 @@ func (c *Client) ExportCollection(ctx context.Context, collectionID string, vers
 	return c.downloadExport(ctx, path, query, output)
 }
 
-func (c *Client) downloadExport(ctx context.Context, path string, query url.Values, output string) (ExportResult, error) {
+func (c *Client) downloadExport(ctx context.Context, path string, query url.Values, output string) (result ExportResult, err error) {
+	defer func() { err = c.scrub(err) }()
+	if err = c.prepareAuth(); err != nil {
+		return ExportResult{}, err
+	}
 	if strings.TrimSpace(output) == "" {
 		return ExportResult{}, fmt.Errorf("output path is required")
 	}
@@ -122,14 +125,10 @@ func (c *Client) downloadExport(ctx context.Context, path string, query url.Valu
 	}
 	req.Header.Set("Accept", "application/zip")
 	c.authorizeWithProtected(req, false)
-	transport := http.Client{Timeout: 10 * time.Second}
-	if c.HTTPClient != nil {
-		transport = *c.HTTPClient
+	if err = missingSessionOrigin(req); err != nil {
+		return ExportResult{}, err
 	}
-	if transport.Timeout <= 0 {
-		transport.Timeout = 10 * time.Second
-	}
-	transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	transport := c.httpTransport()
 	resp, err := transport.Do(req)
 	if err != nil {
 		return ExportResult{}, fmt.Errorf("request failed: %w", err)
@@ -144,9 +143,8 @@ func (c *Client) downloadExport(ctx context.Context, path string, query url.Valu
 		if json.Unmarshal(data, &message) != nil || message.Error == "" {
 			message.Error = http.StatusText(resp.StatusCode) + " (unexpected API response; check --api-url)"
 		}
-		if token := strings.TrimSpace(c.APIToken); token != "" {
-			message.Error = strings.ReplaceAll(message.Error, token, "[redacted]")
-		}
+		message.Error = c.redact(message.Error)
+		message.Code = c.redact(message.Code)
 		return ExportResult{}, &APIError{Status: resp.StatusCode, Code: message.Code, Message: strings.Join(strings.Fields(message.Error), " ")}
 	}
 	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))

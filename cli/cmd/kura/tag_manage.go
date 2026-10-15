@@ -69,7 +69,7 @@ func runTagList(ctx context.Context, args []string, cfg tagManageConfig, stdout,
 		fmt.Fprintln(stderr, "error: flag --cursor requires a non-empty value")
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -134,7 +134,7 @@ func runTagMutation(ctx context.Context, mode string, args []string, cfg tagMana
 			return 1
 		}
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

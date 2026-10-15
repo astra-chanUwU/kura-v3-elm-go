@@ -21,6 +21,15 @@ type Client struct {
 	// Configure it explicitly at the command layer; New never reads ambient
 	// environment for it to avoid surprising credential sends.
 	PrivateReads bool
+	// SessionCookieName and SessionCookieValue are a role-limited account
+	// session from CLI login (the same HttpOnly cookie the browser uses).
+	// They are sent only when APIToken is empty: a deployment token always
+	// takes precedence and is never combined with the account cookie.
+	SessionCookieName  string
+	SessionCookieValue string
+	// Origin is the exact Origin header for cookie-authenticated writes.
+	// Empty derives it from BaseURL. Deployment-token requests do not send it.
+	Origin string
 }
 
 // New creates a client with a default 10s timeout. BaseURL is trimmed of
@@ -52,15 +61,32 @@ func (c *Client) authorize(req *http.Request) {
 // validated configured API base, never to an external image URL.
 func (c *Client) authorizeWithProtected(req *http.Request, protectedRead bool) {
 	token := strings.TrimSpace(c.APIToken)
-	if token == "" {
+	if token != "" {
+		// Deployment token wins over any logged-in account session.
+		if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+			if !protectedRead && !c.PrivateReads {
+				return
+			}
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		return
 	}
-	if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
-		if !protectedRead && !c.PrivateReads {
-			return
-		}
+	name := strings.TrimSpace(c.SessionCookieName)
+	value := strings.TrimSpace(c.SessionCookieValue)
+	if !ValidSessionCookie(name, value) {
+		return
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(&http.Cookie{Name: name, Value: value})
+	if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+		return
+	}
+	origin := strings.TrimSpace(c.Origin)
+	if origin == "" && req.URL != nil && req.URL.Scheme != "" && req.URL.Host != "" {
+		origin = req.URL.Scheme + "://" + req.URL.Host
+	}
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
 }
 
 // Search executes GET /api/posts?q=query with URL encoding and a request

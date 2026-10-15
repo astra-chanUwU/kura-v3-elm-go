@@ -49,7 +49,7 @@ func runPostRating(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fmt.Fprintln(stderr, "error: --version must be an integer between 0 and 2147483647")
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

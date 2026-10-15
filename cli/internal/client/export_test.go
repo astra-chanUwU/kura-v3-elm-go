@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,8 +73,15 @@ func TestExportPostsSuccessAndCollectionQuery(t *testing.T) {
 		t.Fatalf("file err=%v equal=%v", err, bytes.Equal(data, archive))
 	}
 	info, _ := os.Stat(out)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("perm %o", info.Mode().Perm())
+	// Windows reports every writable file as 0666; chmod 0600 only clears the
+	// read-only attribute there. Unix keeps the restrictive mode.
+	perm := info.Mode().Perm()
+	if runtime.GOOS == "windows" {
+		if perm&0o200 == 0 {
+			t.Fatalf("perm %o", perm)
+		}
+	} else if perm != 0o600 {
+		t.Fatalf("perm %o", perm)
 	}
 	if names := dirNames(t, dir); len(names) != 1 {
 		t.Fatalf("leftover %v", names)

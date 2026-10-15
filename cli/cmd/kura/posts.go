@@ -108,7 +108,7 @@ func runPostShow(ctx context.Context, args []string, stdout, stderr io.Writer, g
 	if !cfg.checkExclusive(stderr) {
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

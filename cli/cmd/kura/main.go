@@ -13,19 +13,23 @@ const defaultAPIURL = "http://localhost:8080"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Getenv)
+	code := runContext(ctx, os.Args[1:], os.Stdout, os.Stderr, os.Stdin, withDefaultSessionFile(os.Getenv))
 	stop()
 	os.Exit(code)
 }
 
 func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	return runContext(context.Background(), args, stdout, stderr, getenv)
+	return runContext(context.Background(), args, stdout, stderr, os.Stdin, getenv)
 }
 
-func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+func runWithInput(args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(string) string) int {
+	return runContext(context.Background(), args, stdout, stderr, stdin, getenv)
+}
+
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(string) string) int {
 	out := &checkedWriter{writer: stdout}
 	diagnostics := &checkedWriter{writer: stderr}
-	code := dispatch(ctx, args, out, diagnostics, getenv)
+	code := dispatch(ctx, args, out, diagnostics, stdin, getenv)
 	if out.err != nil {
 		if diagnostics.written == 0 {
 			fmt.Fprintf(stderr, "error: write output: %v\n", out.err)
@@ -38,7 +42,7 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer, ge
 	return code
 }
 
-func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
+func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer, stdin io.Reader, getenv func(string) string) int {
 	if len(args) == 0 {
 		fmt.Fprint(stdout, rootHelp)
 		return 0
@@ -47,6 +51,10 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer, gete
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, rootHelp)
 		return 0
+	case "login":
+		return runLogin(ctx, args[1:], stdout, stderr, stdin, getenv)
+	case "logout":
+		return runLogout(ctx, args[1:], stdout, stderr, getenv)
 	case "search":
 		return runSearch(ctx, args[1:], stdout, stderr, getenv)
 	case "collection":

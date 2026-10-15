@@ -42,7 +42,7 @@ func runSearch(ctx context.Context, args []string, stdout, stderr io.Writer, get
 		return 1
 	}
 
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
