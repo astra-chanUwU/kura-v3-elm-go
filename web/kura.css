@@ -307,7 +307,7 @@ button.chip:hover { border-color: var(--accent); }
   opacity: 0;
   transition: opacity .1s;
 }
-.cell:hover .cell-check, .cell:focus-visible .cell-check { opacity: 1; }
+.cell.is-active .cell-check, .cell:hover .cell-check, .cell:focus-visible .cell-check { opacity: 1; }
 .cell.is-selected .cell-check { opacity: 1; border-color: var(--accent); background: var(--accent); color: #fff; }
 
 .cell-badge {
@@ -893,6 +893,12 @@ details[open] > summary::after { transform: rotate(90deg); }
 .recovery-guide { border-top: 1px solid var(--rule); padding-top: var(--space-2); }
 .recovery-guide code { display: block; overflow-wrap: anywhere; padding: 8px; background: var(--cell); }
 .recovery-status, .recovery-note, .recovery-receipt { color: var(--ink-muted); }
+
+/* narrow-keyboard */
+@media (max-width: 759px) {
+  .recovery-heading, .recovery-row, .recovery-actions, .moderation-row, .upload-item-actions { flex-wrap: wrap; align-items: flex-start; }
+  .recovery-actions .button, .recovery-row .button, .moderation-actions .button { min-height: 32px; }
+}
 
 /* Visual near-copy similarity review */
 .similarity-view { max-height: min(360px, 45vh); margin: 0; padding: 12px 0; overflow-y: auto; }
