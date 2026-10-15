@@ -44,7 +44,7 @@ db-setup: db-migrate db-seed
 build: server-build web-build
 
 script-check:
-	PYTHONPATH=scripts python3 -m unittest test_library_backup test_import_test_media test_import_media test_library_performance
+	PYTHONPATH=scripts python3 -m unittest test_library_backup test_import_test_media test_import_media test_library_performance test_library_perf_100k
 
 # This creates unique disposable databases on the explicitly supplied local
 # PostgreSQL instance; it never uses the development library database.
