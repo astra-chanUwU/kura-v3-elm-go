@@ -265,4 +265,3 @@ httpStatus error =
 
         Http.BadBody _ ->
             "response"
-

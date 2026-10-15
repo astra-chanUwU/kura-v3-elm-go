@@ -805,5 +805,3 @@ boolText value =
 
     else
         "false"
-
-
