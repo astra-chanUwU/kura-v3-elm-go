@@ -894,9 +894,16 @@ details[open] > summary::after { transform: rotate(90deg); }
 .recovery-guide code { display: block; overflow-wrap: anywhere; padding: 8px; background: var(--cell); }
 .recovery-status, .recovery-note, .recovery-receipt { color: var(--ink-muted); }
 
+.health-view { margin: 0; padding: 12px 0; }
+.health-heading, .health-row, .health-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.health-content, .health-counts { display: grid; gap: var(--space-2); max-width: 900px; }
+.health-counts, .health-list { list-style: none; padding: 0; margin: 0; }
+.health-status { color: var(--ink-muted); }
+
 /* narrow-keyboard */
 @media (max-width: 759px) {
   .recovery-heading, .recovery-row, .recovery-actions, .moderation-row, .upload-item-actions { flex-wrap: wrap; align-items: flex-start; }
+  .health-heading, .health-row, .health-actions { flex-wrap: wrap; align-items: flex-start; }
   .recovery-actions .button, .recovery-row .button, .moderation-actions .button { min-height: 32px; }
 }
 

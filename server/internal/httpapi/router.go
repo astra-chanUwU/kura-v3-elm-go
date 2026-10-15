@@ -103,6 +103,12 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Get("/recovery/backups/{id}", RecoveryJob(deps.Recovery))
 		api.Delete("/recovery/backups/{id}", RecoveryCancel(deps.Recovery))
 		api.Post("/recovery/backups/{id}/verify", RecoveryVerify(deps.Recovery))
+		api.Get("/health/library", LibraryHealthSummary(deps.LibraryHealth))
+		api.Get("/health/library/scan", LibraryHealthScan(deps.LibraryHealth))
+		api.Post("/health/library/scan", LibraryHealthStartScan(deps.LibraryHealth))
+		api.Delete("/health/library/scan", LibraryHealthCancelScan(deps.LibraryHealth))
+		api.Get("/health/library/thumbnails", LibraryHealthThumbnails(deps.LibraryHealth))
+		api.Post("/health/library/repairs", LibraryHealthRepair(deps.LibraryHealth))
 
 		// Post browsing (posts.go), edits (tags.go, reactions.go), and
 		// moderation (moderation.go). Static paths precede the id routes.

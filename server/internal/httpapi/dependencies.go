@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	libhealth "github.com/astra-chanUwU/kura-v3-elm-go/server/internal/health"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
@@ -44,8 +45,9 @@ type Dependencies struct {
 	SimilarityIndex posts.SimilarityIndexer
 	// Accounts is optional: nil preserves legacy token/open behavior with
 	// no session endpoints. When set, PrivateMode is honored by the router.
-	Accounts *AccountsConfig
-	Recovery *recovery.Service
+	Accounts      *AccountsConfig
+	Recovery      *recovery.Service
+	LibraryHealth *libhealth.Service
 }
 
 // legacyDependencies preserves the historical Searcher-based constructors.

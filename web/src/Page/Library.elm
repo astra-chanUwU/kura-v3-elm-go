@@ -29,6 +29,7 @@ import Feature.Inspector
 import Feature.BulkMetadata as BulkMetadata
 import Feature.Duplicates as Duplicates
 import Feature.Moderation as Moderation
+import Feature.Health as Health
 import Feature.Recovery as Recovery
 import Feature.Session as Session
 import Feature.Similarity as Similarity
@@ -141,6 +142,7 @@ type alias Model =
     , session : Session.Model
     , similarity : Similarity.Model
     , recovery : Recovery.Model
+    , health : Health.Model
     , similarityTrash : Maybe ( String, List String, Int )
     , similarityCompare : Maybe ( String, String )
     , uploadedPosts : Dict String PostSummary
@@ -239,6 +241,7 @@ init flagsValue url key =
             , session = sessionModel
             , similarity = Similarity.init
             , recovery = Recovery.init
+            , health = Health.init
             , similarityTrash = Nothing
             , similarityCompare = Nothing
             , uploadedPosts = Dict.empty
@@ -358,6 +361,7 @@ type Msg
     | SessionMsg Session.Msg
     | SimilarityMsg Similarity.Msg
     | RecoveryMsg Recovery.Msg
+    | HealthMsg Health.Msg
     | SimilarityCompareMeasured String String (Result Dom.Error Dom.Viewport)
     | DuplicatesMsg Duplicates.Msg
     | DuplicateCompareMeasured String String String (Result Dom.Error Dom.Viewport)
@@ -675,6 +679,9 @@ updateHelp msg model =
 
         RecoveryMsg subMsg ->
             delegateRecovery subMsg model
+
+        HealthMsg subMsg ->
+            delegateHealth subMsg model
 
         SimilarityCompareMeasured anchorId candidateId result ->
             handleSimilarityCompareMeasured anchorId candidateId result model
@@ -1556,6 +1563,7 @@ runCommand command model =
                     , duplicates = Duplicates.isOpen model.duplicates
                     , similarity = Similarity.isOpen model.similarity
                     , moderation = Moderation.isOpen model.moderation
+                    , health = Health.isOpen model.health
                     , recovery = Recovery.isOpen model.recovery
                     , drawers = drawersOpen model
                     , grid = model.mode == Grid
@@ -1575,6 +1583,9 @@ runCommand command model =
 
                 PanelEscape.CloseModeration ->
                     delegateModeration Moderation.CloseRequested model
+
+                PanelEscape.CloseHealth ->
+                    delegateHealth Health.CloseRequested model
 
                 PanelEscape.CloseRecovery ->
                     delegateRecovery Recovery.CloseRequested model
@@ -2450,6 +2461,7 @@ accessRevokedNow model =
                 , moderation = Moderation.locked model.moderation
                 , similarity = Similarity.locked model.similarity
                 , recovery = Recovery.locked model.recovery
+                , health = Health.locked model.health
                 , browserImport = BrowserImport.init
                 , similarityTrash = Nothing
                 , similarityCompare = Nothing
@@ -2650,6 +2662,25 @@ delegateRecovery subMsg model =
                     accessRevokedNow current |> withCmd commands
     in
     List.foldl apply ( { model | recovery = recovery }, Cmd.map RecoveryMsg cmd ) outs
+
+
+healthContext : Model -> Health.Context
+healthContext model =
+    Health.context model.apiBase (App.Access.credential model.access) (isAdminEffective model) model.access.generation
+
+
+delegateHealth : Health.Msg -> Model -> ( Model, Cmd Msg )
+delegateHealth subMsg model =
+    let
+        ( health, cmd, outs ) =
+            Health.update (healthContext model) subMsg model.health
+
+        apply out ( current, commands ) =
+            case out of
+                Health.AccessRevoked ->
+                    accessRevokedNow current |> withCmd commands
+    in
+    List.foldl apply ( { model | health = health }, Cmd.map HealthMsg cmd ) outs
 
 
 moderationContext : Model -> Moderation.Context
@@ -4071,6 +4102,7 @@ lockNow model hint =
             , moderation = Moderation.locked model.moderation
             , similarity = Similarity.locked model.similarity
             , recovery = Recovery.locked model.recovery
+            , health = Health.locked model.health
             , browserImport = BrowserImport.init
             , similarityTrash = Nothing
             , similarityCompare = Nothing
@@ -4110,6 +4142,7 @@ revokeAccess model =
                 , moderation = Moderation.locked model.moderation
                 , similarity = Similarity.locked model.similarity
                 , recovery = Recovery.locked model.recovery
+                , health = Health.locked model.health
                 , browserImport = BrowserImport.init
                 , similarityTrash = Nothing
                 , similarityCompare = Nothing
@@ -5109,7 +5142,9 @@ libraryTools model =
                     []
                )
             ++ (if isAdminEffective model then
-                    [ Html.map RecoveryMsg (Recovery.view model.recovery) ]
+                    [ Html.map RecoveryMsg (Recovery.view model.recovery)
+                    , Html.map HealthMsg (Health.view model.health)
+                    ]
 
                 else
                     []

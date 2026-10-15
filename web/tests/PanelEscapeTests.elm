@@ -10,6 +10,7 @@ closed =
     , duplicates = False
     , similarity = False
     , moderation = False
+    , health = False
     , recovery = False
     , drawers = False
     , grid = True
@@ -23,6 +24,9 @@ suite =
       )
     , ( "escape closes recovery before a covering drawer"
       , Escape.next { closed | recovery = True, drawers = True } == Escape.CloseRecovery
+      )
+    , ( "escape closes library health before recovery"
+      , Escape.next { closed | health = True, recovery = True } == Escape.CloseHealth
       )
     , ( "escape closes the upload queue before moderation"
       , Escape.next { closed | upload = True, moderation = True } == Escape.CloseUpload

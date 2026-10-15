@@ -210,6 +210,28 @@ func EnqueueOrResetFailedInTx(ctx context.Context, tx pgx.Tx, request EnqueueReq
 	return job, nil
 }
 
+// EnqueueOrResetFailed is the pool wrapper for an explicit repair. It uses
+// the same idempotency key and failed-row reset as EnqueueOrResetFailedInTx,
+// so a second request cannot create a second job.
+func (s *Store) EnqueueOrResetFailed(ctx context.Context, request EnqueueRequest) (Job, error) {
+	if s == nil || s.pool == nil {
+		return Job{}, ErrUnavailable
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Job{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	job, err := EnqueueOrResetFailedInTx(ctx, tx, request)
+	if err != nil {
+		return Job{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Job{}, err
+	}
+	return job, nil
+}
+
 // RecoverExpiredLeases requeues crashed running rows and reports how many
 // were recovered. Callers run it once at startup before workers claim, so
 // interrupted work resumes instead of stalling on a dead lease. It

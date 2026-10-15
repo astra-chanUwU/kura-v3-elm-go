@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/health"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/httpapi"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
@@ -115,6 +116,7 @@ func main() {
 				SimilarityIndex:     pgBackend,
 				Accounts:            &accountsCfg,
 				Recovery:            dependencies.Recovery,
+				LibraryHealth:       libraryHealth(pgBackend, dependencies.Recovery),
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store
@@ -214,6 +216,18 @@ func main() {
 	if workerErr != nil {
 		os.Exit(1)
 	}
+}
+
+func libraryHealth(backend *posts.PostgresBackend, backups *recovery.Service) *health.Service {
+	mode := health.MediaLocal
+	var present health.Presence
+	switch store := backend.MediaStore().(type) {
+	case *media.S3Store:
+		mode = health.MediaS3
+	case *media.LocalStore:
+		present = health.LocalFiles{Root: store.Root}
+	}
+	return health.New(backend, present, health.JobRepair{Store: backend.JobsStore()}, backups, mode)
 }
 
 // strictBoolEnv parses an opt-in boolean env var; any non-empty value that
