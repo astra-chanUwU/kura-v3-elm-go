@@ -9,6 +9,7 @@ Usage:
   kura collection --help
   kura post --help
   kura tag --help
+  kura import --help
   kura login --help
   kura logout --help
 
@@ -18,6 +19,7 @@ Commands:
   post      Show post detail and mutate tags, favorites, scores, and content ratings
   export    Export posts as a ZIP archive file
   tag       List and manage global tags
+  import    Preview or import one watched folder; uploading requires --apply
   login     Sign in as a named account (password from the terminal or stdin)
   logout    Revoke the logged-in account session
 
