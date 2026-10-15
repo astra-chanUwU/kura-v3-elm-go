@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -119,50 +118,37 @@ func stageUpload(request UploadRequest) (*stagedUpload, error) {
 		return nil, fmt.Errorf("%w: image must be between 1 byte and 25 MiB", ErrInvalidUpload)
 	}
 
-	imageFile, err := os.Open(tempPath)
+	// Server-verified inspection decides type/dimensions, never the
+	// supplied name or MIME. JPEG/PNG/GIF/static WebP use Go decoders
+	// and need no ffmpeg; static AVIF, animated WebP and bounded
+	// MP4(H.264/AAC)/WebM(VP8/VP9 + Opus/Vorbis) go through ffprobe
+	// when installed and fail with a clear ffmpeg-named error when it
+	// is not. Animated AVIF stays deliberately unsupported. The bytes
+	// are already bounded by the 25 MiB copy above; inspection adds
+	// dimension/duration/codec caps and never decodes unboundedly.
+	data, err := os.ReadFile(tempPath)
 	if err != nil {
 		_ = os.Remove(tempPath)
 		return nil, err
 	}
-	config, format, err := image.DecodeConfig(imageFile)
-	closeErr := imageFile.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil || config.Width <= 0 || config.Height <= 0 {
+	if int64(len(data)) != written {
 		_ = os.Remove(tempPath)
 		return nil, fmt.Errorf("%w: file is not a supported image", ErrInvalidUpload)
 	}
-	mediaType, extension, ok := uploadFormat(format)
-	if !ok {
+	desc, err := media.InspectExtended(context.Background(), data)
+	if err != nil {
 		_ = os.Remove(tempPath)
-		return nil, fmt.Errorf("%w: format %q is not supported", ErrInvalidUpload, format)
+		if errors.Is(err, media.ErrExtendedAnimatedAVIF) {
+			return nil, fmt.Errorf("%w: animated AVIF is not supported", ErrInvalidUpload)
+		}
+		return nil, fmt.Errorf("%w: file is not a supported image: %v", ErrInvalidUpload, err)
 	}
-	if format == "webp" {
-		data, err := os.ReadFile(tempPath)
-		if err != nil {
-			_ = os.Remove(tempPath)
-			return nil, err
-		}
-		if int64(len(data)) != written {
-			_ = os.Remove(tempPath)
-			return nil, fmt.Errorf("%w: file is not a supported image", ErrInvalidUpload)
-		}
-		webpConfig, err := media.ValidateStaticWebP(data)
-		if err != nil {
-			_ = os.Remove(tempPath)
-			if errors.Is(err, media.ErrAnimatedWebP) {
-				return nil, fmt.Errorf("%w: animated WebP is not supported", ErrInvalidUpload)
-			}
-			return nil, fmt.Errorf("%w: file is not a supported image", ErrInvalidUpload)
-		}
-		config = webpConfig
-	}
+	mediaType, extension := desc.MediaType, strings.TrimPrefix(desc.Extension, ".")
 
 	digest := hex.EncodeToString(hasher.Sum(nil))
 	searchText := strings.Join(append(append([]string{}, tags...), source, artist), " ")
 	keepTemp = true
-	return &stagedUpload{tempPath: tempPath, filename: filename, digest: digest, mediaType: mediaType, extension: extension, width: config.Width, height: config.Height, fileSize: written, tags: tags, source: source, artist: artist, search: searchText}, nil
+	return &stagedUpload{tempPath: tempPath, filename: filename, digest: digest, mediaType: mediaType, extension: extension, width: desc.Width, height: desc.Height, fileSize: written, tags: tags, source: source, artist: artist, search: searchText}, nil
 }
 
 type persistedUpload struct {
@@ -269,6 +255,20 @@ func (s *PostgresBackend) insertStagedUpload(ctx context.Context, tx pgx.Tx, sta
 	}
 	if _, err := jobs.EnqueueInTx(ctx, tx, derivativeRequest); err != nil {
 		return "", err
+	}
+	// The similarity fingerprint rides the same transaction so a post and
+	// its index job commit atomically. The binding hash is the immutable
+	// content hash just stored, keeping stale fingerprints unmatchable.
+	// Video is excluded: dhash-v1 covers images (first frame for animated
+	// images) only, so no fingerprint job is created for video posts.
+	if !strings.HasPrefix(staged.mediaType, "video/") {
+		fingerprintRequest, err := media.EnqueueFingerprint(id, object.key, "sha256:"+staged.digest)
+		if err != nil {
+			return "", err
+		}
+		if _, err := jobs.EnqueueInTx(ctx, tx, fingerprintRequest); err != nil {
+			return "", err
+		}
 	}
 	return id, nil
 }

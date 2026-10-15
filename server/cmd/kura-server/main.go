@@ -8,16 +8,20 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/httpapi"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
 
 func main() {
@@ -29,7 +33,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	apiToken := os.Getenv("KURA_API_TOKEN")
+	privateMode := strictBoolEnv("KURA_PRIVATE_LIBRARY")
+	allowHTTPLocal := strictBoolEnv("KURA_AUTH_ALLOW_HTTP_LOCAL")
+	trustedOrigin := validTrustedOrigin(os.Getenv("KURA_AUTH_TRUSTED_ORIGIN"))
+	if privateMode {
+		if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
+			log.Fatalf("KURA_PRIVATE_LIBRARY requires DATABASE_URL: private mode fails closed without an account database")
+		}
+		if _, ok := media.S3ConfigFromEnv(); ok {
+			log.Fatalf("KURA_PRIVATE_LIBRARY is incompatible with the S3 media provider: direct external media URLs bypass authentication; use local media storage or disable private mode")
+		}
+	}
+
 	var dependencies httpapi.Dependencies
+	dependencies.Recovery = recovery.NewFromEnv()
 	var closeBackend func()
 	var worker *jobs.Worker
 	workerDone := make(chan error, 1)
@@ -37,8 +55,32 @@ func main() {
 	if databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); databaseURL != "" {
 		pgBackend, err := posts.NewPostgresBackend(ctx, databaseURL)
 		if err != nil {
+			if privateMode {
+				log.Fatalf("postgres backend unavailable in private mode: %v", err)
+			}
 			log.Printf("postgres backend unavailable: %v", err)
 		} else {
+			if privateMode {
+				if err := pgBackend.Ping(ctx); err != nil {
+					log.Fatalf("postgres backend unavailable in private mode: %v", err)
+				}
+				if pgBackend.UsesExternalMediaProvider() {
+					log.Fatalf("KURA_PRIVATE_LIBRARY is incompatible with the S3 media provider: direct external media URLs bypass authentication; use local media storage or disable private mode")
+				}
+				external, err := pgBackend.HasExternalMediaURLs(ctx)
+				if err != nil {
+					log.Fatalf("private mode media check failed: %v", err)
+				}
+				if external {
+					log.Fatalf("KURA_PRIVATE_LIBRARY refuses persisted external media URLs: direct external URLs bypass authentication; migrate media to local /media storage or disable private mode")
+				}
+			}
+			accountsCfg := httpapi.NewAccountsConfig(auth.NewService(pgBackend.AccountStore()))
+			accountsCfg.PrivateMode = privateMode
+			accountsCfg.DeploymentToken = strings.TrimSpace(apiToken)
+			accountsCfg.AllowHTTPLocal = allowHTTPLocal
+			accountsCfg.TrustedOrigin = trustedOrigin
+			accountsCfg.SecureCookies = true
 			dependencies = httpapi.Dependencies{
 				Posts:               pgBackend,
 				PostDetails:         pgBackend,
@@ -62,9 +104,14 @@ func main() {
 				Exports:             pgBackend,
 				Moderation:          pgBackend,
 				ModerationRead:      pgBackend,
+				ModerationPreview:   pgBackend,
 				Jobs:                pgBackend,
 				MediaVisibility:     pgBackend,
 				Duplicates:          pgBackend,
+				Similarity:          pgBackend,
+				SimilarityIndex:     pgBackend,
+				Accounts:            &accountsCfg,
+				Recovery:            recovery.NewFromEnv(),
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store
@@ -77,9 +124,9 @@ func main() {
 			}
 			configured, err := jobs.NewWorker(jobs.WorkerConfig{
 				Store:    pgBackend.JobsStore(),
-				Handler:  pgBackend.NewDerivativeProcessor().Handle,
+				Handler:  pgBackend.HandleMediaJob,
 				LockedBy: derivativeWorkerID(),
-				Kinds:    []string{media.KindDerivative},
+				Kinds:    []string{media.KindDerivative, media.KindFingerprint},
 			})
 			if err != nil {
 				log.Printf("derivative worker unavailable: %v", err)
@@ -92,11 +139,14 @@ func main() {
 			}
 		}
 	}
+	if privateMode && (dependencies.Accounts == nil || dependencies.Accounts.Service == nil) {
+		log.Fatalf("KURA_PRIVATE_LIBRARY requires an account service: private mode fails closed without it")
+	}
 	if closeBackend != nil {
 		defer closeBackend()
 	}
 
-	server := &http.Server{Addr: addr, Handler: httpapi.NewRouterWithDependencies(os.Getenv("KURA_API_TOKEN"), dependencies)}
+	server := &http.Server{Addr: addr, Handler: httpapi.NewRouterWithDependencies(apiToken, dependencies)}
 	go func() {
 		log.Printf("kura-server listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -144,6 +194,35 @@ func main() {
 	if workerErr != nil {
 		os.Exit(1)
 	}
+}
+
+// strictBoolEnv parses an opt-in boolean env var; any non-empty value that
+// is not a valid boolean is a fatal configuration error.
+func strictBoolEnv(name string) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Fatalf("%s must be a boolean (true/false): %q", name, raw)
+	}
+	return v
+}
+
+// validTrustedOrigin validates an exact public origin: scheme and host
+// only, with no path, query, fragment, or credentials.
+func validTrustedOrigin(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		u.Path != "" || u.RawQuery != "" || u.Fragment != "" || raw != u.Scheme+"://"+u.Host {
+		log.Fatalf("KURA_AUTH_TRUSTED_ORIGIN must be an exact origin like https://library.example (no path, query, or credentials)")
+	}
+	return raw
 }
 
 // derivativeWorkerID identifies this process's worker on claimed job rows.

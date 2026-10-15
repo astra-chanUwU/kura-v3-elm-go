@@ -3,6 +3,7 @@ package httpapi
 import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
 
 // Dependencies lists the independently supplied backend capabilities used by
@@ -31,9 +32,16 @@ type Dependencies struct {
 	Exports             posts.LibraryExporter
 	Moderation          posts.ModerationMutator
 	ModerationRead      posts.ModerationReader
+	ModerationPreview   posts.ModerationPreviewReader
 	Jobs                jobs.Reader
 	MediaVisibility     posts.MediaVisibilityChecker
 	Duplicates          posts.DuplicateReader
+	Similarity          posts.SimilarityReader
+	SimilarityIndex     posts.SimilarityIndexer
+	// Accounts is optional: nil preserves legacy token/open behavior with
+	// no session endpoints. When set, PrivateMode is honored by the router.
+	Accounts *AccountsConfig
+	Recovery *recovery.Service
 }
 
 // legacyDependencies preserves the historical Searcher-based constructors.
@@ -65,8 +73,11 @@ func legacyDependencies(searchers ...posts.Searcher) Dependencies {
 	deps.Exports, _ = backend.(posts.LibraryExporter)
 	deps.Moderation, _ = backend.(posts.ModerationMutator)
 	deps.ModerationRead, _ = backend.(posts.ModerationReader)
+	deps.ModerationPreview, _ = backend.(posts.ModerationPreviewReader)
 	deps.Jobs, _ = backend.(jobs.Reader)
 	deps.MediaVisibility, _ = backend.(posts.MediaVisibilityChecker)
 	deps.Duplicates, _ = backend.(posts.DuplicateReader)
+	deps.Similarity, _ = backend.(posts.SimilarityReader)
+	deps.SimilarityIndex, _ = backend.(posts.SimilarityIndexer)
 	return deps
 }

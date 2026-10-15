@@ -1,8 +1,13 @@
 package posts
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -89,9 +94,73 @@ type ModerationQueueItem struct {
 }
 
 // ModerationQueuePage is the response body for GET /api/posts/moderation.
-// Queues are bounded and newest-first with no cursor.
+// Queues are bounded and newest-first. NextCursor is set only by the
+// keyset pager (ModerationQueuePager); the legacy reader leaves it nil.
 type ModerationQueuePage struct {
-	Posts []ModerationQueueItem `json:"posts"`
+	Posts      []ModerationQueueItem `json:"posts"`
+	NextCursor *string               `json:"next_cursor"`
+}
+
+// ErrModerationPreviewUnavailable reports that a post exists but has no
+// ready JPEG thumb-320 variant to preview. The HTTP layer maps it to 409.
+var ErrModerationPreviewUnavailable = errors.New("moderation preview unavailable")
+
+// ModerationPreview is one opened protected thumbnail. Body must be closed
+// by the caller. Length is -1 when the store does not report a size.
+type ModerationPreview struct {
+	Body      io.ReadCloser
+	MediaType string
+	Length    int64
+}
+
+const moderationCursorVersion = 1
+const maxModerationCursorLength = 256
+
+type moderationCursorPayload struct {
+	Version int    `json:"v"`
+	State   string `json:"s"`
+	ID      int64  `json:"i"`
+}
+
+// EncodeModerationQueueCursor binds a newest-first keyset position (the
+// last id of the previous page) to one moderation state.
+func EncodeModerationQueueCursor(state string, newestID int64) (string, error) {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if !ValidModerationState(state) || newestID <= 0 {
+		return "", fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	payload, err := json.Marshal(moderationCursorPayload{Version: moderationCursorVersion, State: state, ID: newestID})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+// DecodeModerationQueueCursor strictly validates a cursor for state:
+// canonical base64url, exact fields, current version, positive numeric id,
+// and a state match. Any mismatch is ErrInvalidCursor.
+func DecodeModerationQueueCursor(token, state string) (int64, error) {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if !ValidModerationState(state) || token == "" || len(token) > maxModerationCursorLength {
+		return 0, fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) == 0 || base64.RawURLEncoding.EncodeToString(decoded) != token {
+		return 0, fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	var payload moderationCursorPayload
+	decoder := json.NewDecoder(bytes.NewReader(decoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return 0, fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return 0, fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	if payload.Version != moderationCursorVersion || payload.State != state || payload.ID <= 0 {
+		return 0, fmt.Errorf("%w: invalid moderation queue cursor", ErrInvalidCursor)
+	}
+	return payload.ID, nil
 }
 
 // MediaVisibility describes how a /media/* path maps to post rows.
@@ -114,6 +183,23 @@ type ModerationMutator interface {
 type ModerationReader interface {
 	ListModerationActions(ctx context.Context, postID string) ([]ModerationAction, error)
 	ListModerationQueue(ctx context.Context, state string, limit int) (ModerationQueuePage, error)
+}
+
+// ModerationQueuePager is the optional keyset-paged queue reader. cursor is
+// nil for the first page; otherwise it is a token from
+// EncodeModerationQueueCursor already validated for state. Implementations
+// bound limit to 1..60 exactly like ValidateModerationQueue. Existing
+// ModerationReader implementations remain valid without it.
+type ModerationQueuePager interface {
+	ListModerationQueuePage(ctx context.Context, state string, cursor *string, limit int) (ModerationQueuePage, error)
+}
+
+// ModerationPreviewReader opens the ready thumb-320 JPEG for a non-deleted
+// post in any moderation state. It never returns original media. Errors:
+// ErrNotFound (no such post), ErrModerationPreviewUnavailable (no ready
+// JPEG thumbnail), ErrUnavailable (storage not configured).
+type ModerationPreviewReader interface {
+	OpenModerationPreview(ctx context.Context, postID string) (ModerationPreview, error)
 }
 
 // MediaVisibilityChecker maps a /media/* URL path to post visibility so

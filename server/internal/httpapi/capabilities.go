@@ -14,9 +14,28 @@ type capabilitiesResponse struct {
 	Actor             *string `json:"actor"`
 }
 
-func capabilities(apiToken string) http.HandlerFunc {
+func capabilities(apiToken string, accounts *AccountsConfig) http.HandlerFunc {
 	expected := strings.TrimSpace(apiToken)
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Private mode derives the answer from the resolved request actor:
+		// anonymous discovery stays public but gated, viewers cannot write.
+		if accounts != nil && accounts.PrivateMode {
+			if actor, ok := actorFromRequest(r); ok && strings.TrimSpace(actor.ID) != "" {
+				id := strings.TrimSpace(actor.ID)
+				writeJSON(w, http.StatusOK, capabilitiesResponse{
+					WritesRequireAuth: true,
+					CanWrite:          auth.HasWriteCapability(actor),
+					Actor:             &id,
+				})
+				return
+			}
+			writeJSON(w, http.StatusOK, capabilitiesResponse{
+				WritesRequireAuth: true,
+				CanWrite:          false,
+				Actor:             nil,
+			})
+			return
+		}
 		writesRequireAuth := expected != ""
 		rawAuth := r.Header.Get("Authorization")
 		hasAuth := len(r.Header.Values("Authorization")) > 0

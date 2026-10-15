@@ -91,7 +91,6 @@ func TestStageUploadRejectsWebPBeforePersistence(t *testing.T) {
 		data     []byte
 		wantAnim bool
 	}{
-		{"animated", readUploadWebPFixture(t, "animated.webp"), true},
 		{"truncated", lossy[:20], false},
 		{"impossible RIFF size", impossible, false},
 		{"truncated frame", truncatedFrame, false},

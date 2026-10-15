@@ -452,6 +452,40 @@ ORDER BY posts.id DESC
 LIMIT $2
 `
 
+// moderationQueuePageSQL is the keyset-paged queue: $3 is the exclusive
+// newest-id bound (NULL for the first page). Callers fetch limit+1 rows.
+const moderationQueuePageSQL = `
+SELECT
+    id::text,
+    preview_url,
+    original_url,
+    media_type,
+    width,
+    height,
+    tags,
+    rating,
+    rating_version,
+    moderation_state
+FROM posts
+WHERE deleted_at IS NULL
+  AND moderation_state = $1::text
+  AND ($3::bigint IS NULL OR id < $3::bigint)
+ORDER BY posts.id DESC
+LIMIT $2
+`
+
+// moderationPreviewVariantSQL resolves the stored thumb-320 variant for a
+// non-deleted post in any moderation state. Only ready rows qualify; the
+// object_key is a media.Store key, never a caller-supplied path or URL.
+const moderationPreviewVariantSQL = `
+SELECT v.object_key, v.media_type, v.file_size
+FROM asset_variants v
+JOIN posts p ON p.id = v.post_id AND p.deleted_at IS NULL
+WHERE v.post_id = $1::bigint
+  AND v.variant = 'thumb-320'
+  AND v.status = 'ready'
+`
+
 // moderatedPostExistsSQL gates audit reads on the non-deleted post row so
 // deleted posts stay indistinguishable from missing posts.
 const moderatedPostExistsSQL = `SELECT 1 FROM posts WHERE id = $1::bigint AND deleted_at IS NULL`

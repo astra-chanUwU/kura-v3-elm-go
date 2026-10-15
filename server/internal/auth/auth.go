@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"strconv"
 	"strings"
 )
 
@@ -24,13 +25,53 @@ const (
 // Capability names seeded by db/migrations/008_identity.sql.
 const WriteCapability = "write"
 
+// Role is the private-library account role. The empty value means the
+// actor predates account roles (legacy local/system and old literals).
+type Role string
+
+const (
+	RoleViewer Role = "viewer"
+	RoleEditor Role = "editor"
+	RoleAdmin  Role = "admin"
+)
+
+// ValidRole reports whether r is one of the account roles.
+func ValidRole(r string) bool {
+	switch Role(r) {
+	case RoleViewer, RoleEditor, RoleAdmin:
+		return true
+	}
+	return false
+}
+
 // Actor identifies the capability owner for a request. UserID is the
 // durable users.id once session lookup backing exists; it is zero for the
-// deployment-token actors, which carry no session.
+// deployment-token actors, which carry no session. Role is empty for
+// legacy actors (local/system and deployment Bearer) and explicit
+// (viewer/editor/admin) for session-backed account actors. ID is the
+// stable owner key: "local"/"system" for legacy actors (including a
+// bootstrapped legacy adoption) and "user:<id>" for account actors.
 type Actor struct {
 	ID     string
 	UserID int64
 	System bool
+	Role   Role
+}
+
+// IsLegacyActor reports whether actor is one of the pre-account legacy
+// identities (local development or deployment system token).
+func IsLegacyActor(actor Actor) bool {
+	return actor.System || actor.ID == LocalActorID || actor.ID == SystemActorID
+}
+
+// ActorIDForUser returns the stable owner key for an account user. A
+// bootstrapped legacy adoption keeps the legacy key so existing
+// saved searches remain owned by the same actor.
+func ActorIDForUser(userID int64, handle string) string {
+	if handle == LocalActorID || handle == SystemActorID {
+		return handle
+	}
+	return "user:" + strings.TrimSpace(int64String(userID))
 }
 
 // Session is the durable session backing for a user actor.
@@ -79,11 +120,51 @@ func ResolveActor(expected, provided string, lookup SessionLookup) (Actor, bool)
 	return Actor{ID: session.ActorID, UserID: session.UserID}, true
 }
 
-// HasWriteCapability reports whether actor may perform API mutations. The
-// system actor always holds the write capability; every other resolved actor
-// holds it once authenticated. Unauthenticated (empty-ID) actors never do.
+// HasWriteCapability reports whether actor may perform API mutations.
+// Legacy actors (local/system and any pre-role literal with an ID, so old
+// Actor literals keep their exact contract) always hold it. Account
+// actors are explicit: viewer cannot write, editor and admin can.
+// Unauthenticated (empty-ID) actors never do.
 func HasWriteCapability(actor Actor) bool {
+	if strings.TrimSpace(actor.ID) == "" {
+		return false
+	}
+	switch actor.Role {
+	case RoleViewer:
+		return false
+	case RoleEditor, RoleAdmin:
+		return true
+	}
+	return true
+}
+
+// HasReadCapability reports whether actor may read the private library.
+// Every authenticated actor, account viewers included, can read.
+func HasReadCapability(actor Actor) bool {
 	return strings.TrimSpace(actor.ID) != ""
+}
+
+// HasModerateCapability reports whether actor may moderate and preview.
+// Only account admins and legacy actors (deployment system / local) do;
+// editors and viewers do not.
+func HasModerateCapability(actor Actor) bool {
+	if strings.TrimSpace(actor.ID) == "" {
+		return false
+	}
+	if actor.Role != "" {
+		return actor.Role == RoleAdmin
+	}
+	return IsLegacyActor(actor)
+}
+
+// HasAdminCapability reports whether actor may administer accounts and
+// other admin-only surfaces. Only account admins and legacy actors do.
+func HasAdminCapability(actor Actor) bool {
+	return HasModerateCapability(actor)
+}
+
+func int64String(v int64) string {
+	return strings.TrimSpace(strconv.FormatInt(v, 10))
 }
 
 // SameToken compares bearer tokens in constant time without leaking length

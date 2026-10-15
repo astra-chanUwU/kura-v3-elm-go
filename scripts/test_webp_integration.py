@@ -13,7 +13,7 @@ from urllib.request import urlopen
 
 import test_library_backup_integration as FIXTURE
 
-SAMPLES = {'import-new.webp': 'UklGRh4AAABXRUJQVlA4TBEAAAAvF8AEAAdQvYJ1s/+BiOh/AAA=', 'lossless-alpha.webp': 'UklGRh4AAABXRUJQVlA4TBEAAAAvD8ACEAfQlo41r1qBiOh/AAA=', 'lossy.webp': 'UklGRkAAAABXRUJQVlA4IDQAAADwAgCdASogABgAPlEkj0WjoiEUBAA4BQSzgDsAAEBQUAD+9Ykf/xQCkcOd//Qo2US+YAAA', 'animated.webp': 'UklGRrYAAABXRUJQVlA4WAoAAAACAAAACwAABwAAQU5JTQYAAAAAAAAAAABBTk1GQAAAAAAAAAAAAAsAAAcAAGQAAAJWUDggKAAAADABAJ0BKgwACAABQCYlmAADcAD+8ql//4c+2P3sY///2L9gfxLGgABBTk1GQgAAAAAAAAAAAAsAAAcAAGQAAABWUDggKgAAAFQBAJ0BKgwACAAAACYlmAAEYYAA/vaVl//8EF/EF/EFhq/+LuxHGXQAAA=='}
+SAMPLES = {'import-new.webp': 'UklGRh4AAABXRUJQVlA4TBEAAAAvF8AEAAdQvYJ1s/+BiOh/AAA=', 'lossless-alpha.webp': 'UklGRh4AAABXRUJQVlA4TBEAAAAvD8ACEAfQlo41r1qBiOh/AAA=', 'lossy.webp': 'UklGRkAAAABXRUJQVlA4IDQAAADwAgCdASogABgAPlEkj0WjoiEUBAA4BQSzgDsAAEBQUAD+9Ykf/xQCkcOd//Qo2US+YAAA'}
 
 @unittest.skipUnless(os.environ.get("KURA_BACKUP_TEST_ADMIN_URL"), "set an explicitly disposable local admin URL")
 class WebPDrill(unittest.TestCase):
@@ -43,7 +43,7 @@ class WebPDrill(unittest.TestCase):
                     self.assertEqual(bundle.read("originals/" + post_id + ".webp"), payload)
         before = self.fixture.pg(self.fixture.source, ["-c", "SELECT (SELECT count(*) FROM posts), (SELECT count(*) FROM jobs)"])
         lossy = base64.b64decode(SAMPLES["lossy.webp"])
-        for payload in (base64.b64decode(SAMPLES["animated.webp"]), lossy[:-4], lossy[:24], b"RIFF\xff\xff\xff\xffWEBPVP8 junk"):
+        for payload in (lossy[:-4], lossy[:24], b"RIFF\xff\xff\xff\xffWEBPVP8 junk"):
             with self.assertRaises(HTTPError) as error:
                 self.fixture.upload(self.api, payload)
             self.assertEqual(error.exception.code, 400)

@@ -28,20 +28,78 @@ func NewRouterWithToken(apiToken string, searchers ...posts.Searcher) http.Handl
 	return NewRouterWithDependencies(apiToken, legacyDependencies(searchers...))
 }
 
+// effectiveAccounts copies deps.Accounts and fills the deployment token
+// from the router token when the caller left it empty.
+func effectiveAccounts(apiToken string, deps Dependencies) *AccountsConfig {
+	if deps.Accounts == nil {
+		return nil
+	}
+	cfg := *deps.Accounts
+	if strings.TrimSpace(cfg.DeploymentToken) == "" {
+		cfg.DeploymentToken = strings.TrimSpace(apiToken)
+	}
+	return &cfg
+}
+
+func isAuthPublicPath(path string) bool {
+	switch path {
+	case "/api/auth/session", "/api/auth/login", "/api/auth/logout":
+		return true
+	}
+	return false
+}
+
+// accessMiddleware picks the root actor middleware. Private mode replaces
+// the legacy write gate with PrivateAccess; off mode keeps the legacy gate
+// and layers SessionContext inside it so a resolved session actor is never
+// overridden by the legacy local/system actor. Auth public paths skip the
+// legacy write gate so login/logout stay reachable when a token is set.
+func accessMiddleware(apiToken string, accounts *AccountsConfig) func(http.Handler) http.Handler {
+	if accounts != nil && accounts.PrivateMode {
+		return PrivateAccess(accounts.access())
+	}
+	writeGate := requireWriteCapability(apiToken)
+	return func(next http.Handler) http.Handler {
+		inner := next
+		if accounts != nil && accounts.Service != nil {
+			inner = SessionContext(accounts.access())(next)
+		}
+		gated := writeGate(inner)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if accounts != nil && accounts.Service != nil && isAuthPublicPath(r.URL.Path) {
+				inner.ServeHTTP(w, r)
+				return
+			}
+			gated.ServeHTTP(w, r)
+		})
+	}
+}
+
 // NewRouterWithDependencies assembles the Chi router using explicit backend
 // capabilities. CORS runs first so preflight does not require authentication.
 func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler {
 	apiToken = strings.TrimSpace(apiToken)
+	accounts := effectiveAccounts(apiToken, deps)
 	r := chi.NewRouter()
 	r.Use(localDevCORS)
-	r.Use(requireWriteCapability(apiToken))
+	r.Use(accessMiddleware(apiToken, accounts))
 
 	r.Get("/health", health)
 	r.Handle("/media/*", gatedMedia(deps.MediaVisibility))
 
 	r.Route("/api", func(api chi.Router) {
 		// Deployment capabilities (capabilities.go).
-		api.Get("/capabilities", capabilities(apiToken))
+		api.Get("/capabilities", capabilities(apiToken, accounts))
+
+		// Account/session endpoints, available whenever a service is
+		// configured (private or open mode).
+		if accounts != nil {
+			RegisterAuthRoutes(api, *accounts)
+		}
+
+		// Recovery admin reads (handlers re-check admin themselves).
+		api.Get("/recovery/backups", RecoveryList(deps.Recovery))
+		api.Post("/recovery/backups/{id}/verify", RecoveryVerify(deps.Recovery))
 
 		// Post browsing (posts.go), edits (tags.go, reactions.go), and
 		// moderation (moderation.go). Static paths precede the id routes.
@@ -56,7 +114,7 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Get("/posts/trash", listTrash(deps.Trash))
 		api.Post("/posts/trash", trashPosts(deps.Trash))
 		api.Post("/posts/restore", restorePosts(deps.Trash))
-		api.Get("/posts/moderation", listModerationQueue(deps.ModerationRead))
+		api.Get("/posts/moderation", listModerationQueuePaged(deps.ModerationRead))
 		api.Post("/posts/moderation", moderatePosts(deps.Moderation))
 		api.Post("/posts/tags", editTags(deps.Tags))
 		api.Post("/posts/tags/revert", revertTags(deps.TagRevisions))
@@ -64,8 +122,12 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Post("/posts/metadata", EditMetadata(deps.Metadata))
 		api.Post("/posts/metadata/read", readMetadata(deps.MetadataRead))
 		api.Post("/posts/ratings", EditRatings(deps.Ratings))
+		api.Post("/posts/similarity/index", postSimilarityIndex(deps.SimilarityIndex))
+		api.Get("/posts/similarity/status", getSimilarityStatus(deps.SimilarityIndex))
 		api.Get("/posts/{id}", postDetail(deps.PostDetails))
+		api.Get("/posts/{id}/similar", getSimilarPosts(deps.Similarity))
 		api.Get("/posts/{id}/moderation", listPostModerationActions(deps.ModerationRead))
+		api.Get("/posts/{id}/moderation/preview", moderationPreview(deps.ModerationPreview))
 
 		// Uploads and durable processing status (uploads.go, jobs.go).
 		api.Post("/uploads", uploadPost(deps.Uploads))

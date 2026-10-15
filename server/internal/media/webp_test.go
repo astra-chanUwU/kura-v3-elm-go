@@ -156,6 +156,12 @@ func TestDerivativeWebPThumbnails(t *testing.T) {
 }
 
 func TestDerivativeRejectsAnimatedWebP(t *testing.T) {
+	// Animated WebP is no longer rejected outright: with ffmpeg tools it
+	// yields a first-frame poster; without them it fails clearly and
+	// records nothing. The static validator still rejects it (above).
+	if extendedToolPath("KURA_FFPROBE_PATH", "ffprobe") != "" && extendedToolPath("KURA_FFMPEG_PATH", "ffmpeg") != "" {
+		t.Skip("animated WebP derivative succeeds when ffmpeg is installed; covered by extended pipeline tests")
+	}
 	store := NewLocalStore(t.TempDir())
 	recorder := newFakeVariantRecorder()
 	data := readWebPFixture(t, "animated.webp")

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -125,6 +127,100 @@ func (s *PostgresBackend) ListModerationQueue(ctx context.Context, state string,
 		return ModerationQueuePage{}, err
 	}
 	return page, nil
+}
+
+// ListModerationQueuePage is the keyset-paged queue (ModerationQueuePager).
+// It fetches limit+1 rows; a surplus row yields a state-bound NextCursor
+// keyed on the last returned id.
+func (s *PostgresBackend) ListModerationQueuePage(ctx context.Context, state string, cursor *string, limit int) (ModerationQueuePage, error) {
+	if s == nil || s.pool == nil {
+		return ModerationQueuePage{}, ErrUnavailable
+	}
+	validState, err := ValidateModerationQueue(state, limit)
+	if err != nil {
+		return ModerationQueuePage{}, err
+	}
+	var before any
+	if cursor != nil {
+		id, err := DecodeModerationQueueCursor(*cursor, validState)
+		if err != nil {
+			return ModerationQueuePage{}, err
+		}
+		before = id
+	}
+	rows, err := s.pool.Query(ctx, moderationQueuePageSQL, validState, limit+1, before)
+	if err != nil {
+		return ModerationQueuePage{}, err
+	}
+	defer rows.Close()
+	page := ModerationQueuePage{Posts: make([]ModerationQueueItem, 0, limit)}
+	for rows.Next() {
+		var item ModerationQueueItem
+		if err := rows.Scan(&item.ID, &item.PreviewURL, &item.OriginalURL, &item.MediaType, &item.Width, &item.Height, &item.Tags, &item.Rating, &item.RatingVersion, &item.ModerationState); err != nil {
+			return ModerationQueuePage{}, err
+		}
+		page.Posts = append(page.Posts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return ModerationQueuePage{}, err
+	}
+	if len(page.Posts) > limit {
+		page.Posts = page.Posts[:limit]
+		lastID, err := strconv.ParseInt(page.Posts[len(page.Posts)-1].ID, 10, 64)
+		if err != nil || lastID <= 0 {
+			return ModerationQueuePage{}, ErrInvalidQuery
+		}
+		token, err := EncodeModerationQueueCursor(validState, lastID)
+		if err != nil {
+			return ModerationQueuePage{}, err
+		}
+		page.NextCursor = &token
+	}
+	return page, nil
+}
+
+// OpenModerationPreview opens the ready thumb-320 JPEG for a non-deleted
+// post in any moderation state through the configured media Store. The
+// object key comes only from the stored asset_variants row; originals are
+// never opened here.
+func (s *PostgresBackend) OpenModerationPreview(ctx context.Context, postID string) (ModerationPreview, error) {
+	if s == nil || s.pool == nil {
+		return ModerationPreview{}, ErrUnavailable
+	}
+	id, err := moderatedPostID(postID)
+	if err != nil {
+		return ModerationPreview{}, err
+	}
+	var exists int
+	if err := s.pool.QueryRow(ctx, moderatedPostExistsSQL, id).Scan(&exists); err != nil {
+		return ModerationPreview{}, moderationExistenceError(err)
+	}
+	var objectKey, mediaType string
+	var fileSize int64
+	if err := s.pool.QueryRow(ctx, moderationPreviewVariantSQL, id).Scan(&objectKey, &mediaType, &fileSize); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ModerationPreview{}, ErrModerationPreviewUnavailable
+		}
+		return ModerationPreview{}, err
+	}
+	if strings.TrimSpace(objectKey) == "" || !strings.EqualFold(strings.TrimSpace(mediaType), "image/jpeg") {
+		return ModerationPreview{}, ErrModerationPreviewUnavailable
+	}
+	store := s.store
+	if store == nil {
+		store = media.NewStoreFromEnv(uploadMediaRoot())
+	}
+	if store == nil {
+		return ModerationPreview{}, ErrUnavailable
+	}
+	body, err := store.Open(ctx, objectKey)
+	if err != nil || body == nil {
+		if err == nil {
+			err = ErrUnavailable
+		}
+		return ModerationPreview{}, err
+	}
+	return ModerationPreview{Body: body, MediaType: "image/jpeg", Length: fileSize}, nil
 }
 
 // LookupMediaVisibility maps a /media/* URL path to post visibility so the

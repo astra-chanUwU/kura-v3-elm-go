@@ -196,9 +196,13 @@ class ImporterTests(unittest.TestCase):
         names = [path.name for path in candidates]
         self.assertIn("photo.webp", names)
         self.assertIn("a.jpg", names)
+        self.assertIn("clip.mp4", names)
         self.assertNotIn("webp", unsupported)
-        self.assertEqual(unsupported.get("video"), 1)
+        self.assertNotIn("video", unsupported)
         self.assertIn(".webp", importer.SUPPORTED)
+        self.assertIn(".avif", importer.SUPPORTED)
+        self.assertIn(".mp4", importer.SUPPORTED)
+        self.assertIn(".webm", importer.SUPPORTED)
 
     def test_empty_terminal_post_page_allows_first_upload(self):
         path = self.add_image()

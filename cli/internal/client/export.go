@@ -121,6 +121,7 @@ func (c *Client) downloadExport(ctx context.Context, path string, query url.Valu
 		return ExportResult{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Accept", "application/zip")
+	c.authorizeWithProtected(req, false)
 	transport := http.Client{Timeout: 10 * time.Second}
 	if c.HTTPClient != nil {
 		transport = *c.HTTPClient

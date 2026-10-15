@@ -15,6 +15,12 @@ type Client struct {
 	BaseURL    string
 	APIToken   string
 	HTTPClient *http.Client
+	// PrivateReads opts into sending the bearer token on library GET reads
+	// (search, collections, post detail, ZIP exports) for private
+	// deployments. Default false preserves public-instance behavior.
+	// Configure it explicitly at the command layer; New never reads ambient
+	// environment for it to avoid surprising credential sends.
+	PrivateReads bool
 }
 
 // New creates a client with a default 10s timeout. BaseURL is trimmed of
@@ -34,12 +40,27 @@ func New(baseURL string) *Client {
 }
 
 func (c *Client) authorize(req *http.Request) {
-	if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+	c.authorizeWithProtected(req, false)
+}
+
+// authorizeWithProtected is the shared credential policy. Writes always send
+// the bearer when configured. GET/HEAD/OPTIONS send it only for known
+// protected endpoints (protectedRead) or when PrivateReads is opted in for a
+// private deployment. Default (PrivateReads=false, protectedRead=false)
+// sends nothing on reads, preserving public-instance behavior. Redirects are
+// never followed (see transport), so credentials only ever go to the
+// validated configured API base, never to an external image URL.
+func (c *Client) authorizeWithProtected(req *http.Request, protectedRead bool) {
+	token := strings.TrimSpace(c.APIToken)
+	if token == "" {
 		return
 	}
-	if token := strings.TrimSpace(c.APIToken); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions {
+		if !protectedRead && !c.PrivateReads {
+			return
+		}
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 }
 
 // Search executes GET /api/posts?q=query with URL encoding and a request

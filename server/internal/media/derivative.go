@@ -28,7 +28,9 @@ const KindDerivative = "derivative"
 
 // Supported thumbnail variants and their long-edge bound in pixels. The
 // decode set is JPEG, PNG, GIF and static WebP (via golang.org/x/image/webp),
-// as accepted by uploads; no ffmpeg or libvips is added.
+// plus optional extended media (static AVIF, animated WebP, MP4/WebM video
+// posters) through InspectExtended/DecodeExtendedPoster when ffmpeg tools
+// are installed. Basic formats never require ffmpeg.
 var derivativeBounds = map[string]int{
 	"thumb-160": 160,
 	"thumb-320": 320,
@@ -151,12 +153,18 @@ func (p *DerivativeProcessor) process(ctx context.Context, payload derivativePay
 	if int64(len(data)) == 0 || int64(len(data)) > maxOriginalBytes {
 		return Variant{}, fmt.Errorf("original must be between 1 byte and 25 MiB")
 	}
-	if IsWebP(data) {
-		if _, err := ValidateStaticWebP(data); err != nil {
-			return Variant{}, fmt.Errorf("decode original: file is not a supported image: %w", err)
-		}
+	// Route through the extended inspector so animated WebP is not
+	// rejected by the static-WebP DecodeConfig path, AVIF/video are
+	// validated (dimensions/duration/codecs) before any decode, and
+	// video thumbnails come from the first frame (poster). Basic
+	// JPEG/PNG/GIF/static WebP stay on Go decoders inside the helper
+	// and work without ffmpeg; extended formats fail with a clear
+	// ffmpeg-named error when the tools are absent.
+	desc, err := InspectExtended(ctx, data)
+	if err != nil {
+		return Variant{}, fmt.Errorf("decode original: file is not a supported image: %w", err)
 	}
-	source, _, err := image.Decode(bytes.NewReader(data))
+	source, err := DecodeExtendedPoster(ctx, data, desc)
 	if err != nil {
 		return Variant{}, fmt.Errorf("decode original: file is not a supported image: %w", err)
 	}

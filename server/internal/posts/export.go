@@ -264,7 +264,7 @@ func (s *PostgresBackend) ExportLibrary(ctx context.Context, request ExportReque
 	return archive, nil
 }
 func exportExtension(mediaType string) string {
-	if extension, ok := map[string]string{"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg"}[mediaType]; ok {
+	if extension, ok := map[string]string{"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp", "image/avif": "avif", "video/mp4": "mp4", "video/webm": "webm", "image/svg+xml": "svg"}[mediaType]; ok {
 		return extension
 	}
 	return "bin"

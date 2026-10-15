@@ -139,6 +139,77 @@ func EnqueueInTx(ctx context.Context, tx pgx.Tx, request EnqueueRequest) (Job, e
 	return job, nil
 }
 
+const resetFailedSQL = `
+UPDATE jobs
+SET status = 'pending',
+    attempts = 0,
+    progress = 0,
+    last_error = '',
+    next_retry_at = NULL,
+    last_attempt_at = NULL,
+    locked_by = NULL,
+    locked_at = NULL,
+    lease_expires_at = NULL,
+    completed_at = NULL,
+    updated_at = now()
+WHERE kind = $1 AND idempotency_key = $2 AND status = 'failed'
+RETURNING ` + jobColumns
+
+// EnqueueOrResetFailedInTx is EnqueueInTx for explicit user retries: it
+// inserts a pending row, returns an existing non-failed row unchanged, or
+// atomically resets a terminally failed row to pending (same id,
+// idempotency key, payload, and max_attempts; attempts, error, lease, and
+// terminal timestamps cleared). The conditional status='failed' update
+// holds the row lock, so a concurrent retry either wins the reset or
+// observes the already-pending row — it never duplicates the job and
+// never resets a row that has since been claimed. Automatic callers must
+// keep using EnqueueInTx so failed work is not silently requeued.
+func EnqueueOrResetFailedInTx(ctx context.Context, tx pgx.Tx, request EnqueueRequest) (Job, error) {
+	validated, err := ValidateEnqueue(request)
+	if err != nil {
+		return Job{}, err
+	}
+	var job Job
+	store := &Store{}
+	if scanErr := store.scanJob(tx.QueryRow(ctx, enqueueInsertSQL,
+		validated.Kind, string(validated.Payload), validated.IdempotencyKey, validated.MaxAttempts,
+	), &job); scanErr == nil {
+		return job, nil
+	} else if !errors.Is(scanErr, pgx.ErrNoRows) {
+		return Job{}, scanErr
+	}
+	if err := store.scanJob(tx.QueryRow(ctx, lookupByKindKeySQL,
+		validated.Kind, validated.IdempotencyKey,
+	), &job); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+		return Job{}, err
+	}
+	if job.Status != StatusFailed {
+		return job, nil
+	}
+	if err := store.scanJob(tx.QueryRow(ctx, resetFailedSQL,
+		validated.Kind, validated.IdempotencyKey,
+	), &job); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A concurrent explicit retry already reset this row (or it
+			// otherwise left 'failed'); return its current state.
+			if lookupErr := store.scanJob(tx.QueryRow(ctx, lookupByKindKeySQL,
+				validated.Kind, validated.IdempotencyKey,
+			), &job); lookupErr != nil {
+				if errors.Is(lookupErr, pgx.ErrNoRows) {
+					return Job{}, ErrNotFound
+				}
+				return Job{}, lookupErr
+			}
+			return job, nil
+		}
+		return Job{}, err
+	}
+	return job, nil
+}
+
 // RecoverExpiredLeases requeues crashed running rows and reports how many
 // were recovered. Callers run it once at startup before workers claim, so
 // interrupted work resumes instead of stalling on a dead lease. It

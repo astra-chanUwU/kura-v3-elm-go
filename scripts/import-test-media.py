@@ -17,8 +17,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 MAX_BYTES = 25 * 1024 * 1024
-SUPPORTED = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-VIDEO = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+SUPPORTED = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm"}
+VIDEO = {".mov", ".m4v", ".avi", ".mkv"}
 PACKAGES = {".photoslibrary", ".photolibrary"}
 METADATA_NAMES = {".ds_store", "thumbs.db", "desktop.ini", "ehthumbs.db"}
 METADATA_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".plist", ".cache"}

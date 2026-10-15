@@ -20,12 +20,18 @@ Commands:
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
   KURA_API_TOKEN  Bearer token for write capabilities (optional)
+  KURA_PRIVATE_READS  Opt into bearer auth on library GET reads for private deployments (default false; accepts true/false/1/0; requires KURA_API_TOKEN)
   KURA_HTTP_TIMEOUT  Per-request duration (default 10s; e.g. 30s)
 
 Notes:
   The CLI uses only the public HTTP API (same as the Elm app). No database
   access from the CLI; a running Kura API is required. It defaults to
   http://localhost:8080. Writes are never automatically retried.
+  Library GET reads stay unauthenticated by default; set KURA_PRIVATE_READS=true
+  (with KURA_API_TOKEN) only against a private deployment so search,
+  collection, post detail, and ZIP exports send the configured API base the
+  bearer. Redirects are never followed and preview/original image URLs are
+  never fetched.
   Run with --help on any command for details.
 `
 

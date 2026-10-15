@@ -123,13 +123,7 @@ func (c *Client) requestWithProtectedRead(ctx context.Context, method, path stri
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if protectedRead && (method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions) {
-		if token := strings.TrimSpace(c.APIToken); token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-	} else {
-		c.authorize(req)
-	}
+	c.authorizeWithProtected(req, protectedRead)
 	transport := http.Client{Timeout: 10 * time.Second}
 	if c.HTTPClient != nil {
 		transport = *c.HTTPClient

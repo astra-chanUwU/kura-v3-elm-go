@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,10 +36,25 @@ func newAPIClient(base string, getenv func(string) string) (*client.Client, erro
 		return nil, fmt.Errorf("invalid --api-url: %w", err)
 	}
 	c := client.New(base)
-	// The supplied environment is authoritative, including an absent token.
+	// The supplied environment is authoritative, including absent values.
+	// New defaults PrivateReads to false and never reads ambient environment,
+	// so only the getenv passed here can opt into private reads.
 	c.APIToken = ""
+	c.PrivateReads = false
 	if getenv != nil {
 		c.APIToken = strings.TrimSpace(getenv("KURA_API_TOKEN"))
+		if raw := strings.TrimSpace(getenv("KURA_PRIVATE_READS")); raw != "" {
+			enabled, err := strconv.ParseBool(raw)
+			if err != nil {
+				return nil, fmt.Errorf("KURA_PRIVATE_READS must be a boolean (true/false/1/0), got %q", raw)
+			}
+			if enabled {
+				if c.APIToken == "" {
+					return nil, fmt.Errorf("KURA_PRIVATE_READS=true requires KURA_API_TOKEN")
+				}
+				c.PrivateReads = true
+			}
+		}
 		if value := strings.TrimSpace(getenv("KURA_HTTP_TIMEOUT")); value != "" {
 			timeout, err := time.ParseDuration(value)
 			if err != nil || timeout <= 0 {
