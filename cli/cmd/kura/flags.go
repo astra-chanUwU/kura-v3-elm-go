@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -43,6 +44,9 @@ func parseFlagArgs(args []string, specs map[string]flagSpec) ([]string, error) {
 		if eq := strings.Index(arg, "="); eq >= 0 {
 			name, value, hasValue = arg[:eq], arg[eq+1:], true
 		}
+		if name == "--password" {
+			return nil, fmt.Errorf("password cannot be passed as a flag; it is read from the terminal or stdin")
+		}
 		spec, ok := specs[name]
 		if !ok || (hasValue && !spec.takesValue) {
 			return nil, fmt.Errorf("unknown flag %q", arg)
@@ -66,9 +70,11 @@ func parseFlagArgs(args []string, specs map[string]flagSpec) ([]string, error) {
 
 // commonFlags holds the flags every command shares.
 type commonFlags struct {
-	apiURL   string
-	jsonOut  bool
-	jsonlOut bool
+	apiURL      string
+	apiToken    string
+	apiTokenSet bool
+	jsonOut     bool
+	jsonlOut    bool
 }
 
 func newCommonFlags(getenv func(string) string) commonFlags {
@@ -86,6 +92,10 @@ func (c *commonFlags) specs(extra map[string]flagSpec) map[string]flagSpec {
 		"--json":    boolFlag(func() { c.jsonOut = true }),
 		"--jsonl":   boolFlag(func() { c.jsonlOut = true }),
 		"--api-url": valueFlag(func(v string) { c.apiURL = strings.TrimSpace(v) }),
+		"--api-token": valueFlag(func(v string) {
+			c.apiToken = strings.TrimSpace(v)
+			c.apiTokenSet = true
+		}),
 	}
 	for name, spec := range extra {
 		specs[name] = spec
@@ -102,8 +112,16 @@ func (c *commonFlags) checkExclusive(stderr io.Writer) bool {
 	return true
 }
 
-func (c *commonFlags) client(getenv func(string) string, stderr io.Writer) (*client.Client, bool) {
-	cl, err := newAPIClient(c.apiURL, getenv)
+func (c *commonFlags) client(ctx context.Context, getenv func(string) string, stderr io.Writer) (*client.Client, bool) {
+	if c.apiTokenSet && c.apiToken == "" {
+		fmt.Fprintln(stderr, "error: --api-token requires a non-empty value")
+		return nil, false
+	}
+	flagToken := ""
+	if c.apiTokenSet {
+		flagToken = c.apiToken
+	}
+	cl, err := newAPIClient(ctx, c.apiURL, flagToken, getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return nil, false

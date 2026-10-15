@@ -262,7 +262,7 @@ func TestExportCLICancelCleansTemp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { <-started; cancel() }()
 	var stdout, stderr bytes.Buffer
-	code := runContext(ctx, []string{"export", "--ids", "1", "--output", outPath}, &stdout, &stderr, func(k string) string {
+	code := runContext(ctx, []string{"export", "--ids", "1", "--output", outPath}, &stdout, &stderr, nil, func(k string) string {
 		if k == "KURA_API_URL" {
 			return srv.URL
 		}

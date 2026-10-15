@@ -104,7 +104,7 @@ func runPostMetadata(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		artistPtr = &value
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -181,7 +181,7 @@ func runTrashChange(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		reasonPtr = &value
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -243,7 +243,7 @@ func runPostTrashList(ctx context.Context, args []string, stdout, stderr io.Writ
 		fmt.Fprintln(stderr, "error: flag --cursor requires a non-empty value")
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

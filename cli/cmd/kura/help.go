@@ -9,6 +9,8 @@ Usage:
   kura collection --help
   kura post --help
   kura tag --help
+  kura login --help
+  kura logout --help
 
 Commands:
   search    Search posts via GET /api/posts
@@ -16,12 +18,24 @@ Commands:
   post      Show post detail and mutate tags, favorites, scores, and content ratings
   export    Export posts as a ZIP archive file
   tag       List and manage global tags
+  login     Sign in as a named account (password from the terminal or stdin)
+  logout    Revoke the logged-in account session
 
 Environment:
   KURA_API_URL    Base API URL (default http://localhost:8080)
-  KURA_API_TOKEN  Bearer token for write capabilities (optional)
+  KURA_API_TOKEN  Deployment admin bearer token (optional)
   KURA_PRIVATE_READS  Opt into bearer auth on library GET reads for private deployments (default false; accepts true/false/1/0; requires KURA_API_TOKEN)
   KURA_HTTP_TIMEOUT  Per-request duration (default 10s; e.g. 30s)
+  KURA_SESSION_FILE  Optional path for kura login --persist (default: user config directory)
+  KURA_AUTH_TRUSTED_ORIGIN  Exact Origin for account-session writes, when the server requires one
+
+Authentication precedence:
+  1. --api-token VALUE  deployment admin token; overrides KURA_API_TOKEN
+  2. KURA_API_TOKEN     deployment admin token
+  3. kura login         role-limited account session, in memory or --persist
+  A deployment token is never combined with the logged-in account. Prefer
+  KURA_API_TOKEN over --api-token so the token is not placed on the command line.
+  Passwords are read from the terminal or stdin only.
 
 Notes:
   The CLI uses only the public HTTP API (same as the Elm app). No database
@@ -30,8 +44,9 @@ Notes:
   Library GET reads stay unauthenticated by default; set KURA_PRIVATE_READS=true
   (with KURA_API_TOKEN) only against a private deployment so search,
   collection, post detail, and ZIP exports send the configured API base the
-  bearer. Redirects are never followed and preview/original image URLs are
-  never fetched.
+  bearer. A logged-in account session is sent on reads and writes without
+  that flag, and only when no deployment token is set. Redirects are never
+  followed and preview/original image URLs are never fetched.
   Run with --help on any command for details.
 `
 

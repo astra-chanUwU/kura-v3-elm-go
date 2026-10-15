@@ -203,11 +203,11 @@ func TestCLIEnvironmentCredentialsAndTimeout(t *testing.T) {
 			t.Fatalf("invalid timeout code=%d stderr=%s", code, errOut)
 		}
 	}
-	c, err := newAPIClient(srv.URL, func(string) string { return "" })
+	c, err := newAPIClient(context.Background(), srv.URL, "", func(string) string { return "" })
 	if err != nil || c.APIToken != "" {
 		t.Fatalf("ambient environment leaked: %+v, %v", c, err)
 	}
-	c, err = newAPIClient(srv.URL, func(key string) string {
+	c, err = newAPIClient(context.Background(), srv.URL, "", func(key string) string {
 		if key == "KURA_HTTP_TIMEOUT" {
 			return "25ms"
 		}
@@ -226,7 +226,7 @@ func TestCLIContextCancelsActiveRequest(t *testing.T) {
 	defer cancel()
 	go func() { <-started; cancel() }()
 	var stderr bytes.Buffer
-	code := runContext(ctx, []string{"search"}, io.Discard, &stderr, func(key string) string {
+	code := runContext(ctx, []string{"search"}, io.Discard, &stderr, nil, func(key string) string {
 		if key == "KURA_API_URL" {
 			return srv.URL
 		}

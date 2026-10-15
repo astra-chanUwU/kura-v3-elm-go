@@ -153,11 +153,12 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 | `KURA_API_PROXY_URL` | Frontend proxy target; default `http://127.0.0.1:8080`. |
 | `KURA_PRIVATE_LIBRARY` | Set `true` to require an account or deployment bearer for library reads and writes. |
 | `KURA_AUTH_ALLOW_HTTP_LOCAL` | Explicitly allow account cookies over HTTP on loopback hosts for local development. |
-| `KURA_AUTH_TRUSTED_ORIGIN` | Exact public origin for cookie write checks, for example `https://library.example`. |
+| `KURA_AUTH_TRUSTED_ORIGIN` | Exact public origin for cookie write checks, for example `https://library.example`. The CLI sends this origin on account-session writes when it is set. |
 | `KURA_PRIVATE_READS` | CLI opt-in to send the deployment bearer on ordinary reads and ZIP exports. Requires `KURA_API_TOKEN`. |
 | `KURA_BACKUP_ROOT` | Existing local backup directory shown in the admin recovery panel. |
 | `KURA_FFPROBE_PATH`, `KURA_FFMPEG_PATH` | Optional tool paths for extended formats; otherwise resolved from `PATH`. |
 | `KURA_HTTP_TIMEOUT` | CLI timeout per HTTP request; default `10s`, accepts durations such as `30s` or `1m`. |
+| `KURA_SESSION_FILE` | Optional CLI path for `kura login --persist`. The default is a file under the user config directory. |
 
 Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
 
@@ -165,7 +166,11 @@ Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional setti
 
 Private mode may use the same S3-compatible store. It ignores `S3_URL_PREFIX` and records same-origin `/media/{key}` URLs. The API opens the configured store only after authentication and the post visibility check, using the key recorded by the upload, derivative, or import writer. It does not follow storage redirects or fetch any other URL. A private library that already contains an external media URL still refuses to start; those rows are not rewritten.
 
-The CLI sends `KURA_API_TOKEN` on writes and protected reads such as Trash. For a private library, also set `KURA_PRIVATE_READS=true`; this uses the deployment admin identity. Viewer/editor account login is currently browser-only. Legacy token mode retains **Unlock**/**Lock** in the top bar, and open local mode needs no token.
+The CLI sends `KURA_API_TOKEN` on writes and protected reads such as Trash. For a private library, also set `KURA_PRIVATE_READS=true`; this uses the deployment admin identity. Legacy token mode retains **Unlock**/**Lock** in the top bar, and open local mode needs no token.
+
+Account login from the CLI uses the same session cookie as the browser and keeps that account's role. `kura login --handle NAME` reads the password from the terminal without echo, or from one stdin line when there is no terminal. It never accepts a password flag or argument. Add `--persist` to store the session in a user-private credential file (`KURA_SESSION_FILE`, or the user config directory); otherwise the session stays in that process and is revoked when it exits. Later commands use the saved session only when no deployment token is set.
+
+Deployment-token precedence is `--api-token`, then `KURA_API_TOKEN`, then the logged-in account. A deployment token is the admin identity and is not sent together with the account cookie. Prefer `KURA_API_TOKEN` over `--api-token` so the token is not placed on the command line. Account-session writes send `Origin` from `KURA_AUTH_TRUSTED_ORIGIN` when that exact origin is set, otherwise the origin of the API URL. In private-library mode that origin must match the server's trusted origin. Token-gated open mode still requires the deployment token for writes; an account cookie does not bypass that gate.
 
 For a private shared library, migrate the database and bootstrap the first admin offline:
 
@@ -231,6 +236,22 @@ manifest for another import. Interrupted or ambiguous uploads are verified befor
 continuing; unresolved results stop the import rather than resending a file.
 
 ## CLI
+
+Sign in as an account, then reuse that role-limited session. The password is
+prompted or read from stdin; `--persist` is the only way it is written to disk:
+
+```sh
+kura login --handle editor --persist
+kura search --json 'tag:cat'
+kura logout
+```
+
+A deployment token still wins over that login:
+
+```sh
+KURA_API_TOKEN=... kura search --json 'tag:cat'
+kura search --api-token ... --json 'tag:cat'
+```
 
 ```sh
 go -C cli run ./cmd/kura search --json 'tag:cat score:>=5'

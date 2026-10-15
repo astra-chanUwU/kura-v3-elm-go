@@ -54,7 +54,7 @@ func runCollection(ctx context.Context, args []string, stdout, stderr io.Writer,
 		if !cfg.checkExclusive(stderr) {
 			return 1
 		}
-		c, ok := cfg.client(getenv, stderr)
+		c, ok := cfg.client(ctx, getenv, stderr)
 		if !ok {
 			return 1
 		}
@@ -86,7 +86,7 @@ func runCollection(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if !cfg.checkExclusive(stderr) {
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -191,7 +191,7 @@ func runCollectionManage(ctx context.Context, command string, args []string, cfg
 	if !cfg.checkExclusive(stderr) {
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -259,7 +259,7 @@ func runCollectionMutation(ctx context.Context, subcommand string, args []string
 	if !cfg.checkExclusive(stderr) {
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

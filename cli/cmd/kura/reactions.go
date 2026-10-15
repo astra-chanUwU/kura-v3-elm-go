@@ -108,7 +108,7 @@ func executeReaction(ctx context.Context, cfg postReactionConfig, postID string,
 		}
 		scorePtr = &score
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

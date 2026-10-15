@@ -42,7 +42,7 @@ func runPostTagEdit(ctx context.Context, args []string, stdout, stderr io.Writer
 	if remove == nil {
 		remove = []string{}
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}
@@ -118,7 +118,7 @@ func runPostTagRevert(ctx context.Context, args []string, stdout, stderr io.Writ
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	c, ok := cfg.client(getenv, stderr)
+	c, ok := cfg.client(ctx, getenv, stderr)
 	if !ok {
 		return 1
 	}

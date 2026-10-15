@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const maxResponseBytes = 16 << 20
@@ -90,7 +89,11 @@ func (c *Client) request(ctx context.Context, method, path string, query url.Val
 
 // requestWithProtectedRead includes the bearer token on GET requests when the
 // endpoint requires authentication. Existing public reads keep their behavior.
-func (c *Client) requestWithProtectedRead(ctx context.Context, method, path string, query url.Values, payload, target any, protectedRead bool) error {
+func (c *Client) requestWithProtectedRead(ctx context.Context, method, path string, query url.Values, payload, target any, protectedRead bool) (err error) {
+	defer func() { err = c.scrub(err) }()
+	if err = c.prepareAuth(); err != nil {
+		return err
+	}
 	base := c.BaseURL
 	if base == "" {
 		base = "http://localhost:8080"
@@ -124,15 +127,11 @@ func (c *Client) requestWithProtectedRead(ctx context.Context, method, path stri
 		req.Header.Set("Content-Type", "application/json")
 	}
 	c.authorizeWithProtected(req, protectedRead)
-	transport := http.Client{Timeout: 10 * time.Second}
-	if c.HTTPClient != nil {
-		transport = *c.HTTPClient
+	if err = missingSessionOrigin(req); err != nil {
+		return err
 	}
-	if transport.Timeout <= 0 {
-		transport.Timeout = 10 * time.Second
-	}
-	// Redirects can turn writes into reads or resend credentials. Surface them.
-	transport.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// Redirects can turn writes into reads or resend credentials. httpTransport refuses them.
+	transport := c.httpTransport()
 	write := method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 	responseError := func(err error) error { return &RequestError{Err: err, Uncertain: write} }
 	resp, err := transport.Do(req)
@@ -152,9 +151,8 @@ func (c *Client) requestWithProtectedRead(ctx context.Context, method, path stri
 		if json.Unmarshal(data, &message) != nil || message.Error == "" {
 			message.Error = http.StatusText(resp.StatusCode) + " (unexpected API response; check --api-url)"
 		}
-		if token := strings.TrimSpace(c.APIToken); token != "" {
-			message.Error = strings.ReplaceAll(message.Error, token, "[redacted]")
-		}
+		message.Error = c.redact(message.Error)
+		message.Code = c.redact(message.Code)
 		return &APIError{Status: resp.StatusCode, Code: message.Code, Message: strings.Join(strings.Fields(message.Error), " ")}
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
