@@ -494,7 +494,8 @@ RETURNING ` + jobColumns
 // Fail records the caller's running row as failed work. While attempts
 // remain the row returns to pending with next_retry_at set from RetryDelay;
 // once attempts reach max_attempts the row is terminally failed. Both paths
-// clear the lease and keep the error text for status polling.
+// clear the lease. The stored last_error is SanitizeError's sentence, so a
+// worker's raw path, URL, or driver text never becomes the durable record.
 func (s *Store) Fail(ctx context.Context, id, lockedBy, errMsg string) (Job, error) {
 	if s == nil || s.pool == nil {
 		return Job{}, ErrUnavailable
@@ -506,10 +507,7 @@ func (s *Store) Fail(ctx context.Context, id, lockedBy, errMsg string) (Job, err
 	if strings.TrimSpace(lockedBy) == "" {
 		return Job{}, ErrInvalidJob
 	}
-	message := strings.TrimSpace(errMsg)
-	if message == "" {
-		message = "job failed"
-	}
+	message := SanitizeError(errMsg)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Job{}, err

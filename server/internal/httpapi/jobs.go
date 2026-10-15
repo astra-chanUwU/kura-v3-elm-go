@@ -11,7 +11,9 @@ import (
 
 // getJobStatus polls one durable job by id. Reads stay public like other
 // GET endpoints, so local polling works without credentials while the write
-// middleware still guards mutations.
+// middleware still guards mutations. The body is the public view: no
+// payload, object key, idempotency key, or worker lease, and last_error is
+// a sanitized sentence plus an action that names the next step.
 func getJobStatus(reader jobs.Reader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reader == nil {
@@ -29,7 +31,7 @@ func getJobStatus(reader jobs.Reader) http.HandlerFunc {
 			writeJobError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, job)
+		writeJSON(w, http.StatusOK, job.Public())
 	}
 }
 

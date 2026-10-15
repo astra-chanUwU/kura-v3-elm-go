@@ -269,8 +269,11 @@ func TestDerivativeMissingOriginalRecordsRetry(t *testing.T) {
 	if job.Attempts != 1 || job.Status != jobs.StatusPending {
 		t.Fatalf("missing original not retryable: %#v", job)
 	}
-	if !strings.Contains(job.LastError, "open original") {
-		t.Fatalf("missing original error not recorded: %q", job.LastError)
+	if job.LastError != "The file could not be read." {
+		t.Fatalf("missing original error not sanitized: %q", job.LastError)
+	}
+	if strings.Contains(job.LastError, "uploads/") || strings.Contains(job.LastError, root) {
+		t.Fatalf("stored error includes a path: %q", job.LastError)
 	}
 }
 
