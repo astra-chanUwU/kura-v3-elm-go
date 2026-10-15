@@ -85,7 +85,7 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 	r.Use(accessMiddleware(apiToken, accounts))
 
 	r.Get("/health", health)
-	r.Handle("/media/*", gatedMedia(deps.MediaVisibility))
+	r.Handle("/media/*", gatedMedia(deps.MediaVisibility, deps.MediaStore, accounts != nil && accounts.PrivateMode))
 
 	r.Route("/api", func(api chi.Router) {
 		// Deployment capabilities (capabilities.go).

@@ -32,6 +32,7 @@ type PostgresBackend struct {
 // demand, so a server can still start and serve /health while PostgreSQL is
 // unavailable. When S3_ENDPOINT and S3_BUCKET are set, the backend uses an
 // S3-compatible store; otherwise it falls back to a local filesystem store.
+// Private mode forces same-origin /media URLs for that store.
 func NewPostgresBackend(ctx context.Context, databaseURL string) (*PostgresBackend, error) {
 	return NewPostgresBackendWithStore(ctx, databaseURL, media.NewStoreFromEnv(uploadMediaRoot()))
 }
@@ -49,6 +50,15 @@ func NewPostgresBackendWithStore(ctx context.Context, databaseURL string, store 
 		jobStore: jobs.NewStore(pool),
 		variants: media.NewPostgresVariantStore(pool),
 	}, nil
+}
+
+// MediaStore returns the configured object store. Callers open it only with
+// a key resolved from a stored media reference.
+func (s *PostgresBackend) MediaStore() media.Store {
+	if s == nil {
+		return nil
+	}
+	return s.store
 }
 
 // JobsStore exposes the durable job store sharing the backend's pool. The

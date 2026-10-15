@@ -161,7 +161,9 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 
 Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
 
-Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs. Bucket access controls must cover remote media; the API's local `/media/` visibility checks do not protect external object URLs.
+Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs in public mode. Public mode stores those URLs and the browser loads them directly, so bucket access controls must cover them; `/media/` checks do not apply.
+
+Private mode may use the same S3-compatible store. It ignores `S3_URL_PREFIX` and records same-origin `/media/{key}` URLs. The API opens the configured store only after authentication and the post visibility check, using the key recorded by the upload, derivative, or import writer. It does not follow storage redirects or fetch any other URL. A private library that already contains an external media URL still refuses to start; those rows are not rewritten.
 
 The CLI sends `KURA_API_TOKEN` on writes and protected reads such as Trash. For a private library, also set `KURA_PRIVATE_READS=true`; this uses the deployment admin identity. Viewer/editor account login is currently browser-only. Legacy token mode retains **Unlock**/**Lock** in the top bar, and open local mode needs no token.
 
@@ -173,7 +175,7 @@ go -C server run ./cmd/kura-account bootstrap --handle owner
 
 The bootstrap tool reads a 12–72 byte password from standard input, never a command argument. It refuses a second initial admin. To retain saved searches owned by an existing local identity, use `--adopt-legacy local` instead of `--handle owner`. Start the API with `KURA_PRIVATE_LIBRARY=true`, then sign in through the browser. Use HTTPS in deployment; for local HTTP only, explicitly set `KURA_AUTH_ALLOW_HTTP_LOCAL=true`. Admins manage accounts under **Accounts** in Library tools. Viewers browse; editors change library content; admins also moderate and manage users. Role, password, or disabled-state changes revoke that user's sessions.
 
-Private mode currently requires local media and refuses S3 or persisted external media URLs at startup. Public object URLs cannot be protected by an API cookie. OAuth and passkeys are not implemented.
+Private mode serves media through the authenticated `/media/` handler, including objects in a configured S3-compatible bucket. It still refuses to start when a stored media URL is not a same-origin `/media/` path or an allowed static icon. OAuth and passkeys are not implemented.
 
 The native CLI can edit metadata, recover images, and save original ZIP exports:
 

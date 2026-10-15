@@ -99,9 +99,13 @@ func S3ConfigFromEnv() (S3Config, bool) {
 }
 
 // NewStoreFromEnv returns an S3Store when S3_ENDPOINT and S3_BUCKET are set
-// and valid, otherwise a LocalStore rooted at root.
+// and valid, otherwise a LocalStore rooted at root. Private mode forces the
+// same-origin /media prefix so writers do not persist public object URLs.
 func NewStoreFromEnv(root string) Store {
 	if cfg, ok := S3ConfigFromEnv(); ok {
+		if PrivateLibraryEnabled() {
+			cfg.URLPrefix = SameOriginMediaPrefix
+		}
 		if store, err := NewS3Store(cfg); err == nil {
 			return store
 		}
@@ -137,10 +141,7 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 		region = "us-east-1"
 	}
 	urlPrefix := strings.TrimRight(strings.TrimSpace(cfg.URLPrefix), "/")
-	client := cfg.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := clientWithoutRedirects(cfg.HTTPClient)
 	return &S3Store{
 		endpoint:        parsed,
 		bucket:          bucket,
@@ -150,6 +151,33 @@ func NewS3Store(cfg S3Config) (*S3Store, error) {
 		urlPrefix:       urlPrefix,
 		httpClient:      client,
 	}, nil
+}
+
+// clientWithoutRedirects clones base so store calls never follow a redirect
+// to another host. A nil base uses the process default client without
+// mutating it.
+func clientWithoutRedirects(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	clone := *base
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
+}
+
+func (s *S3Store) do(req *http.Request) (*http.Response, error) {
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, errors.New("s3 redirect refused")
+	}
+	return resp, nil
 }
 
 func (s *S3Store) Put(ctx context.Context, key, contentType string, content io.Reader) (Object, error) {
@@ -213,7 +241,7 @@ func (s *S3Store) Open(ctx context.Context, key string) (io.ReadCloser, error) {
 	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
 	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
 	s.signRequest(req, emptyHash)
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +305,7 @@ func (s *S3Store) headObject(ctx context.Context, key string) (bool, int64, erro
 	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
 	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
 	s.signRequest(req, emptyHash)
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		return false, 0, err
 	}
@@ -317,7 +345,7 @@ func (s *S3Store) putObject(ctx context.Context, key, contentType string, data [
 	}
 	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
 	s.signRequest(req, payloadHash)
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		return err
 	}
@@ -344,7 +372,7 @@ func (s *S3Store) deleteObject(ctx context.Context, key string) error {
 	emptyHash := hex.EncodeToString(sha256.New().Sum(nil))
 	req.Header.Set("X-Amz-Content-Sha256", emptyHash)
 	s.signRequest(req, emptyHash)
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		return err
 	}

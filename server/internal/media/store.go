@@ -145,7 +145,7 @@ func (s *LocalStore) object(key, contentType string, size int64, created bool) O
 }
 
 func validateKey(key string) error {
-	if strings.TrimSpace(key) == "" || strings.ContainsRune(key, '\x00') || filepath.IsAbs(key) {
+	if strings.TrimSpace(key) == "" || strings.ContainsRune(key, '\x00') || strings.ContainsRune(key, '\\') || strings.HasPrefix(key, "/") || filepath.IsAbs(key) {
 		return errors.New("invalid media object key")
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(key)))

@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"strings"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
@@ -26,18 +27,25 @@ func (s *PostgresBackend) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-// UsesExternalMediaProvider reports whether originals are served through
-// the S3-compatible provider, whose direct URLs bypass /media auth.
+// UsesExternalMediaProvider reports whether writers would persist object
+// URLs outside the authenticated /media handler. Same-origin S3 storage is
+// not external. A public CDN or endpoint URL is.
 func (s *PostgresBackend) UsesExternalMediaProvider() bool {
 	if s == nil {
 		return false
 	}
 	if s.store != nil {
-		_, ok := s.store.(*media.S3Store)
-		return ok
+		return media.PublishesExternalObjectURLs(s.store)
 	}
-	_, ok := media.S3ConfigFromEnv()
-	return ok
+	cfg, ok := media.S3ConfigFromEnv()
+	if !ok {
+		return false
+	}
+	if media.PrivateLibraryEnabled() {
+		return false
+	}
+	prefix := strings.TrimRight(strings.TrimSpace(cfg.URLPrefix), "/")
+	return prefix != media.SameOriginMediaPrefix
 }
 
 // HasExternalMediaURLs rejects persisted media outside the local gated
