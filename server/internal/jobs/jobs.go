@@ -67,10 +67,13 @@ type Job struct {
 	LockedAt       *time.Time      `json:"locked_at"`
 	LeaseExpiresAt *time.Time      `json:"lease_expires_at"`
 	Progress       int             `json:"progress"`
-	LastError      string          `json:"last_error"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	CompletedAt    *time.Time      `json:"completed_at"`
+	// LastError is the durable failure sentence. Fail stores a sanitized
+	// sentence; older rows may still hold a raw worker error, and Public
+	// reduces those before they leave the process.
+	LastError   string     `json:"last_error"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	CompletedAt *time.Time `json:"completed_at"`
 }
 
 // Reader serves one job row for status polling. Store implements it; the

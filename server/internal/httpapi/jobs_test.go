@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
@@ -45,12 +46,44 @@ func TestGetJobStatus(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	var body jobs.Job
+	var body jobs.PublicJob
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.ID != "42" || body.Kind != "export" || body.Status != jobs.StatusRunning || body.Progress != 40 {
+	if body.ID != "42" || body.Kind != "export" || body.Status != jobs.StatusRunning || body.Progress != 40 || body.Action != jobs.ActionWait {
 		t.Fatalf("unexpected job body: %#v", body)
+	}
+}
+
+func TestGetJobStatusHidesRawFailure(t *testing.T) {
+	rawKey := "uploads/s6secretpath.png"
+	owner := "worker-s6secretpath"
+	fake := &fakeJobSearcher{job: jobs.Job{
+		Kind:           "derivative",
+		Payload:        json.RawMessage(`{"original_key":"` + rawKey + `"}`),
+		Status:         jobs.StatusFailed,
+		IdempotencyKey: "derivative:42:thumb-320",
+		Attempts:       25,
+		MaxAttempts:    25,
+		LastError:      "open original: media object not found: " + rawKey + " password=s6hunter2",
+		LockedBy:       &owner,
+	}}
+	response := jobStatusRequest(t, NewRouter(fake), "42")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, leaked := range []string{"s6secretpath", "s6hunter2", "original_key", "idempotency_key", "locked_by", "payload", "password"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("status response contains %q: %s", leaked, body)
+		}
+	}
+	var public jobs.PublicJob
+	if err := json.Unmarshal(response.Body.Bytes(), &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.Action != jobs.ActionOriginalSaved || public.LastError != "The file could not be read." || public.Attempts != 25 {
+		t.Fatalf("public failure = %#v", public)
 	}
 }
 
