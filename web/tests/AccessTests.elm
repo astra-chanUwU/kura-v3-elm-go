@@ -152,6 +152,49 @@ caseDiscoverLocked =
     next.status == AppAccess.Locked && not (AppAccess.canWrite next)
 
 
+cookieCapabilities : Access.Capabilities
+cookieCapabilities =
+    { writesRequireAuth = True, canWrite = True, actor = Just "editor-handle" }
+
+
+viewerCookieCapabilities : Access.Capabilities
+viewerCookieCapabilities =
+    { writesRequireAuth = True, canWrite = False, actor = Just "viewer-handle" }
+
+
+caseDiscoverCookieUnlocksWithoutToken : Bool
+caseDiscoverCookieUnlocksWithoutToken =
+    let
+        next =
+            AppAccess.discovered 0 (Ok cookieCapabilities) AppAccess.init
+    in
+    next.status
+        == AppAccess.Unlocked
+        && AppAccess.canWrite next
+        && AppAccess.credential next
+        == Nothing
+        && next.token
+        == Nothing
+
+
+caseDiscoverViewerCookieStaysLockedForWrites : Bool
+caseDiscoverViewerCookieStaysLockedForWrites =
+    let
+        next =
+            AppAccess.discovered 0 (Ok viewerCookieCapabilities) AppAccess.init
+    in
+    next.status == AppAccess.Locked && not (AppAccess.canWrite next) && AppAccess.credential next == Nothing
+
+
+caseDiscoverBlankActorStaysLocked : Bool
+caseDiscoverBlankActorStaysLocked =
+    let
+        next =
+            AppAccess.discovered 0 (Ok { writesRequireAuth = True, canWrite = True, actor = Just "  " }) AppAccess.init
+    in
+    next.status == AppAccess.Locked && not (AppAccess.canWrite next)
+
+
 caseDiscoverStaleIgnored : Bool
 caseDiscoverStaleIgnored =
     AppAccess.discovered 7 (Ok openCapabilities) AppAccess.init == AppAccess.init
@@ -401,6 +444,9 @@ suite =
     , ( "checking denies writes", caseInitDenied )
     , ( "discover open-local", caseDiscoverOpen )
     , ( "discover locked", caseDiscoverLocked )
+    , ( "discover cookie unlocks without storing token", caseDiscoverCookieUnlocksWithoutToken )
+    , ( "discover viewer cookie stays write-locked", caseDiscoverViewerCookieStaysLockedForWrites )
+    , ( "discover blank actor stays locked", caseDiscoverBlankActorStaysLocked )
     , ( "stale discovery ignored", caseDiscoverStaleIgnored )
     , ( "discovery failure is unavailable", caseDiscoverFailureUnavailable )
     , ( "blank draft stays locked", caseBlankDraftStaysLocked )

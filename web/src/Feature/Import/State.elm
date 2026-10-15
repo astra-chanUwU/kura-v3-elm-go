@@ -1,5 +1,8 @@
 module Feature.Import.State exposing
     ( Access
+    , Checkpoint
+    , CheckpointEntry
+    , CheckpointPhase(..)
     , Counts
     , DuplicatePolicy(..)
     , Effect(..)
@@ -11,10 +14,17 @@ module Feature.Import.State exposing
     , Model
     , Note(..)
     , Phase(..)
+    , SaveStatus(..)
+    , SavedSummary
+    , buildCheckpoint
     , canStart
+    , canonicalApiBase
+    , checkpointTotalBytes
     , isCanonicalPostId
     , isPickBlocked
     , isTerminal
+    , maxTotalBytes
+    , restoreCheckpoint
     , setOpen
     , classify
     , counts
@@ -46,6 +56,60 @@ import Set exposing (Set)
 maxSupported : Int
 maxSupported =
     1000
+
+
+{-| Aggregate byte bound for one saved (durable) import: 250 MiB. -}
+maxTotalBytes : Int
+maxTotalBytes =
+    250 * 1024 * 1024
+
+
+checkpointSchema : Int
+checkpointSchema =
+    1
+
+
+{-| Canonical identity of an API base for saved-import matching:
+trimmed, no trailing slash, lower-cased scheme and authority. A saved
+import is only ever resumed against the exact canonical base it was
+saved for; anything else is rejected, never redirected.
+-}
+canonicalApiBase : String -> String
+canonicalApiBase raw =
+    let
+        trimmed =
+            String.trim raw |> stripTrailingSlashes
+    in
+    case String.split "://" trimmed of
+        scheme :: rest :: more ->
+            let
+                authorityAndPath =
+                    String.join "://" (rest :: more)
+
+                ( authority, path ) =
+                    case String.split "/" authorityAndPath of
+                        head :: tail ->
+                            ( head, String.join "/" tail )
+
+                        [] ->
+                            ( authorityAndPath, "" )
+            in
+            String.toLower scheme
+                ++ "://"
+                ++ String.toLower authority
+                ++ (if path == "" then "" else "/" ++ path)
+
+        _ ->
+            trimmed
+
+
+stripTrailingSlashes : String -> String
+stripTrailingSlashes value =
+    if String.endsWith "/" value && String.length value > 1 then
+        stripTrailingSlashes (String.dropRight 1 value)
+
+    else
+        value
 
 
 type DuplicatePolicy
@@ -129,6 +193,88 @@ type alias Model =
     , overflow : Int
     , status : Maybe String
     , lookedUp : Set String
+    , durableEnabled : Bool
+    , saveStatus : SaveStatus
+    , checkpointSeq : Int
+    , pendingBegin : Maybe Int
+    , savedSummary : Maybe SavedSummary
+    , savedCheckpointId : Maybe Int
+    , replaceNeedsConfirm : Bool
+    , awaitingResume : Bool
+    }
+
+
+{-| Honest durable-save state. `SaveStored` is only reached after the
+storage transaction commits; a requested save is `SavePending` until
+then and a failed one is `SaveFailed`, never `SaveStored`.
+-}
+type SaveStatus
+    = MemoryOnly
+    | SavePending Int
+    | SaveStored Int
+    | SaveFailed String
+
+
+type alias SavedSummary =
+    { checkpointId : Int
+    , fileCount : Int
+    , totalBytes : Int
+    , apiBase : String
+    , started : Bool
+    , generation : Int
+    }
+
+
+{-| Plain-data checkpoint phase. Carries no credential, token, access
+state, or object URL by construction.
+-}
+type CheckpointPhase
+    = CpExcluded String
+    | CpPendingHash
+    | CpHashing
+    | CpHashed
+    | CpHashFailed String
+    | CpQueuedImport
+    | CpImporting
+    | CpImported { postId : String, duplicate : Bool, attached : Bool, attachmentError : Maybe String }
+    | CpSkipped String
+    | CpFailed String
+    | CpUncertain String
+
+
+type alias CheckpointEntry =
+    { id : Int
+    , name : String
+    , relativePath : String
+    , size : Int
+    , mime : String
+    , lastModified : Int
+    , hash : Maybe String
+    , duplicatePostId : Maybe String
+    , tags : List String
+    , source : String
+    , artist : String
+    , phase : CheckpointPhase
+    , hasBlob : Bool
+    , hashVerified : Bool
+    }
+
+
+type alias Checkpoint =
+    { schema : Int
+    , checkpointId : Int
+    , apiBase : String
+    , generation : Int
+    , started : Bool
+    , tagsDraft : String
+    , artistDraft : String
+    , sourcePrefix : String
+    , collectionId : Maybe String
+    , duplicatePolicy : String
+    , capturedDuplicatePolicy : String
+    , capturedCollectionId : Maybe String
+    , overflow : Int
+    , entries : List CheckpointEntry
     }
 
 
@@ -171,6 +317,19 @@ type Event
     | ImportSettled { entryId : Int, generation : Int, outcome : ImportOutcome }
     | DismissRequested Int
     | FinishedCleared
+    | DurableEnabledChanged Bool
+    | ReplaceSavedConfirmed
+    | CheckpointStored Int
+    | CheckpointFailed Int String
+    | SavedProbeArrived (Maybe SavedSummary)
+    | SavedProbeFailed String
+    | RestoreSavedRequested
+    | SavedRestored String Checkpoint
+    | SavedRestoreFailed String
+    | DiscardSavedRequested
+    | SavedDiscarded
+    | SavedDiscardFailed String
+    | ExplicitResumeRequested
 
 
 type Effect
@@ -179,6 +338,9 @@ type Effect
     | BeginImport Int
     | ReleaseFile Int
     | ReleaseFiles (List Int)
+    | SaveCheckpoint Int
+    | DeleteSavedCheckpoint
+    | RestoreSavedCheckpoint
 
 
 type Note
@@ -205,6 +367,14 @@ init =
     , overflow = 0
     , status = Nothing
     , lookedUp = Set.empty
+    , durableEnabled = False
+    , saveStatus = MemoryOnly
+    , checkpointSeq = 0
+    , pendingBegin = Nothing
+    , savedSummary = Nothing
+    , savedCheckpointId = Nothing
+    , replaceNeedsConfirm = False
+    , awaitingResume = False
     }
 
 
@@ -570,15 +740,101 @@ update access event model =
 
                 dropped =
                     List.map .id model.entries |> List.filter (\id -> not (List.member id (List.map .id kept)))
+
+                cleared =
+                    { model | entries = kept }
+
+                ( checkpointed, checkpointEffects ) =
+                    requestCheckpoint cleared
             in
-            ( { model | entries = kept }
-            , if List.isEmpty dropped then
+            ( checkpointed
+            , (if List.isEmpty dropped then
                 []
 
-              else
+               else
                 [ ReleaseFiles dropped ]
+              )
+                ++ checkpointEffects
             , []
             )
+
+        DurableEnabledChanged enabled ->
+            durableEnabledChanged access enabled model
+
+        ReplaceSavedConfirmed ->
+            if not model.replaceNeedsConfirm then
+                ( model, [], [] )
+
+            else
+                let
+                    confirmed =
+                        { model | replaceNeedsConfirm = False, savedSummary = Nothing, durableEnabled = True }
+
+                    ( checkpointed, effects ) =
+                        requestCheckpoint confirmed
+                in
+                ( checkpointed, effects, [] )
+
+        CheckpointStored checkpointId ->
+            checkpointStored access checkpointId model
+
+        CheckpointFailed checkpointId message ->
+            checkpointFailed checkpointId message model
+
+        SavedProbeArrived summary ->
+            case summary of
+                Just found ->
+                    if model.savedCheckpointId == Just found.checkpointId && model.durableEnabled then
+                        ( model, [], [] )
+
+                    else
+                        ( { model | savedSummary = Just found }, [], [] )
+
+                Nothing ->
+                    ( { model | savedSummary = Nothing }, [], [] )
+
+        SavedProbeFailed message ->
+            ( { model | status = Just ("Saved-import check failed: " ++ message ++ " This import stays memory-only until a save succeeds.") }, [], [] )
+
+        RestoreSavedRequested ->
+            case model.savedSummary of
+                Just _ ->
+                    ( model, [ RestoreSavedCheckpoint ], [] )
+
+                Nothing ->
+                    ( { model | status = Just "There is no saved import to resume." }, [], [] )
+
+        SavedRestored currentApiBase checkpoint ->
+            restoreSaved access currentApiBase checkpoint model
+
+        SavedRestoreFailed message ->
+            ( { model | status = Just ("Could not resume the saved import: " ++ message) }, [], [] )
+
+        DiscardSavedRequested ->
+            if model.savedSummary == Nothing && model.savedCheckpointId == Nothing then
+                ( { model | status = Just "There is no saved import to discard." }, [], [] )
+
+            else
+                ( model, [ DeleteSavedCheckpoint ], [] )
+
+        SavedDiscarded ->
+            ( { model
+                | savedSummary = Nothing
+                , savedCheckpointId = Nothing
+                , durableEnabled = False
+                , saveStatus = MemoryOnly
+                , replaceNeedsConfirm = False
+                , status = Just "Saved import discarded. Only the browser copies were removed; nothing in the library changed."
+              }
+            , []
+            , []
+            )
+
+        SavedDiscardFailed message ->
+            ( { model | status = Just ("Could not discard the saved import: " ++ message) }, [], [] )
+
+        ExplicitResumeRequested ->
+            explicitResume access model
 
 
 isTerminal : Entry -> Bool
@@ -752,16 +1008,20 @@ filesChosen access generation facts model =
 
             ( pumped, effects, notes ) =
                 pumpHash access next
+
+            ( checkpointed, checkpointEffects ) =
+                requestCheckpoint pumped
         in
         -- Replaced-preview ids are reused by the new pick, so only this
         -- pick's excluded/overflow ids are released (to both stores).
-        ( pumped
+        ( checkpointed
         , (if List.isEmpty droppedIds then
             effects
 
            else
             ReleaseFiles droppedIds :: effects
           )
+            ++ checkpointEffects
         , notes
         )
 
@@ -842,21 +1102,21 @@ hashSucceeded access result model =
                     ( model, [], [] )
 
                 else if not (isValidHash result.hash) then
-                    pumpHash access
+                    pumpHashThenCheckpoint access
                         { model
                             | hashingId = Nothing
                             , entries = replaceEntry { entry | phase = HashFailed "The browser returned an invalid hash for this file." } model.entries
                         }
 
                 else if result.size /= entry.size || result.lastModified /= entry.lastModified then
-                    pumpHash access
+                    pumpHashThenCheckpoint access
                         { model
                             | hashingId = Nothing
                             , entries = replaceEntry { entry | phase = HashFailed "This file changed after it was picked. Pick it again before importing." } model.entries
                         }
 
                 else
-                    pumpHash access
+                    pumpHashThenCheckpoint access
                         { model
                             | hashingId = Nothing
                             , entries = replaceEntry { entry | phase = Hashed, hash = Just result.hash } model.entries
@@ -868,7 +1128,10 @@ hashSucceeded access result model =
 
 start : Access -> Model -> ( Model, List Effect, List Note )
 start access model =
-    if not access.writesEnabled then
+    if model.awaitingResume then
+        explicitResume access model
+
+    else if not access.writesEnabled then
         ( { model | status = Just "Unlock to start the import." }, [], [] )
 
     else if model.hashingId /= Nothing || List.any (\e -> e.phase == PendingHash) model.entries then
@@ -916,19 +1179,43 @@ start access model =
 
 pumpImport : Access -> Model -> ( Model, List Effect, List Note )
 pumpImport access model =
-    if model.held || not access.writesEnabled || model.importingId /= Nothing then
+    if model.held || model.awaitingResume || not access.writesEnabled || model.importingId /= Nothing then
         ( model, [], [] )
 
     else
         case List.filter (\e -> e.phase == QueuedImport) model.entries |> List.head of
             Just next ->
-                ( { model
-                    | importingId = Just next.id
-                    , entries = replaceEntry { next | phase = Importing access.accessGeneration } model.entries
-                  }
-                , [ BeginImport next.id ]
-                , []
-                )
+                if model.durableEnabled then
+                    -- Persist intent BEFORE the request: the entry is
+                    -- recorded as importing in the checkpoint, and the
+                    -- upload only begins when that save commits.
+                    if model.pendingBegin /= Nothing then
+                        ( model, [], [] )
+
+                    else
+                        let
+                            checkpointId =
+                                model.checkpointSeq + 1
+                        in
+                        ( { model
+                            | importingId = Just next.id
+                            , pendingBegin = Just next.id
+                            , checkpointSeq = checkpointId
+                            , saveStatus = SavePending checkpointId
+                            , entries = replaceEntry { next | phase = Importing access.accessGeneration } model.entries
+                          }
+                        , [ SaveCheckpoint checkpointId ]
+                        , []
+                        )
+
+                else
+                    ( { model
+                        | importingId = Just next.id
+                        , entries = replaceEntry { next | phase = Importing access.accessGeneration } model.entries
+                      }
+                    , [ BeginImport next.id ]
+                    , []
+                    )
 
             Nothing ->
                 ( model, [], [] )
@@ -939,8 +1226,572 @@ resume access model =
     if not access.writesEnabled then
         ( model, [], [] )
 
+    else if model.awaitingResume then
+        -- A restored import never restarts from an unlock alone; it
+        -- waits for the explicit Resume/Start action.
+        ( model, [], [] )
+
     else
         pumpImport access { model | held = False }
+
+
+withReceiptCheckpoint : ( Model, List Effect, List Note ) -> ( Model, List Effect, List Note )
+withReceiptCheckpoint ( model, effects, notes ) =
+    let
+        ( checkpointed, checkpointEffects ) =
+            requestCheckpoint model
+    in
+    ( checkpointed, effects ++ checkpointEffects, notes )
+
+
+pumpHashThenCheckpoint : Access -> Model -> ( Model, List Effect, List Note )
+pumpHashThenCheckpoint access model =
+    let
+        ( pumped, effects, notes ) =
+            pumpHash access model
+
+        stillHashing =
+            List.any (\e -> e.phase == PendingHash || e.phase == Hashing) pumped.entries
+    in
+    if stillHashing then
+        ( pumped, effects, notes )
+
+    else
+        withReceiptCheckpoint ( pumped, effects, notes )
+
+
+explicitResume : Access -> Model -> ( Model, List Effect, List Note )
+explicitResume access model =
+    if not access.writesEnabled then
+        ( { model | status = Just "Unlock to resume the import." }, [], [] )
+
+    else
+        pumpImport access { model | held = False, awaitingResume = False }
+
+
+{-| Ask storage for a fresh checkpoint of the current state. No-op in
+memory-only mode, with no entries, or while a save is in flight (the
+in-flight snapshot is superseded by the next trigger).
+-}
+requestCheckpoint : Model -> ( Model, List Effect )
+requestCheckpoint model =
+    if not model.durableEnabled || List.isEmpty model.entries then
+        ( model, [] )
+
+    else
+        case model.saveStatus of
+            SavePending _ ->
+                ( model, [] )
+
+            _ ->
+                let
+                    checkpointId =
+                        model.checkpointSeq + 1
+                in
+                ( { model | checkpointSeq = checkpointId, saveStatus = SavePending checkpointId }
+                , [ SaveCheckpoint checkpointId ]
+                )
+
+
+durableEnabledChanged : Access -> Bool -> Model -> ( Model, List Effect, List Note )
+durableEnabledChanged access enabled model =
+    if enabled then
+        case model.savedSummary of
+            Just summary ->
+                if model.savedCheckpointId /= Just summary.checkpointId && not (List.isEmpty model.entries) then
+                    ( { model
+                        | replaceNeedsConfirm = True
+                        , status = Just "A different saved import already exists. Confirm replacing it before the current import is kept for reload; the saved import is not discarded until you confirm."
+                      }
+                    , []
+                    , []
+                    )
+
+                else
+                    enableDurable model
+
+            Nothing ->
+                enableDurable model
+
+    else
+        -- Explicit switch to memory-only: a gated upload may proceed
+        -- now that no durable intent checkpoint is required.
+        let
+            switched =
+                { model
+                    | durableEnabled = False
+                    , saveStatus = MemoryOnly
+                    , replaceNeedsConfirm = False
+                    , pendingBegin = Nothing
+                    , status = Just "This import is memory-only now. Reloading will lose it."
+                }
+        in
+        case model.pendingBegin of
+            Just entryId ->
+                case findEntry entryId model of
+                    Just entry ->
+                        case entry.phase of
+                            Importing _ ->
+                                ( switched, [ BeginImport entryId ], [] )
+
+                            _ ->
+                                pumpImport access switched
+
+                    Nothing ->
+                        pumpImport access switched
+
+            Nothing ->
+                -- A failed intent checkpoint already reverted its
+                -- entry to queued; switching to memory-only releases
+                -- the queue through the normal pump.
+                pumpImport access switched
+
+
+enableDurable : Model -> ( Model, List Effect, List Note )
+enableDurable model =
+    let
+        enabled =
+            { model | durableEnabled = True, replaceNeedsConfirm = False }
+
+        ( checkpointed, effects ) =
+            requestCheckpoint enabled
+    in
+    ( if List.isEmpty model.entries then
+        { checkpointed | status = Just "This import will be kept for reload once files are picked." }
+
+      else
+        checkpointed
+    , effects
+    , []
+    )
+
+
+checkpointStored : Access -> Int -> Model -> ( Model, List Effect, List Note )
+checkpointStored access checkpointId model =
+    case model.saveStatus of
+        SavePending pendingId ->
+            if pendingId /= checkpointId then
+                -- Late ack for a superseded save: it must not relabel
+                -- or release the newer queue state.
+                ( model, [], [] )
+
+            else
+                let
+                    stored =
+                        { model
+                            | saveStatus = SaveStored checkpointId
+                            , savedCheckpointId = Just checkpointId
+                            , savedSummary = Nothing
+                        }
+                in
+                case model.pendingBegin of
+                    Just entryId ->
+                        if not access.writesEnabled then
+                            case findEntry entryId model of
+                                Just entry ->
+                                    ( { stored
+                                        | pendingBegin = Nothing
+                                        , importingId = Nothing
+                                        , entries = replaceEntry { entry | phase = QueuedImport } stored.entries
+                                        , status = Just "Unlock to start the import."
+                                      }
+                                    , []
+                                    , []
+                                    )
+
+                                Nothing ->
+                                    ( { stored | pendingBegin = Nothing, importingId = Nothing }, [], [] )
+
+                        else
+                            ( { stored | pendingBegin = Nothing }, [ BeginImport entryId ], [] )
+
+                    Nothing ->
+                        ( stored, [], [] )
+
+        _ ->
+            ( model, [], [] )
+
+
+checkpointFailed : Int -> String -> Model -> ( Model, List Effect, List Note )
+checkpointFailed checkpointId message model =
+    case model.saveStatus of
+        SavePending pendingId ->
+            if pendingId /= checkpointId then
+                ( model, [], [] )
+
+            else
+                case model.pendingBegin of
+                    Just entryId ->
+                        -- No mutation may be sent when the chosen
+                        -- durable intent checkpoint failed.
+                        case findEntry entryId model of
+                            Just entry ->
+                                ( { model
+                                    | pendingBegin = Nothing
+                                    , importingId = Nothing
+                                    , saveStatus = SaveFailed message
+                                    , entries = replaceEntry { entry | phase = QueuedImport } model.entries
+                                    , status = Just ("Could not save the import checkpoint, so nothing was uploaded: " ++ message ++ " Keep trying to save, or switch to memory-only to import without reload safety.")
+                                  }
+                                , []
+                                , []
+                                )
+
+                            Nothing ->
+                                ( { model | pendingBegin = Nothing, importingId = Nothing, saveStatus = SaveFailed message }, [], [] )
+
+                    Nothing ->
+                        ( { model
+                            | saveStatus = SaveFailed message
+                            , status = Just ("Could not save the import checkpoint: " ++ message ++ " This import is still usable in memory; reload safety is off until a save succeeds.")
+                          }
+                        , []
+                        , []
+                        )
+
+        _ ->
+            ( model, [], [] )
+
+
+phaseToCheckpoint : Phase -> CheckpointPhase
+phaseToCheckpoint phase =
+    case phase of
+        Excluded message ->
+            CpExcluded message
+
+        PendingHash ->
+            CpPendingHash
+
+        Hashing ->
+            CpHashing
+
+        Hashed ->
+            CpHashed
+
+        HashFailed message ->
+            CpHashFailed message
+
+        QueuedImport ->
+            CpQueuedImport
+
+        Importing _ ->
+            CpImporting
+
+        Imported info ->
+            CpImported info
+
+        Skipped postId ->
+            CpSkipped postId
+
+        Failed message ->
+            CpFailed message
+
+        Uncertain message ->
+            CpUncertain message
+
+
+needsBlob : CheckpointPhase -> Bool
+needsBlob phase =
+    case phase of
+        CpExcluded _ ->
+            False
+
+        CpHashFailed _ ->
+            False
+
+        CpImported _ ->
+            False
+
+        CpSkipped _ ->
+            False
+
+        CpFailed _ ->
+            False
+
+        CpUncertain _ ->
+            False
+
+        _ ->
+            True
+
+
+{-| Build the plain-data checkpoint for the current model. Only file
+facts, hashes, captured metadata, policy/collection targets, and
+receipts are included — never a credential, token, access state, or
+object URL, because none of those exist in this state.
+-}
+buildCheckpoint : String -> Model -> Checkpoint
+buildCheckpoint apiBase model =
+    { schema = checkpointSchema
+    , checkpointId = model.checkpointSeq
+    , apiBase = canonicalApiBase apiBase
+    , generation = model.generation
+    , started = model.started
+    , tagsDraft = model.tagsDraft
+    , artistDraft = model.artistDraft
+    , sourcePrefix = model.sourcePrefix
+    , collectionId = model.collectionId
+    , duplicatePolicy = policyString model.duplicatePolicy
+    , capturedDuplicatePolicy = policyString model.capturedDuplicatePolicy
+    , capturedCollectionId = model.capturedCollectionId
+    , overflow = model.overflow
+    , entries =
+        List.map
+            (\entry ->
+                { id = entry.id
+                , name = entry.name
+                , relativePath = entry.relativePath
+                , size = entry.size
+                , mime = entry.mime
+                , lastModified = entry.lastModified
+                , hash = entry.hash
+                , duplicatePostId = entry.duplicatePostId
+                , tags = entry.tags
+                , source = entry.source
+                , artist = entry.artist
+                , phase = phaseToCheckpoint entry.phase
+                , hasBlob = needsBlob (phaseToCheckpoint entry.phase)
+                , hashVerified = True
+                }
+            )
+            model.entries
+    }
+
+
+checkpointTotalBytes : Checkpoint -> Int
+checkpointTotalBytes checkpoint =
+    List.map .size checkpoint.entries |> List.sum
+
+
+restoreSaved : Access -> String -> Checkpoint -> Model -> ( Model, List Effect, List Note )
+restoreSaved access currentApiBase checkpoint model =
+    case restoreCheckpoint currentApiBase checkpoint model of
+        Ok ( restored, effects ) ->
+            let
+                ( pumped, pumpEffects, notes ) =
+                    pumpHash access restored
+            in
+            ( pumped, effects ++ pumpEffects, notes )
+
+        Err message ->
+            ( { model | status = Just ("Could not resume the saved import: " ++ message) }, [], [] )
+
+
+{-| Validate and restore a checkpoint against the live canonical API
+base. Terminal receipts stay terminal; importing/uncertain work becomes
+explicit `Uncertain` and is never auto-resubmitted; hashing/queued work
+resumes only from verified bytes. Nothing starts uploading here.
+-}
+restoreCheckpoint : String -> Checkpoint -> Model -> Result String ( Model, List Effect )
+restoreCheckpoint currentApiBase checkpoint model =
+    if checkpoint.schema /= checkpointSchema then
+        Err "The saved import uses an unsupported format and cannot be resumed."
+
+    else if canonicalApiBase checkpoint.apiBase /= canonicalApiBase currentApiBase then
+        Err "The saved import belongs to a different API and was not sent there. Discard it or open the original API to resume it."
+
+    else if List.length checkpoint.entries > maxSupported then
+        Err "The saved import has more than 1000 files and cannot be resumed."
+
+    else if checkpointTotalBytes checkpoint > maxTotalBytes then
+        Err "The saved import is larger than 250 MiB in total and cannot be resumed."
+
+    else if hasDuplicateIds checkpoint.entries then
+        Err "The saved import is damaged (duplicate file entries) and cannot be resumed."
+
+    else if not (List.isEmpty model.entries) && model.savedCheckpointId /= Just checkpoint.checkpointId then
+        Err "Finish or clear the current preview before resuming a saved import."
+
+    else
+        case validateCheckpointEntries checkpoint.entries of
+            Just problem ->
+                Err problem
+
+            Nothing ->
+                let
+                    entries =
+                        List.map restoreEntry checkpoint.entries
+
+                    anyQueued =
+                        List.any (\e -> e.phase == QueuedImport) entries
+
+                    restored =
+                        { model
+                            | entries = entries
+                            , generation = checkpoint.generation
+                            , hashingId = Nothing
+                            , importingId = Nothing
+                            , started = checkpoint.started
+                            , held = checkpoint.started && anyQueued
+                            , awaitingResume = checkpoint.started && anyQueued
+                            , tagsDraft = checkpoint.tagsDraft
+                            , artistDraft = checkpoint.artistDraft
+                            , sourcePrefix = checkpoint.sourcePrefix
+                            , collectionId = checkpoint.collectionId
+                            , duplicatePolicy = policyFromString checkpoint.duplicatePolicy
+                            , capturedDuplicatePolicy = policyFromString checkpoint.capturedDuplicatePolicy
+                            , capturedCollectionId = checkpoint.capturedCollectionId
+                            , overflow = checkpoint.overflow
+                            , lookedUp =
+                                Set.fromList
+                                    (List.filterMap
+                                        (\e ->
+                                            if isTerminal e then
+                                                e.hash
+
+                                            else
+                                                Nothing
+                                        )
+                                        entries
+                                    )
+                            , durableEnabled = True
+                            , saveStatus = SaveStored checkpoint.checkpointId
+                            , checkpointSeq = checkpoint.checkpointId
+                            , pendingBegin = Nothing
+                            , savedSummary = Nothing
+                            , savedCheckpointId = Just checkpoint.checkpointId
+                            , replaceNeedsConfirm = False
+                            , status = Just "Saved import restored. Nothing uploads until you resume or start it; files that were importing need review."
+                        }
+                in
+                Ok ( restored, [] )
+
+
+hasDuplicateIds : List CheckpointEntry -> Bool
+hasDuplicateIds entries =
+    let
+        ids =
+            List.map .id entries
+    in
+    List.length ids /= (Set.fromList ids |> Set.size)
+
+
+validateCheckpointEntries : List CheckpointEntry -> Maybe String
+validateCheckpointEntries entries =
+    List.filterMap validateCheckpointEntry entries |> List.head
+
+
+validateCheckpointEntry : CheckpointEntry -> Maybe String
+validateCheckpointEntry entry =
+    if entry.size < 0 then
+        Just "The saved import is damaged (a file has a negative size) and cannot be resumed."
+
+    else if needsBlob entry.phase && entry.size <= 0 then
+        Just ("The saved copy of " ++ entry.relativePath ++ " is empty and cannot be resumed.")
+
+    else
+        case entry.phase of
+            CpImported info ->
+                if not (isCanonicalPostId info.postId) then
+                    Just "The saved import is damaged (a completed receipt has no valid post) and cannot be resumed."
+
+                else
+                    validateCheckpointHash entry
+
+            CpSkipped postId ->
+                if not (isCanonicalPostId postId) then
+                    Just "The saved import is damaged (a skipped receipt has no valid post) and cannot be resumed."
+
+                else
+                    validateCheckpointHash entry
+
+            CpHashed ->
+                validateCheckpointHash entry
+
+            CpQueuedImport ->
+                validateCheckpointHash entry
+
+            CpImporting ->
+                validateCheckpointHash entry
+
+            _ ->
+                Nothing
+
+
+validateCheckpointHash : CheckpointEntry -> Maybe String
+validateCheckpointHash entry =
+    case entry.hash of
+        Just hash ->
+            if isValidHash hash then
+                Nothing
+
+            else
+                Just ("The saved import is damaged (" ++ entry.relativePath ++ " has an invalid hash) and cannot be resumed.")
+
+        Nothing ->
+            Just ("The saved import is damaged (" ++ entry.relativePath ++ " has no hash) and cannot be resumed.")
+
+
+restoreEntry : CheckpointEntry -> Entry
+restoreEntry entry =
+    let
+        base =
+            { id = entry.id
+            , name = entry.name
+            , relativePath = entry.relativePath
+            , size = entry.size
+            , mime = entry.mime
+            , lastModified = entry.lastModified
+            , hash = entry.hash
+            , duplicatePostId = entry.duplicatePostId
+            , tags = entry.tags
+            , source = entry.source
+            , artist = entry.artist
+            , phase = PendingHash
+            }
+    in
+    case entry.phase of
+        CpExcluded message ->
+            { base | phase = Excluded message }
+
+        CpPendingHash ->
+            if entry.hasBlob then
+                { base | phase = PendingHash }
+
+            else
+                { base | phase = HashFailed "The saved file copy is missing. Pick the file again to import it." }
+
+        CpHashing ->
+            if entry.hasBlob then
+                { base | phase = PendingHash }
+
+            else
+                { base | phase = HashFailed "The saved file copy is missing. Pick the file again to import it." }
+
+        CpHashed ->
+            if not entry.hasBlob then
+                { base | phase = HashFailed "The saved file copy is missing. Pick the file again to import it." }
+
+            else if entry.hashVerified then
+                { base | phase = Hashed }
+
+            else
+                { base | phase = PendingHash }
+
+        CpHashFailed message ->
+            { base | phase = HashFailed message }
+
+        CpQueuedImport ->
+            if entry.hasBlob && entry.hashVerified then
+                { base | phase = QueuedImport }
+
+            else
+                { base | phase = Uncertain "The saved copy of this queued file could not be verified, so it was not resubmitted. Needs review." }
+
+        CpImporting ->
+            { base | phase = Uncertain "This file was importing when the saved import was closed. It may already exist; it was not resubmitted. Needs review." }
+
+        CpImported info ->
+            { base | phase = Imported info }
+
+        CpSkipped postId ->
+            { base | phase = Skipped postId }
+
+        CpFailed message ->
+            { base | phase = Failed message }
+
+        CpUncertain message ->
+            { base | phase = Uncertain message }
 
 
 importSettled : Access -> { entryId : Int, generation : Int, outcome : ImportOutcome } -> Model -> ( Model, List Effect, List Note )
@@ -956,7 +1807,7 @@ importSettled access settled model =
                         ( model, [], [] )
 
                     else
-                        settle access settled.outcome entry { model | importingId = Nothing }
+                        withReceiptCheckpoint (settle access settled.outcome entry { model | importingId = Nothing })
 
                 _ ->
                     ( model, [], [] )
@@ -1115,4 +1966,4 @@ dismiss access entryId model =
                         ( pumped, effects, notes ) =
                             pumpHash access next
                     in
-                    ( pumped, ReleaseFile entryId :: effects, notes )
+                    withReceiptCheckpoint ( pumped, ReleaseFile entryId :: effects, notes )

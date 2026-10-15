@@ -1,5 +1,6 @@
 module Page.Library exposing (Model, Msg, init, onUrlChange, onUrlRequest, subscriptions, update, view)
 
+import Api.ModerationPreview as ModerationPreview
 import Api.Post
 import Api.Access
 import Api.Error as ApiError
@@ -13,6 +14,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Events
 import Browser.Navigation as Nav
+import Domain.Moderation
 import Domain.Post exposing (PostDetail, PostSummary, SearchResponse, summaryOfDetail)
 import Domain.CollectionLogic as CollectionLogic
 import Domain.Query as Query
@@ -24,6 +26,10 @@ import Feature.Import as BrowserImport
 import Feature.Inspector
 import Feature.BulkMetadata as BulkMetadata
 import Feature.Duplicates as Duplicates
+import Feature.Moderation as Moderation
+import Feature.Recovery as Recovery
+import Feature.Session as Session
+import Feature.Similarity as Similarity
 import Feature.Metadata as Metadata
 import Feature.MediaGrid as MediaGrid
 import Feature.MediaGrid.Layout as Layout exposing (Geometry, Viewport)
@@ -129,6 +135,12 @@ type alias Model =
     , metadata : Metadata.Model
     , bulkMetadata : BulkMetadata.Model
     , duplicates : Duplicates.Model
+    , moderation : Moderation.Model
+    , session : Session.Model
+    , similarity : Similarity.Model
+    , recovery : Recovery.Model
+    , similarityTrash : Maybe ( String, List String, Int )
+    , similarityCompare : Maybe ( String, String )
     , uploadedPosts : Dict String PostSummary
     , uploadOrigin : Maybe UploadOrigin
     , duplicatesOrigin : Maybe UploadOrigin
@@ -182,6 +194,9 @@ init flagsValue url key =
         route =
             Route.fromUrl url
 
+        ( sessionModel, sessionCmd ) =
+            Session.init (Session.context flags.apiBase 0)
+
         model =
             { key = key
             , apiBase = flags.apiBase
@@ -218,6 +233,12 @@ init flagsValue url key =
             , metadata = Metadata.init
             , bulkMetadata = BulkMetadata.init
             , duplicates = Duplicates.init
+            , moderation = Moderation.init
+            , session = sessionModel
+            , similarity = Similarity.init
+            , recovery = Recovery.init
+            , similarityTrash = Nothing
+            , similarityCompare = Nothing
             , uploadedPosts = Dict.empty
             , uploadOrigin = Nothing
             , duplicatesOrigin = Nothing
@@ -241,6 +262,7 @@ init flagsValue url key =
     , Cmd.batch
         [ searchCmd
         , measureGrid 0
+        , Cmd.map SessionMsg sessionCmd
         , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
         , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
         ]
@@ -329,6 +351,11 @@ type Msg
     | MetadataMsg Metadata.Msg
     | BulkMetadataMsg BulkMetadata.Msg
     | TrashMsg Trash.Msg
+    | ModerationMsg Moderation.Msg
+    | SessionMsg Session.Msg
+    | SimilarityMsg Similarity.Msg
+    | RecoveryMsg Recovery.Msg
+    | SimilarityCompareMeasured String String (Result Dom.Error Dom.Viewport)
     | DuplicatesMsg Duplicates.Msg
     | DuplicateCompareMeasured String String String (Result Dom.Error Dom.Viewport)
     | TagManagementMsg TagManagement.Msg
@@ -461,7 +488,7 @@ updateHelp msg model =
                     model.ownQuery == Just route.query
 
                 cleared =
-                    { model | ownQuery = Nothing }
+                    invalidateSimilarityTrash { model | ownQuery = Nothing }
             in
             if route.query /= Search.query model.search || own then
                 startSearch
@@ -525,6 +552,9 @@ updateHelp msg model =
         DetailCompleted generation detailEpoch postId result ->
             if not (App.Access.isCurrent generation model.access) || detailEpoch /= model.detailEpoch then
                 ( model, Cmd.none )
+
+            else if Session.privateMode model.session && resultIsUnauthorized result then
+                accessRevokedNow model
 
             else
                 let
@@ -623,10 +653,25 @@ updateHelp msg model =
         TrashMsg subMsg ->
             case subMsg of
                 Trash.TrashSelectedRequested _ ->
-                    delegateTrash subMsg { model | duplicateTrash = Nothing }
+                    delegateTrash subMsg { model | duplicateTrash = Nothing, similarityTrash = Nothing }
 
                 _ ->
                     delegateTrash subMsg model
+
+        ModerationMsg subMsg ->
+            delegateModeration subMsg model
+
+        SessionMsg subMsg ->
+            delegateSession subMsg model
+
+        SimilarityMsg subMsg ->
+            delegateSimilarity subMsg model
+
+        RecoveryMsg subMsg ->
+            delegateRecovery subMsg model
+
+        SimilarityCompareMeasured anchorId candidateId result ->
+            handleSimilarityCompareMeasured anchorId candidateId result model
 
         DuplicatesMsg subMsg ->
             delegateDuplicates subMsg model
@@ -1494,6 +1539,9 @@ runCommand command model =
             else if Duplicates.isOpen model.duplicates then
                 delegateDuplicates Duplicates.CloseRequested model
 
+            else if Similarity.isOpen model.similarity then
+                delegateSimilarity Similarity.CloseRequested model
+
             else if drawersOpen model then
                 ( { model | navigatorDrawer = False, inspectorDrawer = False }, Cmd.none )
 
@@ -1661,6 +1709,27 @@ retrySearch model =
 
 delegateSearch : Search.Msg -> Model -> ( Model, Cmd Msg )
 delegateSearch subMsg model =
+    case subMsg of
+        Search.Completed requestId _ result ->
+            if Session.privateMode model.session && Session.canRead model.session && requestId == Search.requestId model.search && resultIsUnauthorized result then
+                accessRevokedNow model
+
+            else
+                settleSearch subMsg model
+
+
+resultIsUnauthorized : Result Http.Error value -> Bool
+resultIsUnauthorized result =
+    case result of
+        Err (Http.BadStatus 401) ->
+            True
+
+        _ ->
+            False
+
+
+settleSearch : Search.Msg -> Model -> ( Model, Cmd Msg )
+settleSearch subMsg model =
     let
         ( search, searchCmd, outs ) =
             Search.update (searchContext model) subMsg model.search
@@ -2140,16 +2209,33 @@ delegateTrash : Trash.Msg -> Model -> ( Model, Cmd Msg )
 delegateTrash subMsg model =
     let
         safeMsg =
-            case ( subMsg, model.duplicateTrash ) of
-                ( Trash.TrashConfirmRequested, Just ( hash, ids ) ) ->
-                    if Duplicates.currentHash model.duplicates == Just hash
-                        && Duplicates.isOpen model.duplicates
-                        && not (Duplicates.membersLoading model.duplicates)
-                        && List.sort ids == List.sort (Duplicates.trashableIds model.duplicates) then
-                        subMsg
+            case subMsg of
+                Trash.TrashConfirmRequested ->
+                    case model.duplicateTrash of
+                        Just ( hash, ids ) ->
+                            if Duplicates.currentHash model.duplicates == Just hash
+                                && Duplicates.isOpen model.duplicates
+                                && not (Duplicates.membersLoading model.duplicates)
+                                && List.sort ids == List.sort (Duplicates.trashableIds model.duplicates) then
+                                subMsg
 
-                    else
-                        Trash.TrashCancelled
+                            else
+                                Trash.TrashCancelled
+
+                        Nothing ->
+                            case model.similarityTrash of
+                                Just ( anchorId, ids, generation ) ->
+                                    if Similarity.isOpen model.similarity
+                                        && Similarity.anchorId model.similarity == Just anchorId
+                                        && generation == model.access.generation
+                                        && List.sort ids == List.sort (Similarity.trashableIds model.similarity) then
+                                        subMsg
+
+                                    else
+                                        Trash.TrashCancelled
+
+                                Nothing ->
+                                    subMsg
 
                 _ ->
                     subMsg
@@ -2158,7 +2244,13 @@ delegateTrash subMsg model =
             Trash.update (trashContext model) safeMsg model.trash
 
         base =
-            ( { model | trash = trash, duplicateTrash = if Trash.pendingTrashCount trash == Nothing then Nothing else model.duplicateTrash }, Cmd.map TrashMsg cmd )
+            ( { model
+                | trash = trash
+                , duplicateTrash = if Trash.pendingTrashCount trash == Nothing then Nothing else model.duplicateTrash
+                , similarityTrash = if Trash.pendingTrashCount trash == Nothing then Nothing else model.similarityTrash
+              }
+            , Cmd.map TrashMsg cmd
+            )
     in
     List.foldl applyTrashOut base outs
 
@@ -2173,8 +2265,11 @@ applyTrashOut out ( model, cmd ) =
 
                 ( synced, dupCmd ) =
                     syncDuplicatesAfterTrash False ids reconciled
+
+                ( withSimilarity, simCmd ) =
+                    syncSimilarityAfterTrash False ids synced
             in
-            ( synced, Cmd.batch [ cmd, reconcileCmd, dupCmd ] )
+            ( withSimilarity, Cmd.batch [ cmd, reconcileCmd, dupCmd, simCmd ] )
 
         Trash.RestoreApplied ids ->
             let
@@ -2183,11 +2278,366 @@ applyTrashOut out ( model, cmd ) =
 
                 ( synced, dupCmd ) =
                     syncDuplicatesAfterTrash True ids reconciled
+
+                ( withSimilarity, simCmd ) =
+                    syncSimilarityAfterTrash True ids synced
             in
-            ( synced, Cmd.batch [ cmd, reconcileCmd, dupCmd ] )
+            ( withSimilarity, Cmd.batch [ cmd, reconcileCmd, dupCmd, simCmd ] )
 
         Trash.AccessRevoked ->
             revokeAccess model |> withCmd cmd
+
+
+sessionContext : Model -> Session.Context
+sessionContext model =
+    Session.context model.apiBase model.access.generation
+
+
+sessionKnownPrivate : Model -> Bool
+sessionKnownPrivate model =
+    Session.privateMode model.session && model.session.session /= Nothing
+
+
+tokenUnlocked : Model -> Bool
+tokenUnlocked model =
+    model.access.status == App.Access.Unlocked && model.access.token /= Nothing
+
+
+canWriteEffective : Model -> Bool
+canWriteEffective model =
+    if sessionKnownPrivate model then
+        Session.canWrite model.session || tokenUnlocked model
+
+    else
+        App.Access.canWrite model.access || Session.canWrite model.session
+
+
+canModerateEffective : Model -> Bool
+canModerateEffective model =
+    if sessionKnownPrivate model then
+        Session.canModerate model.session || tokenUnlocked model
+
+    else
+        App.Access.canWrite model.access || Session.canModerate model.session
+
+
+isAdminEffective : Model -> Bool
+isAdminEffective model =
+    if sessionKnownPrivate model then
+        Session.isAdmin model.session || tokenUnlocked model
+
+    else
+        App.Access.canWrite model.access || Session.isAdmin model.session
+
+
+isSessionAuthenticated : Model -> Bool
+isSessionAuthenticated model =
+    model.session.session |> Maybe.map (\session -> session.authenticated && session.user /= Nothing) |> Maybe.withDefault False
+
+
+sessionGateBlocking : Model -> Bool
+sessionGateBlocking model =
+    model.session.loading
+        || (Session.privateMode model.session
+                && not (Session.canRead model.session)
+                && not (tokenUnlocked model)
+           )
+
+
+sessionGateHasError : Model -> Bool
+sessionGateHasError model =
+    not model.session.loading
+        && model.session.session
+        == Nothing
+        && Session.privateMode model.session
+        && Session.status model.session
+        /= Nothing
+
+
+delegateSession : Session.Msg -> Model -> ( Model, Cmd Msg )
+delegateSession subMsg model =
+    let
+        ( session, cmd, outs ) =
+            Session.update (sessionContext model) subMsg model.session
+    in
+    handleSessionOuts outs ( { model | session = session }, Cmd.map SessionMsg cmd )
+
+
+handleSessionOuts : List Session.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleSessionOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleSessionOuts rest (applySessionOut out ( model, cmd ))
+
+
+applySessionOut : Session.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applySessionOut out ( model, cmd ) =
+    case out of
+        Session.SessionChanged ->
+            ( model, Cmd.batch [ cmd, Nav.reload ] )
+
+        Session.AccessRevoked ->
+            accessRevokedNow model |> withCmd cmd
+
+
+accessRevokedNow : Model -> ( Model, Cmd Msg )
+accessRevokedNow model =
+    let
+        cleared =
+            { model
+                | access = App.Access.revoked model.access
+                , session = Session.accessRevoked model.session
+                , savedSearches = []
+                , savedSearchFallback = True
+                , savedSearchSaving = False
+                , tags = Tags.locked model.tags
+                , reactions = Reactions.locked model.reactions
+                , ratings = Ratings.locked model.ratings
+                , metadata = Metadata.locked model.metadata
+                , bulkMetadata = BulkMetadata.locked model.bulkMetadata
+                , collections = Collections.locked model.collections
+                , trash = Trash.locked model.trash
+                , duplicates = Duplicates.locked model.duplicates
+                , moderation = Moderation.locked model.moderation
+                , similarity = Similarity.locked model.similarity
+                , recovery = Recovery.locked model.recovery
+                , similarityTrash = Nothing
+                , similarityCompare = Nothing
+                , duplicateTrash = Nothing
+                , tagManagement = TagManagement.locked model.tagManagement
+                , tagSuggestions = TagSuggestions.init
+                , details = Dict.empty
+                , sequence = Sequence.empty
+                , selection = Selection.empty
+                , mode = Grid
+                , uploadedPosts = Dict.empty
+                , duplicatesOrigin = Nothing
+                , uploadOrigin = Nothing
+                , hint = Just "Your session expired. Sign in again to continue."
+            }
+    in
+    ( cleared, Cmd.batch [ ModerationPreview.releaseAll, Nav.reload ] )
+
+
+similarityContext : Model -> Similarity.Context
+similarityContext model =
+    Similarity.context model.apiBase (App.Access.credential model.access) (canWriteEffective model) model.access.generation
+
+
+delegateSimilarity : Similarity.Msg -> Model -> ( Model, Cmd Msg )
+delegateSimilarity subMsg model =
+    let
+        ( similarity, cmd, outs ) =
+            Similarity.update (similarityContext model) subMsg model.similarity
+
+        invalidated =
+            case model.similarityTrash of
+                Just ( anchorId, ids, generation ) ->
+                    not (Similarity.isOpen similarity)
+                        || Similarity.anchorId similarity
+                        /= Just anchorId
+                        || generation
+                        /= model.access.generation
+                        || List.sort ids
+                        /= List.sort (Similarity.trashableIds similarity)
+
+                Nothing ->
+                    False
+
+        safe =
+            if invalidated && not model.trash.busy then
+                { model | similarity = similarity, similarityTrash = Nothing, trash = cancelSimilarityTrash model }
+
+            else
+                { model | similarity = similarity }
+    in
+    handleSimilarityOuts outs ( safe, Cmd.map SimilarityMsg cmd )
+
+
+cancelSimilarityTrash : Model -> Trash.Model
+cancelSimilarityTrash model =
+    let
+        ( trash, _, _ ) =
+            Trash.update (trashContext model) Trash.TrashCancelled model.trash
+    in
+    trash
+
+
+invalidateSimilarityTrash : Model -> Model
+invalidateSimilarityTrash model =
+    case model.similarityTrash of
+        Nothing ->
+            model
+
+        Just _ ->
+            if model.trash.busy then
+                { model | similarityTrash = Nothing }
+
+            else
+                { model | similarityTrash = Nothing, trash = cancelSimilarityTrash model }
+
+
+handleSimilarityOuts : List Similarity.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+handleSimilarityOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        out :: rest ->
+            handleSimilarityOuts rest (applySimilarityOut out ( model, cmd ))
+
+
+applySimilarityOut : Similarity.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applySimilarityOut out ( model, cmd ) =
+    case out of
+        Similarity.AccessRevoked ->
+            accessRevokedNow model |> withCmd cmd
+
+        Similarity.ResultUncertain _ ->
+            ( model, cmd )
+
+        Similarity.CompareCopies anchor candidate members ->
+            if not (Similarity.isOpen model.similarity)
+                || Similarity.anchorId model.similarity
+                /= Just anchor.id
+                || not (List.member candidate members)
+                || not (List.member anchor members)
+                || List.length members
+                < 2
+            then
+                ( { model | hint = Just "That match is no longer loaded. Reload before comparing." }, cmd )
+
+            else
+                ( { model | similarityCompare = Just ( anchor.id, candidate.id ) }
+                , Cmd.batch [ cmd, Task.attempt (SimilarityCompareMeasured anchor.id candidate.id) (Dom.getViewportOf MediaGrid.elementId) ]
+                )
+
+        Similarity.TrashSelected ids ->
+            let
+                valid =
+                    List.filter (\postId -> List.member postId (Similarity.trashableIds model.similarity)) ids
+            in
+            case ( Similarity.anchorId model.similarity, valid ) of
+                ( Just anchorId, _ :: _ ) ->
+                    delegateTrash (Trash.TrashSelectedRequested valid)
+                        { model | similarityTrash = Just ( anchorId, valid, model.access.generation ) }
+                        |> withCmd cmd
+
+                _ ->
+                    ( model, cmd )
+
+
+handleSimilarityCompareMeasured : String -> String -> Result Dom.Error Dom.Viewport -> Model -> ( Model, Cmd Msg )
+handleSimilarityCompareMeasured anchorId candidateId result model =
+    let
+        members =
+            case Similarity.anchor model.similarity of
+                Just anchorSummary ->
+                    anchorSummary :: Similarity.members model.similarity
+
+                Nothing ->
+                    []
+    in
+    if model.similarityCompare /= Just ( anchorId, candidateId )
+        || not (Similarity.isOpen model.similarity)
+        || Similarity.anchorId model.similarity
+        /= Just anchorId
+        || Similarity.isBusy model.similarity
+        || not (List.all (\id -> List.member id (List.map .id members)) [ anchorId, candidateId ])
+    then
+        ( { model | similarityCompare = Nothing }, Cmd.none )
+
+    else
+        let
+            ( opened, command ) =
+                openDuplicatesCompare anchorId candidateId members { model | similarityCompare = Nothing }
+
+            top =
+                result |> Result.map (\viewport -> viewport.viewport.y) |> Result.withDefault model.viewport.scrollTop
+        in
+        ( { opened | returnPoint = Maybe.map (\point -> { point | scrollTop = top }) opened.returnPoint }, command )
+
+
+syncSimilarityAfterTrash : Bool -> List String -> Model -> ( Model, Cmd Msg )
+syncSimilarityAfterTrash isRestore ids model =
+    let
+        message =
+            if isRestore then
+                Similarity.RestoreApplied ids
+
+            else
+                Similarity.TrashApplied ids
+
+        ( similarity, cmd, outs ) =
+            Similarity.update (similarityContext model) message model.similarity
+    in
+    handleSimilarityOuts outs ( { model | similarity = similarity }, Cmd.map SimilarityMsg cmd )
+
+
+syncSimilarityVisibility : Model -> ( Model, Cmd Msg )
+syncSimilarityVisibility model =
+    let
+        ( similarity, cmd, outs ) =
+            Similarity.update (similarityContext model) Similarity.VisibilityChanged model.similarity
+    in
+    handleSimilarityOuts outs ( { model | similarity = similarity }, Cmd.map SimilarityMsg cmd )
+
+
+recoveryContext : Model -> Recovery.Context
+recoveryContext model =
+    Recovery.context model.apiBase (App.Access.credential model.access) (isAdminEffective model) model.access.generation
+
+
+delegateRecovery : Recovery.Msg -> Model -> ( Model, Cmd Msg )
+delegateRecovery subMsg model =
+    let
+        ( recovery, cmd, outs ) =
+            Recovery.update (recoveryContext model) subMsg model.recovery
+
+        apply out ( current, commands ) =
+            case out of
+                Recovery.AccessRevoked ->
+                    accessRevokedNow current |> withCmd commands
+    in
+    List.foldl apply ( { model | recovery = recovery }, Cmd.map RecoveryMsg cmd ) outs
+
+
+moderationContext : Model -> Moderation.Context
+moderationContext model =
+    Moderation.context model.apiBase (App.Access.credential model.access) (canModerateEffective model) model.access.generation
+
+
+delegateModeration : Moderation.Msg -> Model -> ( Model, Cmd Msg )
+delegateModeration subMsg model =
+    let
+        ( moderation, cmd, outs ) =
+            Moderation.update (moderationContext model) subMsg model.moderation
+
+        apply out ( current, commands ) =
+            case out of
+                Moderation.AccessRevoked ->
+                    revokeAccess current |> withCmd commands
+
+                Moderation.ModerationApplied applied ->
+                    let
+                        cleared =
+                            { current | details = List.foldl Dict.remove current.details applied.ids, detailEpoch = current.detailEpoch + 1 }
+
+                        ( reconciled, refresh ) =
+                            reconcileAfterTrash (applied.newState == Domain.Moderation.Published) applied.ids cleared
+
+                        ( duplicates, dupCmd ) =
+                            syncDuplicatesAfterTrash (applied.newState == Domain.Moderation.Published) applied.ids reconciled
+
+                        ( withSimilarity, simCmd ) =
+                            syncSimilarityVisibility duplicates
+                    in
+                    ( withSimilarity, Cmd.batch [ commands, refresh, dupCmd, simCmd ] )
+    in
+    List.foldl apply ( { model | moderation = moderation }, Cmd.map ModerationMsg cmd ) outs
 
 
 duplicatesContext : Model -> Duplicates.Context
@@ -3571,11 +4021,17 @@ lockNow model hint =
             , collections = Collections.locked model.collections
             , trash = Trash.locked model.trash
             , duplicates = Duplicates.locked model.duplicates
+            , moderation = Moderation.locked model.moderation
+            , similarity = Similarity.locked model.similarity
+            , recovery = Recovery.locked model.recovery
+            , similarityTrash = Nothing
+            , similarityCompare = Nothing
             , duplicateTrash = Nothing
             , tagManagement = TagManagement.locked model.tagManagement
             , tagSuggestions = TagSuggestions.init
             , hint = Just hint
         }
+        |> withCmd ModerationPreview.releaseAll
 
 
 {-| Server-initiated lock after a 401 on a credentialed request. Same
@@ -3585,25 +4041,35 @@ will arrive with an obsolete generation and be ignored.
 -}
 revokeAccess : Model -> ( Model, Cmd Msg )
 revokeAccess model =
-    reconcilePublic
-        { model
-            | access = App.Access.revoked model.access
-            , savedSearches = []
-            , savedSearchFallback = True
-            , savedSearchSaving = False
-            , tags = Tags.locked model.tags
-            , reactions = Reactions.locked model.reactions
-            , ratings = Ratings.locked model.ratings
-            , metadata = Metadata.locked model.metadata
-            , bulkMetadata = BulkMetadata.locked model.bulkMetadata
-            , collections = Collections.locked model.collections
-            , trash = Trash.locked model.trash
-            , duplicates = Duplicates.locked model.duplicates
-            , duplicateTrash = Nothing
-            , tagManagement = TagManagement.locked model.tagManagement
-            , tagSuggestions = TagSuggestions.init
-            , hint = Just "The browser was locked (401). Unlock to continue writing."
-        }
+    if Session.privateMode model.session then
+        accessRevokedNow model
+
+    else
+        reconcilePublic
+            { model
+                | access = App.Access.revoked model.access
+                , savedSearches = []
+                , savedSearchFallback = True
+                , savedSearchSaving = False
+                , tags = Tags.locked model.tags
+                , reactions = Reactions.locked model.reactions
+                , ratings = Ratings.locked model.ratings
+                , metadata = Metadata.locked model.metadata
+                , bulkMetadata = BulkMetadata.locked model.bulkMetadata
+                , collections = Collections.locked model.collections
+                , trash = Trash.locked model.trash
+                , duplicates = Duplicates.locked model.duplicates
+                , moderation = Moderation.locked model.moderation
+                , similarity = Similarity.locked model.similarity
+                , recovery = Recovery.locked model.recovery
+                , similarityTrash = Nothing
+                , similarityCompare = Nothing
+                , duplicateTrash = Nothing
+                , tagManagement = TagManagement.locked model.tagManagement
+                , tagSuggestions = TagSuggestions.init
+                , hint = Just "The browser was locked (401). Unlock to continue writing."
+            }
+            |> withCmd ModerationPreview.releaseAll
 
 
 {-| Re-fetch public metadata without replacing the result sequence or
@@ -3911,6 +4377,9 @@ commandFor model event =
         else
             Nothing
 
+    else if event.target == Keyboard.MediaControl then
+        Nothing
+
     else if event.target == Editable then
         if event.key == "Escape" then
             Just EscapeField
@@ -4074,6 +4543,7 @@ subscriptions model =
             )
         , Sub.map UploadMsg (UploadQueue.subscriptions model.upload)
         , Sub.map ImportMsg (BrowserImport.subscriptions model.browserImport)
+        , ModerationPreview.previewEvent (Moderation.PreviewEventReceived >> ModerationMsg)
         ]
 
 
@@ -4107,12 +4577,43 @@ documentTitle model =
                         Search.query model.search ++ " · Kura"
 
 
+sessionGateView : Model -> Html Msg
+sessionGateView model =
+    div [ class "session-gate-wrap" ]
+        ([ case Session.viewGate model.session of
+            Just gate ->
+                Html.map SessionMsg gate
+
+            Nothing ->
+                text ""
+         ]
+            ++ (if sessionGateHasError model then
+                    [ p [ class "panel-note" ] [ text "Access could not be checked. " ]
+                    , button [ class "button button-quiet", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry access check" ]
+                    ]
+
+                else
+                    []
+               )
+            ++ (if sessionGateBlocking model && not model.session.loading && not (Session.privateMode model.session) then
+                    [ button [ class "button button-quiet", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry" ] ]
+
+                else
+                    []
+               )
+        )
+
+
 shell : Model -> Html Msg
 shell model =
     div [ class "kura-shell", classList [ ( "is-viewing", model.mode /= Grid ) ], preventDefaultOn "keydown" (keyDecoder model) ]
         [ topBar model
         , div [ class "progress", classList [ ( "is-active", workspaceBusy model ) ] ] []
-        , div [ class "kura-body" ]
+        , if sessionGateBlocking model then
+            sessionGateView model
+
+          else
+            div [ class "kura-body" ]
             [ navigatorView model
             , div [ class "workspace" ]
                 [ if model.prefs.filterBar && model.mode == Grid then
@@ -4240,7 +4741,11 @@ message that never echoes the draft.
 -}
 accessControls : Model -> Html Msg
 accessControls model =
-    case model.access.status of
+    if isSessionAuthenticated model then
+        span [ class "access-state", title "Signed in with a library account. Account controls are in Library tools." ] [ text "Signed in" ]
+
+    else
+        case model.access.status of
         App.Access.Checking ->
             span [ class "access-state" ] [ text "Checking access…" ]
 
@@ -4415,6 +4920,14 @@ libraryTools model =
         ([ div [ class "library-tools-row" ]
             [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Trash" ]
             , button [ class "button button-quiet", type_ "button", onClick (DuplicatesMsg (if Duplicates.isOpen model.duplicates then Duplicates.CloseRequested else Duplicates.OpenRequested)) ] [ text "Exact copies" ]
+            , (case activePost model of
+                Just summary ->
+                    button [ class "button button-quiet", type_ "button", onClick (SimilarityMsg (Similarity.OpenRequested summary)), disabled (Domain.Post.isVideoMedia summary.mediaType), title "Find visually similar images; video matching is unavailable" ] [ text "Find similar" ]
+
+                Nothing ->
+                    button [ class "button button-quiet", type_ "button", disabled True, title "Select a post to find similar posts" ] [ text "Find similar" ]
+              )
+            , button [ class "button button-quiet", type_ "button", onClick (ModerationMsg Moderation.OpenRequested), disabled (not (canModerateEffective model)) ] [ text "Moderation" ]
             , button [ class "button button-quiet", type_ "button", onClick (TagManagementMsg TagManagement.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Manage tags" ]
             , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested trashIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty trashIds) ] [ text "Move selected to Trash" ]
             , Html.label [] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text " Include metadata" ]
@@ -4444,6 +4957,12 @@ libraryTools model =
                             }
                         )
                     ]
+
+                else
+                    []
+               )
+            ++ (if Moderation.isOpen model.moderation then
+                    [ Html.map ModerationMsg (Moderation.view model.moderation) ]
 
                 else
                     []
@@ -4487,6 +5006,41 @@ libraryTools model =
                             }
                         )
                     ]
+
+                else
+                    []
+               )
+            ++ (if isSessionAuthenticated model then
+                    [ Html.map SessionMsg (Session.viewAccount (sessionContext model) model.session) ]
+
+                else
+                    []
+               )
+            ++ (if model.mode == Grid && Similarity.isOpen model.similarity then
+                    [ Similarity.view model.similarity
+                        { apiBase = model.apiBase
+                        , writesEnabled = canWriteEffective model
+                        , onClose = SimilarityMsg Similarity.CloseRequested
+                        , onReload = SimilarityMsg Similarity.ReloadRequested
+                        , onLoadMore = SimilarityMsg Similarity.LoadMoreRequested
+                        , onThresholdChanged = \raw -> SimilarityMsg (Similarity.ThresholdChanged (String.toInt raw |> Maybe.withDefault (Similarity.currentThreshold model.similarity)))
+                        , onToggle = \postId checked -> SimilarityMsg (Similarity.MatchToggled postId checked)
+                        , onClearSelection = SimilarityMsg Similarity.SelectionCleared
+                        , onCompare = \postId -> SimilarityMsg (Similarity.CompareRequested postId)
+                        , onTrash = SimilarityMsg Similarity.TrashRequested
+                        , onIndexAnchor = SimilarityMsg Similarity.IndexAnchorRequested
+                        , onIndexLibrary = SimilarityMsg Similarity.IndexLibraryRequested
+                        , onCancelIndexLibrary = SimilarityMsg Similarity.CancelIndexLibraryRequested
+                        , onReviewUncertain = SimilarityMsg Similarity.UncertainReviewed
+                        , onMediaError = \postId -> SimilarityMsg (Similarity.MediaFailed postId)
+                        }
+                    ]
+
+                else
+                    []
+               )
+            ++ (if isAdminEffective model then
+                    [ Html.map RecoveryMsg (Recovery.view model.recovery) ]
 
                 else
                     []

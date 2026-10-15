@@ -13,6 +13,7 @@ import Json.Decode as Decode exposing (Decoder)
 type Target
     = Editable
     | Control
+    | MediaControl
     | Other
 
 
@@ -74,6 +75,9 @@ targetDecoder =
         (\tag editable ->
             if editable || List.member tag [ "INPUT", "TEXTAREA", "SELECT" ] then
                 Editable
+
+            else if List.member tag [ "VIDEO", "AUDIO" ] then
+                MediaControl
 
             else if List.member tag [ "BUTTON", "A", "SUMMARY" ] then
                 Control

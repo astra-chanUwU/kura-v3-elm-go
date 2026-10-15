@@ -115,7 +115,7 @@ cell config g tabStop index post =
             config.selection.active == Just post.id
 
         isMissing =
-            Set.member post.id config.missing
+            Set.member post.id config.missing || (Domain.Post.isVideoMedia post.mediaType && Domain.Post.posterUrl post == Nothing)
 
         dims =
             String.fromInt post.width ++ " × " ++ String.fromInt post.height

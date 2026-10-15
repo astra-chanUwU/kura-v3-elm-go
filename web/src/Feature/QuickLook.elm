@@ -1,10 +1,11 @@
 module Feature.QuickLook exposing (Config, Zoom(..), toggleZoom, view)
 
 import Api.Post
-import Domain.Post exposing (PostSummary)
+import Domain.Post as Post exposing (PostSummary)
 import Html exposing (Html, button, div, p, span, text)
-import Html.Attributes exposing (attribute, class, classList, disabled, title, type_)
-import Html.Events exposing (onClick)
+import Html.Attributes exposing (attribute, class, classList, disabled, src, title, type_)
+import Html.Events exposing (on, onClick)
+import Json.Decode as Decode
 import Ui.Button
 import Ui.Media
 import Ui.Toolbar
@@ -83,9 +84,32 @@ view config =
                 }
             ]
         , div [ class "loupe-canvas", classList [ ( "is-actual", config.zoom == Actual ) ] ]
-            [ Ui.Media.image
-                [ class "loupe-image", onClick config.onZoom ]
-                { url = originalUrl, postId = post.id, missing = config.missing, onError = config.onMediaError }
+            [ if Post.isVideoMedia post.mediaType then
+                -- Loupe is the only native-video surface: controls on,
+                -- metadata preload only, no autoplay. Poster is the ready
+                -- derivative frame when present.
+                Html.node "video"
+                    ([ class "loupe-video"
+                     , src originalUrl
+                     , attribute "controls" ""
+                     , attribute "preload" "metadata"
+                     , attribute "playsinline" ""
+                     , on "error" (Decode.succeed (config.onMediaError post.id))
+                     ]
+                        ++ (case Post.posterUrl post of
+                                Just poster ->
+                                    [ attribute "poster" (Api.Post.mediaUrl config.apiBase poster) ]
+
+                                Nothing ->
+                                    []
+                           )
+                    )
+                    []
+
+              else
+                Ui.Media.image
+                    [ class "loupe-image", onClick config.onZoom ]
+                    { url = originalUrl, postId = post.id, missing = config.missing, onError = config.onMediaError }
             , navArrow "previous" "Previous image" "‹" (previousIf config)
             , navArrow "next" "Next image" "›" (nextIf config)
             ]

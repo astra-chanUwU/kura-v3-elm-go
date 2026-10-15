@@ -19,9 +19,13 @@ import QueueTests
 import UploadQueueTests
 import WorkspaceControlTests
 import ImportTests
+import ModerationTests
 import MetadataTests
 import BulkMetadataTests
 import DuplicatesTests
+import SessionTests
+import SimilarityTests
+import RecoveryTests
 
 
 port run : (() -> msg) -> Sub msg
@@ -36,7 +40,7 @@ type Msg
 
 allTests : List ( String, Bool )
 allTests =
-    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ CollectionBoundedTests.suite ++ DailyUseTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ RatingsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite ++ ImportTests.suite ++ MetadataTests.suite ++ BulkMetadataTests.suite ++ TagManagementTests.suite ++ DuplicatesTests.suite
+    RevisionTests.suite ++ UploadQueueTests.suite ++ QueueTests.suite ++ AccessTests.suite ++ ApiErrorTests.suite ++ CollectionRefreshTests.suite ++ CollectionLoadMoreTests.suite ++ CollectionBoundedTests.suite ++ DailyUseTests.suite ++ WorkspaceControlTests.suite ++ SearchTests.suite ++ TagsTests.suite ++ RatingsTests.suite ++ ReactionsTests.suite ++ CollectionsTests.suite ++ ImportTests.suite ++ ModerationTests.suite ++ MetadataTests.suite ++ BulkMetadataTests.suite ++ TagManagementTests.suite ++ DuplicatesTests.suite ++ SessionTests.suite ++ SimilarityTests.suite ++ RecoveryTests.suite
 
 
 encodeTest : ( String, Bool ) -> Encode.Value

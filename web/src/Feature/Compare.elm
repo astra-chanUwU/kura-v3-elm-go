@@ -1,7 +1,7 @@
 module Feature.Compare exposing (Config, view)
 
 import Api.Post
-import Domain.Post exposing (PostSummary)
+import Domain.Post as Post exposing (PostSummary)
 import Feature.QuickLook exposing (Zoom(..))
 import Html exposing (Html, dd, div, dl, dt, p, span, text)
 import Html.Attributes exposing (class, classList)
@@ -68,12 +68,30 @@ pane config label post other =
         , onClick (config.onActivate post.id)
         ]
         [ div [ class "compare-canvas", classList [ ( "is-actual", config.zoom == Actual ) ] ]
-            [ Ui.Media.image [ class "compare-image" ]
-                { url = Api.Post.mediaUrl config.apiBase post.originalUrl
-                , postId = post.id
-                , missing = Set.member post.id config.missing
-                , onError = config.onMediaError
-                }
+            [ -- Video never goes in an <img> (and its original is never
+              -- fetched here): show the ready poster frame, or the
+              -- unavailable placeholder until the poster exists.
+              case Post.posterUrl post of
+                Just poster ->
+                    Ui.Media.image [ class "compare-image" ]
+                        { url = Api.Post.mediaUrl config.apiBase poster
+                        , postId = post.id
+                        , missing = Set.member post.id config.missing
+                        , onError = config.onMediaError
+                        }
+
+                Nothing ->
+                    if Post.isVideoMedia post.mediaType then
+                        Ui.Media.image [ class "compare-image" ]
+                            { url = "", postId = post.id, missing = True, onError = config.onMediaError }
+
+                    else
+                        Ui.Media.image [ class "compare-image" ]
+                            { url = Api.Post.mediaUrl config.apiBase post.originalUrl
+                            , postId = post.id
+                            , missing = Set.member post.id config.missing
+                            , onError = config.onMediaError
+                            }
             ]
         , dl [ class "compare-meta" ]
             [ row label ("#" ++ post.id) False

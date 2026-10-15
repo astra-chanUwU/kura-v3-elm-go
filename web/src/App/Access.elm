@@ -131,6 +131,19 @@ draftChanged value state =
     { state | draft = value, notice = Nothing }
 
 
+{-| A discovery response carries a valid cookie session when the
+server reports a named actor that may write while writes still require
+authentication. Such a session is accepted without storing any token:
+the cookie is sent by the browser on same-origin requests only, so
+`credential` stays `Nothing` and no secret enters this record.
+-}
+hasCookieActor : Capabilities -> Bool
+hasCookieActor capabilities =
+    capabilities.writesRequireAuth
+        && capabilities.canWrite
+        && (capabilities.actor |> Maybe.map (String.trim >> String.isEmpty >> not) |> Maybe.withDefault False)
+
+
 {-| Route one capabilities response to discovery or validation handling.
 A validation is in flight exactly when `pending` holds its candidate;
 anything else is gate discovery.
@@ -146,7 +159,16 @@ discovered generation result state =
     else
         case result of
             Ok capabilities ->
-                if capabilities.writesRequireAuth then
+                if hasCookieActor capabilities then
+                    { state
+                        | status = Unlocked
+                        , gated = True
+                        , token = Nothing
+                        , pending = Nothing
+                        , notice = Nothing
+                    }
+
+                else if capabilities.writesRequireAuth then
                     { state
                         | status = Locked
                         , gated = True

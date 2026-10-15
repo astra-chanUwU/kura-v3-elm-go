@@ -2,6 +2,7 @@ module Feature.Filmstrip exposing (Config, elementId, itemId, view)
 
 import Api.Post
 import App.Keyboard as Keyboard exposing (Modifiers)
+import Domain.Post
 import Domain.Selection as Selection exposing (Selection)
 import Domain.Sequence as Sequence exposing (Sequence)
 import Html exposing (Html, div)
@@ -84,7 +85,7 @@ view config =
                         [ Ui.Media.image [ class "film-image", attribute "loading" "lazy" ]
                             { url = Api.Post.mediaUrl config.apiBase post.previewUrl
                             , postId = post.id
-                            , missing = Set.member post.id config.missing
+                            , missing = Set.member post.id config.missing || (Domain.Post.isVideoMedia post.mediaType && Domain.Post.posterUrl post == Nothing)
                             , onError = config.onMediaError
                             }
                         ]

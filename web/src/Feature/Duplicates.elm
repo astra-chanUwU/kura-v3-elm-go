@@ -718,7 +718,7 @@ groupRow config group =
                     Ui.Media.image [ class "duplicates-thumb" ]
                         { url = Api.Post.mediaUrl config.apiBase post.previewUrl
                         , postId = post.id
-                        , missing = False
+                        , missing = Domain.Post.isVideoMedia post.mediaType && Domain.Post.posterUrl post == Nothing
                         , onError = config.onMediaError
                         }
                 )
@@ -826,7 +826,7 @@ memberRow model config post =
         , Ui.Media.image [ class "duplicates-thumb" ]
             { url = Api.Post.mediaUrl config.apiBase post.previewUrl
             , postId = post.id
-            , missing = Set.member post.id model.missing
+            , missing = Set.member post.id model.missing || (Domain.Post.isVideoMedia post.mediaType && Domain.Post.posterUrl post == Nothing)
             , onError = config.onMediaError
             }
         , span [ class "duplicates-member-meta" ]

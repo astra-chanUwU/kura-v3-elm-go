@@ -60,6 +60,15 @@ effectLabel effect =
         ImportState.ReleaseFiles ids ->
             "releaseMany " ++ String.fromInt (List.length ids)
 
+        ImportState.SaveCheckpoint id ->
+            "save " ++ String.fromInt id
+
+        ImportState.DeleteSavedCheckpoint ->
+            "deleteSaved"
+
+        ImportState.RestoreSavedCheckpoint ->
+            "restoreSaved"
+
 
 labels : List ImportState.Effect -> List String
 labels =
@@ -820,6 +829,206 @@ caseSettingsCapturedAtStart =
             False
 
 
+durableReady : ImportState.Model
+durableReady =
+    let
+        ( enabled, _, _ ) =
+            step access (ImportState.DurableEnabledChanged True) twoReady
+
+        ( stored, _, _ ) =
+            step access (ImportState.CheckpointStored 1) enabled
+    in
+    stored
+
+
+durableIntentPending : ImportState.Model
+durableIntentPending =
+    step access ImportState.StartRequested durableReady |> (\( m, _, _ ) -> m)
+
+
+caseDurableIntentBeforeBegin : Bool
+caseDurableIntentBeforeBegin =
+    let
+        ( enabled, enableEffects, _ ) =
+            step access (ImportState.DurableEnabledChanged True) twoReady
+
+        ( started, startEffects, _ ) =
+            step access ImportState.StartRequested enabled
+
+        ( begun, beginEffects, _ ) =
+            step access (ImportState.CheckpointStored 2) started
+    in
+    labels enableEffects == [ "save 1" ]
+        && labels startEffects == [ "save 2" ]
+        && phaseOf 0 started == Just (ImportState.Importing 1)
+        && labels beginEffects == [ "begin 0" ]
+        && phaseOf 0 begun == Just (ImportState.Importing 1)
+
+
+caseDurableCheckpointFailureBlocksUpload : Bool
+caseDurableCheckpointFailureBlocksUpload =
+    let
+        ( failed, effects, _ ) =
+            step access (ImportState.CheckpointFailed 2 "quota exceeded") durableIntentPending
+
+        ( memory, memoryEffects, _ ) =
+            step access (ImportState.DurableEnabledChanged False) failed
+    in
+    effects == []
+        && phaseOf 0 failed == Just ImportState.QueuedImport
+        && (case failed.saveStatus of
+                ImportState.SaveFailed _ ->
+                    True
+
+                _ ->
+                    False
+           )
+        && String.contains "nothing was uploaded" (failed.status |> Maybe.withDefault "")
+        && labels memoryEffects == [ "begin 0" ]
+
+
+caseLateCheckpointAckIgnored : Bool
+caseLateCheckpointAckIgnored =
+    let
+        ( stale, staleEffects, _ ) =
+            step access (ImportState.CheckpointStored 1) durableIntentPending
+
+        ( wrong, wrongEffects, _ ) =
+            step access (ImportState.CheckpointStored 99) stale
+
+        ( current, currentEffects, _ ) =
+            step access (ImportState.CheckpointStored 2) wrong
+    in
+    staleEffects == []
+        && wrongEffects == []
+        && stale.pendingBegin == Just 0
+        && labels currentEffects == [ "begin 0" ]
+
+
+caseRestoreInflightBecomesUncertain : Bool
+caseRestoreInflightBecomesUncertain =
+    let
+        checkpoint =
+            ImportState.buildCheckpoint "http://localhost:8080/" startedTwo
+    in
+    case ImportState.restoreCheckpoint "http://localhost:8080" checkpoint ImportState.init of
+        Ok ( restored, _ ) ->
+            let
+                ( resumed, resumeEffects, _ ) =
+                    ImportState.resume access restored
+
+                ( explicit, explicitEffects, _ ) =
+                    step access ImportState.ExplicitResumeRequested restored
+            in
+            (case phaseOf 0 restored of
+                Just (ImportState.Uncertain message) ->
+                    String.contains "not resubmitted" message
+
+                _ ->
+                    False
+            )
+                && phaseOf 1 restored == Just ImportState.QueuedImport
+                && restored.awaitingResume
+                && resumeEffects == []
+                && not (List.member "begin 0" (labels explicitEffects))
+                && labels explicitEffects == [ "save " ++ String.fromInt (restored.checkpointSeq + 1) ]
+                && (ImportState.counts resumed).uncertain == 1
+
+        Err _ ->
+            False
+
+
+caseRestoreCompletedStaysTerminal : Bool
+caseRestoreCompletedStaysTerminal =
+    let
+        ( settled, _, _ ) =
+            step lockedAccess
+                (ImportState.ImportSettled { entryId = 0, generation = 1, outcome = receipt "42" hashA False (Just "c7") False (Just "collection changed") })
+                startedWithCollection
+
+        checkpoint =
+            ImportState.buildCheckpoint "http://localhost:8080" settled
+    in
+    case ImportState.restoreCheckpoint "http://localhost:8080/" checkpoint ImportState.init of
+        Ok ( restored, _ ) ->
+            (case phaseOf 0 restored of
+                Just (ImportState.Imported info) ->
+                    info.postId == "42" && info.attachmentError == Just "collection changed" && not info.attached
+
+                _ ->
+                    False
+            )
+                && phaseOf 1 restored == Just ImportState.QueuedImport
+                && restored.capturedCollectionId == Just "c7"
+                && restored.capturedDuplicatePolicy == ImportState.SkipDuplicates
+                && (ImportState.counts restored).imported == 1
+
+        Err _ ->
+            False
+
+
+caseRestoreTargetMismatchRejected : Bool
+caseRestoreTargetMismatchRejected =
+    let
+        checkpoint =
+            ImportState.buildCheckpoint "http://localhost:8080/" twoReady
+    in
+    (case ImportState.restoreCheckpoint "http://other.example:9999" checkpoint ImportState.init of
+        Err message ->
+            String.contains "different API" message
+
+        Ok _ ->
+            False
+    )
+        && ImportState.canonicalApiBase " HTTP://LOCALHOST:8080/ " == "http://localhost:8080"
+        && (case ImportState.restoreCheckpoint "http://localhost:8080" { checkpoint | schema = 99 } ImportState.init of
+                Err _ ->
+                    True
+
+                Ok _ ->
+                    False
+           )
+
+
+caseRestoreHashingResumesAsPending : Bool
+caseRestoreHashingResumesAsPending =
+    let
+        ( picked, _, _ ) =
+            chosen [ fact "photos/a.jpg" "image/jpeg" 100 ]
+
+        checkpoint =
+            ImportState.buildCheckpoint "http://localhost:8080" picked
+    in
+    case ImportState.restoreCheckpoint "http://localhost:8080" checkpoint ImportState.init of
+        Ok ( restored, _ ) ->
+            phaseOf 0 restored == Just ImportState.PendingHash && not restored.started
+
+        Err _ ->
+            False
+
+
+caseReplaceSavedNeedsConfirm : Bool
+caseReplaceSavedNeedsConfirm =
+    let
+        summary =
+            { checkpointId = 7, fileCount = 3, totalBytes = 300, apiBase = "http://localhost:8080", started = False, generation = 4 }
+
+        ( probed, _, _ ) =
+            step access (ImportState.SavedProbeArrived (Just summary)) twoReady
+
+        ( asked, effects, _ ) =
+            step access (ImportState.DurableEnabledChanged True) probed
+
+        ( confirmed, confirmEffects, _ ) =
+            step access ImportState.ReplaceSavedConfirmed asked
+    in
+    effects == []
+        && asked.replaceNeedsConfirm
+        && asked.savedSummary == Just summary
+        && labels confirmEffects == [ "save 1" ]
+        && confirmed.durableEnabled
+
+
 allPassed : Bool
 allPassed =
     List.all Tuple.second suite
@@ -869,4 +1078,12 @@ suite =
     , ( "import canonical post id helper", caseCanonicalPostId )
     , ( "import pick blocked while hashing", casePickBlockedWhileHashing )
     , ( "import stale hash generation ignored after repick", caseStaleHashGenerationIgnored )
+    , ( "import durable intent checkpoint precedes first upload", caseDurableIntentBeforeBegin )
+    , ( "import durable checkpoint failure blocks upload until memory switch", caseDurableCheckpointFailureBlocksUpload )
+    , ( "import late checkpoint ack cannot release newer intent", caseLateCheckpointAckIgnored )
+    , ( "import restore of in-flight entry becomes uncertain and never auto-resubmits", caseRestoreInflightBecomesUncertain )
+    , ( "import restore keeps completed receipt and attachment error terminal", caseRestoreCompletedStaysTerminal )
+    , ( "import restore rejects another API target and bad schema", caseRestoreTargetMismatchRejected )
+    , ( "import restore of hashing checkpoint resumes as pending hash", caseRestoreHashingResumesAsPending )
+    , ( "import replacing a different saved import needs explicit confirm", caseReplaceSavedNeedsConfirm )
     ]

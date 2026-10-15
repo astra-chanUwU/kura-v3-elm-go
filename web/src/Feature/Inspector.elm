@@ -468,7 +468,7 @@ identitySection config post =
                 [ Ui.Media.image [ class "inspector-preview-image" ]
                     { url = Api.Post.mediaUrl config.apiBase post.previewUrl
                     , postId = post.id
-                    , missing = Set.member post.id config.missing
+                    , missing = Set.member post.id config.missing || (Domain.Post.isVideoMedia post.mediaType && Domain.Post.posterUrl post == Nothing)
                     , onError = config.onMediaError
                     }
                 ]

@@ -1,4 +1,4 @@
-module Domain.Post exposing (MetadataReadResponse, MetadataSnapshot, PostDetail, PostSummary, RatingResponse, RatingResult, RatingRevision, RatingTarget, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, metadataReadResponseDecoder, metadataResponseDecoder, metadataRevisionDecoder, metadataSnapshotDecoder, ratingResponseDecoder, ratingRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
+module Domain.Post exposing (MetadataReadResponse, MetadataSnapshot, PostDetail, PostSummary, RatingResponse, RatingResult, RatingRevision, RatingTarget, SearchResponse, TagEditResponse, TagEditResult, TagEditTarget, TagRevision, ReactionResponse, ReactionResult, ReactionTarget, ReactionRevision, MetadataRevision, MetadataTarget, MetadataResult, MetadataResponse, decoder, detailDecoder, isVideoMedia, metadataReadResponseDecoder, metadataResponseDecoder, metadataRevisionDecoder, metadataSnapshotDecoder, posterUrl, ratingResponseDecoder, ratingRevisionDecoder, responseDecoder, revisionDecoder, tagEditResponseDecoder, reactionResponseDecoder, summaryOfDetail)
 
 import Domain.Rating as Rating exposing (Rating)
 import Json.Decode as Decode exposing (Decoder)
@@ -15,6 +15,30 @@ type alias PostSummary =
     , rating : Rating
     , ratingVersion : Maybe Int
     }
+
+
+{-| True for `video/*` media types (bounded MP4/WebM posts). Grids and
+tiles must never put a video URL in an `<img>`: use `posterUrl` there and
+reserve native `<video>` playback for the Loupe.
+-}
+isVideoMedia : String -> Bool
+isVideoMedia mediaType =
+    String.startsWith "video/" (String.toLower (String.trim mediaType))
+
+
+{-| The still poster for a video post, when one is ready. `previewUrl`
+falls back to the original URL until the thumb-320 derivative (the poster
+frame) is ready, so a distinct preview URL is the only honest poster;
+anything else means "no poster yet" and callers must not fetch the
+original as an image.
+-}
+posterUrl : PostSummary -> Maybe String
+posterUrl post =
+    if isVideoMedia post.mediaType && String.trim post.previewUrl /= "" && post.previewUrl /= post.originalUrl then
+        Just post.previewUrl
+
+    else
+        Nothing
 
 
 type alias SearchResponse =

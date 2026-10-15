@@ -1,7 +1,7 @@
 module Feature.Survey exposing (Config, columns, view)
 
 import Api.Post
-import Domain.Post exposing (PostSummary)
+import Domain.Post as Post exposing (PostSummary)
 import Html exposing (Html, button, div, p, text)
 import Html.Attributes exposing (attribute, class, classList, style, type_)
 import Html.Events exposing (onClick, stopPropagationOn)
@@ -74,12 +74,30 @@ tile config post =
         , classList [ ( "is-active", config.activeId == Just post.id ) ]
         , onClick (config.onActivate post.id)
         ]
-        [ Ui.Media.image [ class "survey-image" ]
-            { url = Api.Post.mediaUrl config.apiBase post.originalUrl
-            , postId = post.id
-            , missing = Set.member post.id config.missing
-            , onError = config.onMediaError
-            }
+        [ -- Video tiles show the ready poster frame, never the video
+          -- original in an <img>; without a poster they show the
+          -- unavailable placeholder and fetch nothing.
+          case Post.posterUrl post of
+            Just poster ->
+                Ui.Media.image [ class "survey-image" ]
+                    { url = Api.Post.mediaUrl config.apiBase poster
+                    , postId = post.id
+                    , missing = Set.member post.id config.missing
+                    , onError = config.onMediaError
+                    }
+
+            Nothing ->
+                if Post.isVideoMedia post.mediaType then
+                    Ui.Media.image [ class "survey-image" ]
+                        { url = "", postId = post.id, missing = True, onError = config.onMediaError }
+
+                else
+                    Ui.Media.image [ class "survey-image" ]
+                        { url = Api.Post.mediaUrl config.apiBase post.originalUrl
+                        , postId = post.id
+                        , missing = Set.member post.id config.missing
+                        , onError = config.onMediaError
+                        }
         , p [ class "survey-caption" ] [ text ("#" ++ post.id ++ " · " ++ String.fromInt post.width ++ " × " ++ String.fromInt post.height) ]
         , button
             [ class "survey-remove"

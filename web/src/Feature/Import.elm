@@ -57,6 +57,16 @@ port importHashCompleted : (Decode.Value -> msg) -> Sub msg
 port importFilesReleased : Encode.Value -> Cmd msg
 
 
+{-| Durable-import persistence bridge. Payloads are plain checkpoint
+data plus file references handled by the JS adapter; credentials,
+tokens, access state, and object URLs never cross these ports.
+-}
+port importPersistenceRequested : Encode.Value -> Cmd msg
+
+
+port importPersistenceEvent : (Decode.Value -> msg) -> Sub msg
+
+
 type alias Context =
     { apiBase : String
     , credential : Maybe String
@@ -83,6 +93,7 @@ type alias Model =
     , files : Dict Int File
     , pickerPending : Bool
     , pickerGeneration : Int
+    , restoredGeneration : Maybe Int
     }
 
 
@@ -105,6 +116,12 @@ type Msg
     | DismissEntry Int
     | ClearFinished
     | ViewPost String
+    | KeepForReloadToggled
+    | ConfirmReplaceSavedClicked
+    | ResumeSavedClicked
+    | DiscardSavedClicked
+    | ResumeImportClicked
+    | PersistenceEvent Decode.Value
 
 
 type OutMsg
@@ -115,7 +132,7 @@ type OutMsg
 
 init : Model
 init =
-    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0 }
+    { state = State.init, files = Dict.empty, pickerPending = False, pickerGeneration = 0, restoredGeneration = Nothing }
 
 
 isOpen : Model -> Bool
@@ -205,7 +222,7 @@ update ctx msg model =
                             facts =
                                 List.map .fact picked.files
                         in
-                        runWithFiles ctx { model | pickerPending = False, files = files } (State.FilesChosen picked.generation facts)
+                        runWithFiles ctx { model | pickerPending = False, files = files, restoredGeneration = Nothing } (State.FilesChosen picked.generation facts)
 
                 Err _ ->
                     run ctx { model | pickerPending = False } (State.PickFailed "The browser returned files this app could not read. Try picking the folder again.")
@@ -289,6 +306,24 @@ update ctx msg model =
 
         ViewPost postId ->
             ( model, Cmd.none, [ OpenPost postId ] )
+
+        KeepForReloadToggled ->
+            run ctx model (State.DurableEnabledChanged (not model.state.durableEnabled))
+
+        ConfirmReplaceSavedClicked ->
+            run ctx model State.ReplaceSavedConfirmed
+
+        ResumeSavedClicked ->
+            run ctx model State.RestoreSavedRequested
+
+        DiscardSavedClicked ->
+            run ctx model State.DiscardSavedRequested
+
+        ResumeImportClicked ->
+            run ctx model State.ExplicitResumeRequested
+
+        PersistenceEvent value ->
+            persistenceEvent ctx value model
 
 
 requestPick : Context -> String -> Model -> ( Model, Cmd Msg, List OutMsg )
@@ -449,6 +484,425 @@ execute ctx model effect =
                     ]
                 )
 
+        State.SaveCheckpoint checkpointId ->
+            let
+                checkpoint =
+                    State.buildCheckpoint ctx.apiBase model.state
+
+                blobIds =
+                    List.filterMap
+                        (\entry ->
+                            if Dict.member entry.id model.files && not (State.isTerminal entry) then
+                                Just entry.id
+
+                            else
+                                Nothing
+                        )
+                        model.state.entries
+            in
+            importPersistenceRequested
+                (Encode.object
+                    [ ( "action", Encode.string "save" )
+                    , ( "checkpointId", Encode.int checkpointId )
+                    , ( "generation", Encode.int model.state.generation )
+                    , ( "checkpoint", encodeCheckpoint checkpoint )
+                    , ( "entryIds", Encode.list Encode.int blobIds )
+                    ]
+                )
+
+        State.DeleteSavedCheckpoint ->
+            importPersistenceRequested (Encode.object [ ( "action", Encode.string "discard" ) ])
+
+        State.RestoreSavedCheckpoint ->
+            importPersistenceRequested (Encode.object [ ( "action", Encode.string "restore" ) ])
+
+
+persistenceEvent : Context -> Decode.Value -> Model -> ( Model, Cmd Msg, List OutMsg )
+persistenceEvent ctx value model =
+    case Decode.decodeValue (Decode.field "kind" Decode.string) value of
+        Err _ ->
+            ( model, Cmd.none, [] )
+
+        Ok "probe" ->
+            case Decode.decodeValue probeDecoder value of
+                Ok summary ->
+                    run ctx model (State.SavedProbeArrived summary)
+
+                Err _ ->
+                    ( model, Cmd.none, [] )
+
+        Ok "probeFailed" ->
+            run ctx model (State.SavedProbeFailed (decodeMessage value))
+
+        Ok "stored" ->
+            case Decode.decodeValue (Decode.field "checkpointId" Decode.int) value of
+                Ok checkpointId ->
+                    run ctx model (State.CheckpointStored checkpointId)
+
+                Err _ ->
+                    ( model, Cmd.none, [] )
+
+        Ok "storeFailed" ->
+            case Decode.decodeValue checkpointFailureDecoder value of
+                Ok ( checkpointId, message ) ->
+                    run ctx model (State.CheckpointFailed checkpointId message)
+
+                Err _ ->
+                    ( model, Cmd.none, [] )
+
+        Ok "restore" ->
+            case Decode.decodeValue restoreDecoder value of
+                Ok restored ->
+                    let
+                        files =
+                            Dict.fromList (List.map (\item -> ( item.id, item.file )) restored.files)
+
+                        flags =
+                            Dict.fromList (List.map (\item -> ( item.id, item )) restored.files)
+
+                        checkpoint =
+                            mergeRestoreFlags flags restored.checkpoint
+                    in
+                    run ctx
+                        { model | files = files, restoredGeneration = Just checkpoint.generation }
+                        (State.SavedRestored ctx.apiBase checkpoint)
+
+                Err _ ->
+                    run ctx model (State.SavedRestoreFailed "The saved import data could not be read.")
+
+        Ok "restoreFailed" ->
+            run ctx model (State.SavedRestoreFailed (decodeMessage value))
+
+        Ok "discarded" ->
+            -- Only the stored browser copies go away; files already
+            -- live in this tab keep working as a memory-only import.
+            run ctx model State.SavedDiscarded
+
+        Ok "discardFailed" ->
+            run ctx model (State.SavedDiscardFailed (decodeMessage value))
+
+        Ok _ ->
+            ( model, Cmd.none, [] )
+
+
+decodeMessage : Decode.Value -> String
+decodeMessage value =
+    Decode.decodeValue (Decode.field "message" Decode.string) value
+        |> Result.withDefault "Browser storage is unavailable."
+
+
+checkpointFailureDecoder : Decode.Decoder ( Int, String )
+checkpointFailureDecoder =
+    Decode.map2 Tuple.pair
+        (Decode.field "checkpointId" Decode.int)
+        (Decode.field "message" Decode.string)
+
+
+probeDecoder : Decode.Decoder (Maybe State.SavedSummary)
+probeDecoder =
+    Decode.field "found" Decode.bool
+        |> Decode.andThen
+            (\found ->
+                if found then
+                    Decode.field "summary" summaryDecoder |> Decode.map Just
+
+                else
+                    Decode.succeed Nothing
+            )
+
+
+summaryDecoder : Decode.Decoder State.SavedSummary
+summaryDecoder =
+    Decode.map6 State.SavedSummary
+        (Decode.field "checkpointId" Decode.int)
+        (Decode.field "fileCount" Decode.int)
+        (Decode.field "totalBytes" Decode.int)
+        (Decode.field "apiBase" Decode.string)
+        (Decode.field "started" Decode.bool)
+        (Decode.field "generation" Decode.int)
+
+
+type alias RestoredItem =
+    { id : Int, file : File, hasBlob : Bool, hashVerified : Bool }
+
+
+type alias RestorePayload =
+    { checkpoint : State.Checkpoint, files : List RestoredItem }
+
+
+restoreDecoder : Decode.Decoder RestorePayload
+restoreDecoder =
+    Decode.map2 RestorePayload
+        (Decode.field "checkpoint" checkpointDecoder)
+        (Decode.field "files"
+            (Decode.list
+                (Decode.map4 RestoredItem
+                    (Decode.field "id" Decode.int)
+                    (Decode.field "file" File.decoder)
+                    (Decode.oneOf [ Decode.field "hasBlob" Decode.bool, Decode.succeed True ])
+                    (Decode.oneOf [ Decode.field "hashVerified" Decode.bool, Decode.succeed False ])
+                )
+            )
+        )
+
+
+mergeRestoreFlags : Dict Int RestoredItem -> State.Checkpoint -> State.Checkpoint
+mergeRestoreFlags flags checkpoint =
+    { checkpoint
+        | entries =
+            List.map
+                (\entry ->
+                    case Dict.get entry.id flags of
+                        Just item ->
+                            { entry | hasBlob = item.hasBlob, hashVerified = item.hashVerified }
+
+                        Nothing ->
+                            { entry | hasBlob = False, hashVerified = False }
+                )
+                checkpoint.entries
+    }
+
+
+checkpointDecoder : Decode.Decoder State.Checkpoint
+checkpointDecoder =
+    Decode.map8
+        (\schema checkpointId apiBase generation started tagsDraft artistDraft sourcePrefix ->
+            { schema = schema
+            , checkpointId = checkpointId
+            , apiBase = apiBase
+            , generation = generation
+            , started = started
+            , tagsDraft = tagsDraft
+            , artistDraft = artistDraft
+            , sourcePrefix = sourcePrefix
+            , collectionId = Nothing
+            , duplicatePolicy = "skip"
+            , capturedDuplicatePolicy = "skip"
+            , capturedCollectionId = Nothing
+            , overflow = 0
+            , entries = []
+            }
+        )
+        (Decode.field "schema" Decode.int)
+        (Decode.field "checkpointId" Decode.int)
+        (Decode.field "apiBase" Decode.string)
+        (Decode.field "generation" Decode.int)
+        (Decode.field "started" Decode.bool)
+        (Decode.field "tagsDraft" Decode.string)
+        (Decode.field "artistDraft" Decode.string)
+        (Decode.field "sourcePrefix" Decode.string)
+        |> Decode.andThen
+            (\base ->
+                Decode.map4
+                    (\collectionId duplicatePolicy captured rest ->
+                        { base
+                            | collectionId = collectionId
+                            , duplicatePolicy = duplicatePolicy
+                            , capturedDuplicatePolicy = Tuple.first captured
+                            , capturedCollectionId = Tuple.second captured
+                            , overflow = Tuple.first rest
+                            , entries = Tuple.second rest
+                        }
+                    )
+                    (Decode.field "collectionId" (Decode.nullable Decode.string))
+                    (Decode.field "duplicatePolicy" Decode.string)
+                    (Decode.map2 Tuple.pair
+                        (Decode.field "capturedDuplicatePolicy" Decode.string)
+                        (Decode.field "capturedCollectionId" (Decode.nullable Decode.string))
+                    )
+                    (Decode.map2 Tuple.pair
+                        (Decode.field "overflow" Decode.int)
+                        (Decode.field "entries" (Decode.list checkpointEntryDecoder))
+                    )
+            )
+
+
+checkpointEntryDecoder : Decode.Decoder State.CheckpointEntry
+checkpointEntryDecoder =
+    Decode.map8
+        (\id name relativePath size mime lastModified hash duplicatePostId ->
+            { id = id
+            , name = name
+            , relativePath = relativePath
+            , size = size
+            , mime = mime
+            , lastModified = lastModified
+            , hash = hash
+            , duplicatePostId = duplicatePostId
+            , tags = []
+            , source = ""
+            , artist = ""
+            , phase = State.CpPendingHash
+            , hasBlob = False
+            , hashVerified = False
+            }
+        )
+        (Decode.field "id" Decode.int)
+        (Decode.field "name" Decode.string)
+        (Decode.field "relativePath" Decode.string)
+        (Decode.field "size" Decode.int)
+        (Decode.field "mime" Decode.string)
+        (Decode.field "lastModified" Decode.int)
+        (Decode.field "hash" (Decode.nullable Decode.string))
+        (Decode.field "duplicatePostId" (Decode.nullable Decode.string))
+        |> Decode.andThen
+            (\base ->
+                Decode.map3
+                    (\tags meta phase ->
+                        { base
+                            | tags = tags
+                            , source = Tuple.first meta
+                            , artist = Tuple.second meta
+                            , phase = phase
+                        }
+                    )
+                    (Decode.field "tags" (Decode.list Decode.string))
+                    (Decode.map2 Tuple.pair (Decode.field "source" Decode.string) (Decode.field "artist" Decode.string))
+                    (Decode.field "phase" checkpointPhaseDecoder)
+            )
+
+
+checkpointPhaseDecoder : Decode.Decoder State.CheckpointPhase
+checkpointPhaseDecoder =
+    Decode.field "kind" Decode.string
+        |> Decode.andThen
+            (\kind ->
+                case kind of
+                    "excluded" ->
+                        Decode.map State.CpExcluded (Decode.field "message" Decode.string)
+
+                    "pendingHash" ->
+                        Decode.succeed State.CpPendingHash
+
+                    "hashing" ->
+                        Decode.succeed State.CpHashing
+
+                    "hashed" ->
+                        Decode.succeed State.CpHashed
+
+                    "hashFailed" ->
+                        Decode.map State.CpHashFailed (Decode.field "message" Decode.string)
+
+                    "queued" ->
+                        Decode.succeed State.CpQueuedImport
+
+                    "importing" ->
+                        Decode.succeed State.CpImporting
+
+                    "imported" ->
+                        Decode.map4
+                            (\postId duplicate attached attachmentError ->
+                                State.CpImported { postId = postId, duplicate = duplicate, attached = attached, attachmentError = attachmentError }
+                            )
+                            (Decode.field "postId" Decode.string)
+                            (Decode.field "duplicate" Decode.bool)
+                            (Decode.field "attached" Decode.bool)
+                            (Decode.field "attachmentError" (Decode.nullable Decode.string))
+
+                    "skipped" ->
+                        Decode.map State.CpSkipped (Decode.field "postId" Decode.string)
+
+                    "failed" ->
+                        Decode.map State.CpFailed (Decode.field "message" Decode.string)
+
+                    "uncertain" ->
+                        Decode.map State.CpUncertain (Decode.field "message" Decode.string)
+
+                    _ ->
+                        Decode.fail "unknown checkpoint phase"
+            )
+
+
+encodeCheckpoint : State.Checkpoint -> Encode.Value
+encodeCheckpoint checkpoint =
+    Encode.object
+        [ ( "schema", Encode.int checkpoint.schema )
+        , ( "checkpointId", Encode.int checkpoint.checkpointId )
+        , ( "apiBase", Encode.string checkpoint.apiBase )
+        , ( "generation", Encode.int checkpoint.generation )
+        , ( "started", Encode.bool checkpoint.started )
+        , ( "tagsDraft", Encode.string checkpoint.tagsDraft )
+        , ( "artistDraft", Encode.string checkpoint.artistDraft )
+        , ( "sourcePrefix", Encode.string checkpoint.sourcePrefix )
+        , ( "collectionId", encodeMaybeString checkpoint.collectionId )
+        , ( "duplicatePolicy", Encode.string checkpoint.duplicatePolicy )
+        , ( "capturedDuplicatePolicy", Encode.string checkpoint.capturedDuplicatePolicy )
+        , ( "capturedCollectionId", encodeMaybeString checkpoint.capturedCollectionId )
+        , ( "overflow", Encode.int checkpoint.overflow )
+        , ( "entries", Encode.list encodeCheckpointEntry checkpoint.entries )
+        ]
+
+
+encodeMaybeString : Maybe String -> Encode.Value
+encodeMaybeString value =
+    case value of
+        Just text ->
+            Encode.string text
+
+        Nothing ->
+            Encode.null
+
+
+encodeCheckpointEntry : State.CheckpointEntry -> Encode.Value
+encodeCheckpointEntry entry =
+    Encode.object
+        [ ( "id", Encode.int entry.id )
+        , ( "name", Encode.string entry.name )
+        , ( "relativePath", Encode.string entry.relativePath )
+        , ( "size", Encode.int entry.size )
+        , ( "mime", Encode.string entry.mime )
+        , ( "lastModified", Encode.int entry.lastModified )
+        , ( "hash", encodeMaybeString entry.hash )
+        , ( "duplicatePostId", encodeMaybeString entry.duplicatePostId )
+        , ( "tags", Encode.list Encode.string entry.tags )
+        , ( "source", Encode.string entry.source )
+        , ( "artist", Encode.string entry.artist )
+        , ( "phase", encodeCheckpointPhase entry.phase )
+        ]
+
+
+encodeCheckpointPhase : State.CheckpointPhase -> Encode.Value
+encodeCheckpointPhase phase =
+    case phase of
+        State.CpExcluded message ->
+            Encode.object [ ( "kind", Encode.string "excluded" ), ( "message", Encode.string message ) ]
+
+        State.CpPendingHash ->
+            Encode.object [ ( "kind", Encode.string "pendingHash" ) ]
+
+        State.CpHashing ->
+            Encode.object [ ( "kind", Encode.string "hashing" ) ]
+
+        State.CpHashed ->
+            Encode.object [ ( "kind", Encode.string "hashed" ) ]
+
+        State.CpHashFailed message ->
+            Encode.object [ ( "kind", Encode.string "hashFailed" ), ( "message", Encode.string message ) ]
+
+        State.CpQueuedImport ->
+            Encode.object [ ( "kind", Encode.string "queued" ) ]
+
+        State.CpImporting ->
+            Encode.object [ ( "kind", Encode.string "importing" ) ]
+
+        State.CpImported info ->
+            Encode.object
+                [ ( "kind", Encode.string "imported" )
+                , ( "postId", Encode.string info.postId )
+                , ( "duplicate", Encode.bool info.duplicate )
+                , ( "attached", Encode.bool info.attached )
+                , ( "attachmentError", encodeMaybeString info.attachmentError )
+                ]
+
+        State.CpSkipped postId ->
+            Encode.object [ ( "kind", Encode.string "skipped" ), ( "postId", Encode.string postId ) ]
+
+        State.CpFailed message ->
+            Encode.object [ ( "kind", Encode.string "failed" ), ( "message", Encode.string message ) ]
+
+        State.CpUncertain message ->
+            Encode.object [ ( "kind", Encode.string "uncertain" ), ( "message", Encode.string message ) ]
+
 
 findEntry : Int -> State.Model -> Maybe State.Entry
 findEntry entryId importState =
@@ -526,6 +980,7 @@ subscriptions _ =
         [ importFilesPicked Picked
         , importPickCancelled PickCancelled
         , importHashCompleted HashCompleted
+        , importPersistenceEvent PersistenceEvent
         ]
 
 
@@ -579,7 +1034,7 @@ view writesEnabled collections model =
                             , option [ value "error", selected (importState.duplicatePolicy == State.ErrorOnDuplicates) ] [ text "Fail on duplicates" ]
                             ]
                         ]
-                    , p [ class "panel-note" ] [ text "JPEG, PNG, GIF, or WebP up to 25 MiB each; at most 1000 supported images per folder. Picking only previews and hashes locally — nothing uploads until you start the import." ]
+                    , p [ class "panel-note" ] [ text "JPEG, PNG, GIF, WebP, static AVIF, MP4, or WebM up to 25 MiB each; at most 1000 supported files per folder. Extended formats need FFmpeg on the server. Picking only previews and hashes locally — nothing uploads until you start the import." ]
                     , div [ class "upload-item-actions" ]
                         [ button [ class "button", type_ "button", onClick PickFolderClicked, disabled (not writesEnabled || model.pickerPending || State.isPickBlocked importState) ] [ text "Choose folder…" ]
                         , button [ class "button button-quiet", type_ "button", onClick PickFilesClicked, disabled (not writesEnabled || model.pickerPending || State.isPickBlocked importState) ] [ text "Choose files…" ]
@@ -608,10 +1063,120 @@ view writesEnabled collections model =
                           else
                             text ""
                         ]
-                    , p [ class "panel-note" ] [ text "Picked files stay in this browser tab's memory only. Reloading loses them and they cannot be resumed here; the CLI import remains the durable, resumable path." ]
+                    , persistenceSection importState
                     ]
                 ]
             ]
+
+
+formatBytes : Int -> String
+formatBytes bytes =
+    if bytes >= 1024 * 1024 then
+        String.fromInt (bytes // (1024 * 1024)) ++ " MiB"
+
+    else if bytes >= 1024 then
+        String.fromInt (bytes // 1024) ++ " KiB"
+
+    else
+        String.fromInt bytes ++ " B"
+
+
+persistenceSection : State.Model -> Html Msg
+persistenceSection importState =
+    div [ class "panel-section" ]
+        ([ div [ class "upload-item-actions" ]
+            [ button
+                [ class "button button-quiet"
+                , type_ "button"
+                , onClick KeepForReloadToggled
+                , attribute "aria-pressed"
+                    (if importState.durableEnabled then
+                        "true"
+
+                     else
+                        "false"
+                    )
+                ]
+                [ text
+                    (if importState.durableEnabled then
+                        "Keeping this import for reload: on"
+
+                     else
+                        "Keep this import for reload"
+                    )
+                ]
+            ]
+         , case importState.saveStatus of
+            State.MemoryOnly ->
+                p [ class "panel-note" ] [ text "Picked files stay in memory unless you turn on “Keep this import for reload”. Saved imports retain a browser copy of the files and receipts; reload, then choose Resume to review before starting again." ]
+
+            State.SavePending _ ->
+                p [ class "panel-note", attribute "role" "status" ] [ text "Saving this import for reload… do not close the tab until it reports saved." ]
+
+            State.SaveStored _ ->
+                p [ class "panel-note", attribute "role" "status" ]
+                    [ text
+                        ("Saved for reload in this browser ("
+                            ++ String.fromInt (List.length importState.entries)
+                            ++ " files, "
+                            ++ formatBytes (List.sum (List.map .size importState.entries))
+                            ++ "). Reloading is safe for this import only while it reports saved."
+                        )
+                    ]
+
+            State.SaveFailed message ->
+                p [ class "upload-error", attribute "role" "alert" ] [ text ("Could not save this import for reload: " ++ message ++ " The import is still usable in memory, but reloading will lose it.") ]
+         ]
+            ++ (if importState.replaceNeedsConfirm then
+                    [ p [ class "panel-note" ] [ text "A different saved import already exists in this browser." ]
+                    , div [ class "upload-item-actions" ]
+                        [ button [ class "button", type_ "button", onClick ConfirmReplaceSavedClicked ] [ text "Replace the saved import" ] ]
+                    ]
+
+                else
+                    []
+               )
+            ++ (case importState.savedSummary of
+                    Just summary ->
+                        [ p [ class "panel-note" ]
+                            [ text
+                                ("A saved import is available in this browser: "
+                                    ++ String.fromInt summary.fileCount
+                                    ++ " files, "
+                                    ++ formatBytes summary.totalBytes
+                                    ++ (if summary.started then
+                                            ", started."
+
+                                        else
+                                            ", not started."
+                                       )
+                                )
+                            ]
+                        , div [ class "upload-item-actions" ]
+                            [ button [ class "button", type_ "button", onClick ResumeSavedClicked ] [ text "Resume saved import" ]
+                            , button [ class "button button-quiet", type_ "button", onClick DiscardSavedClicked ] [ text "Discard saved import" ]
+                            ]
+                        ]
+
+                    Nothing ->
+                        if importState.savedCheckpointId /= Nothing && importState.durableEnabled then
+                            [ div [ class "upload-item-actions" ]
+                                [ button [ class "button button-quiet", type_ "button", onClick DiscardSavedClicked ] [ text "Discard saved import" ] ]
+                            ]
+
+                        else
+                            []
+               )
+            ++ (if importState.awaitingResume then
+                    [ p [ class "panel-note" ] [ text "This saved import was restored without uploading anything. Review it, unlock, then resume when ready." ]
+                    , div [ class "upload-item-actions" ]
+                        [ button [ class "button", type_ "button", onClick ResumeImportClicked ] [ text "Resume import" ] ]
+                    ]
+
+                else
+                    []
+               )
+        )
 
 
 previewSummary : State.Model -> State.Counts -> Html Msg

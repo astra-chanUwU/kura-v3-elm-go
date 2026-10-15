@@ -28,6 +28,7 @@ web-test: web-import-check
 	mkdir -p web/dist
 	cd web && elm make tests/TestRunner.elm --output=dist/elm-tests.js
 	cd web && node tests/run.mjs
+	cd web && node --test tests/browser-import-persistence.test.mjs
 
 web-serve:
 	go -C server run ./cmd/kura-web
@@ -43,7 +44,7 @@ db-setup: db-migrate db-seed
 build: server-build web-build
 
 script-check:
-	PYTHONPATH=scripts python3 -m unittest test_library_backup test_import_test_media test_import_media
+	PYTHONPATH=scripts python3 -m unittest test_library_backup test_import_test_media test_import_media test_library_performance
 
 # This creates unique disposable databases on the explicitly supplied local
 # PostgreSQL instance; it never uses the development library database.

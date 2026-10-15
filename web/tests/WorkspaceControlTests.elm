@@ -15,6 +15,8 @@ suite =
     , ( "quoted order text does not change sort", Query.order "\"order:score\"" == "newest" )
     , ( "disclosure keys are handled as native controls", target "SUMMARY" == Just Keyboard.Control )
     , ( "select keys stay editable", target "SELECT" == Just Keyboard.Editable )
+    , ( "video keys stay with playback controls", target "VIDEO" == Just Keyboard.MediaControl )
+    , ( "audio keys stay with playback controls", target "AUDIO" == Just Keyboard.MediaControl )
     ]
 
 
