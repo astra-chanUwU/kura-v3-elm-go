@@ -1,4 +1,4 @@
-module Domain.Recovery exposing (Backup, Listing, Receipt, backupDecoder, listingDecoder, receiptDecoder)
+module Domain.Recovery exposing (Backup, Job, Listing, Receipt, backupDecoder, jobDecoder, listingDecoder, receiptDecoder)
 
 import Json.Decode as Decode exposing (Decoder)
 
@@ -24,6 +24,13 @@ type alias Receipt =
     , verifiedAt : String
     , mediaCount : Int
     , bytes : Float
+    }
+
+
+type alias Job =
+    { id : String
+    , status : String
+    , error : Maybe String
     }
 
 
@@ -70,3 +77,20 @@ receiptDecoder =
         (Decode.field "verified_at" Decode.string)
         (Decode.field "media_count" Decode.int)
         (Decode.field "bytes" Decode.float)
+
+
+jobDecoder : Decoder Job
+jobDecoder =
+    Decode.map3 Job
+        (Decode.field "id" Decode.string)
+        (Decode.field "status" (Decode.string |> Decode.andThen validJobStatus))
+        (Decode.maybe (Decode.field "error" Decode.string))
+
+
+validJobStatus : String -> Decoder String
+validJobStatus value =
+    if value == "running" || value == "succeeded" || value == "failed" || value == "canceled" then
+        Decode.succeed value
+
+    else
+        Decode.fail "unknown backup job status"

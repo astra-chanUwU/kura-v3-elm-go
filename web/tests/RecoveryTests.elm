@@ -1,5 +1,6 @@
 module RecoveryTests exposing (suite)
 
+import Api.Recovery
 import Domain.Recovery as Recovery
 import Feature.Recovery as Feature
 import Http
@@ -66,5 +67,75 @@ suite =
                 step ctx (Feature.VerifyRequested "missing") model
         in
         after.verifying == Nothing && after.receipt == Nothing
+      )
+    , ( "an accepted backup request is not publication"
+      , let
+            base =
+                Feature.init
+
+            model =
+                { base | open = True, configured = True, requestId = 3 }
+
+            ( after, _ ) =
+                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "running", error = Nothing })) model
+        in
+        (after.job |> Maybe.map .status) == Just "running"
+            && (after.status |> Maybe.map (String.contains "not complete") |> Maybe.withDefault False)
+            && (after.status |> Maybe.map (String.contains "published") |> Maybe.withDefault False) == False
+      )
+    , ( "publication is the only completed backup state"
+      , let
+            base =
+                Feature.init
+
+            model =
+                { base | open = True, configured = True, requestId = 3 }
+
+            ( published, _ ) =
+                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "succeeded", error = Nothing })) model
+
+            ( failed, _ ) =
+                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "failed", error = Just "database dump failed" })) model
+
+            ( canceled, _ ) =
+                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "canceled", error = Nothing })) model
+        in
+        (published.job |> Maybe.map .status) == Just "succeeded"
+            && (published.status |> Maybe.map (String.contains "was published") |> Maybe.withDefault False)
+            && (failed.status |> Maybe.map (String.contains "failed before publication") |> Maybe.withDefault False)
+            && (failed.status |> Maybe.map (String.contains "database dump failed") |> Maybe.withDefault False)
+            && (canceled.status |> Maybe.map (String.contains "canceled before publication") |> Maybe.withDefault False)
+      )
+    , ( "a second request and a stale response do not become a backup"
+      , let
+            base =
+                Feature.init
+
+            model =
+                { base | open = True, configured = True, requestId = 3 }
+
+            ( conflict, outs ) =
+                step ctx (Feature.Created 4 3 (Err Api.Recovery.JobConflict)) model
+
+            ( stale, _ ) =
+                step ctx (Feature.Created 4 2 (Ok { id = "backup-1", status = "succeeded", error = Nothing })) model
+
+            ( denied, deniedOuts ) =
+                step ctx (Feature.Created 4 3 (Err Api.Recovery.JobDenied)) model
+        in
+        conflict.job == Nothing
+            && (conflict.status |> Maybe.map (String.contains "already running") |> Maybe.withDefault False)
+            && outs == []
+            && stale.job == Nothing
+            && denied.job == Nothing
+            && deniedOuts == [ Feature.AccessRevoked ]
+      )
+    , ( "backup job status rejects an unpublished alias"
+      , case Decode.decodeString Recovery.jobDecoder """{"id":"backup-1","status":"queued"}""" of
+            Err _ ->
+                True
+
+            Ok _ ->
+                False
       )
     ]
