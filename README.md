@@ -384,8 +384,12 @@ PostgreSQL-backed server tests require `KURA_TEST_DATABASE_URL` pointing to a di
 
 ```sh
 KURA_TEST_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/kura_test?sslmode=disable' \
-  go -C server test -p 1 ./...
+  make server-db-check
 ```
+
+`make server-db-check` refuses to start unless that variable is set, and it fails if a PostgreSQL-backed test still skips. `make server-race` and `make cli-race` run the race detector. `make backup-proof` runs the online snapshot proof and the local create/restore drill; it needs `KURA_BACKUP_TEST_ADMIN_URL` plus `psql`, `pg_dump` 16 or newer, `pg_restore`, Python 3, and Go. None of these targets measure 100k library or browser timings.
+
+Pushes and pull requests run those targets in `.github/workflows/ci.yml` on GitHub-hosted runners with Go 1.27.2, Elm 0.19.2, and a disposable PostgreSQL 16 service. That workflow does not use repository secrets. Running the same commands locally is a simulation, not a hosted result.
 
 ## Code
 
