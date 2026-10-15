@@ -169,9 +169,9 @@ func checkCookieCSRF(r *http.Request, cfg AccessConfig) bool {
 //     local actor, even with no deployment token configured.
 //   - Viewers read only; editors write; admins additionally reach
 //     moderation and /api/auth/users. Published /media visibility is
-//     still decided downstream by gatedMedia; this middleware never
-//     fetches external media URLs (private S3 must be proxied or refused
-//     at startup by the coordinator, never served as public URLs here).
+//     still decided downstream by gatedMedia, which opens the configured
+//     store only for a stored same-origin reference. This middleware never
+//     fetches external media URLs.
 //   - Cookie-authenticated unsafe requests need an exact trusted Origin.
 func (cfg AccessConfig) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

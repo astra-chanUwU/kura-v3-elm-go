@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
@@ -35,9 +36,12 @@ type Dependencies struct {
 	ModerationPreview   posts.ModerationPreviewReader
 	Jobs                jobs.Reader
 	MediaVisibility     posts.MediaVisibilityChecker
-	Duplicates          posts.DuplicateReader
-	Similarity          posts.SimilarityReader
-	SimilarityIndex     posts.SimilarityIndexer
+	// MediaStore is the configured object store. Private mode opens it
+	// only after resolving a stored /media URL to a writer-owned key.
+	MediaStore      media.Store
+	Duplicates      posts.DuplicateReader
+	Similarity      posts.SimilarityReader
+	SimilarityIndex posts.SimilarityIndexer
 	// Accounts is optional: nil preserves legacy token/open behavior with
 	// no session endpoints. When set, PrivateMode is honored by the router.
 	Accounts *AccountsConfig

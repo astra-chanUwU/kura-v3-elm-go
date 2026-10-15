@@ -41,9 +41,6 @@ func main() {
 		if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
 			log.Fatalf("KURA_PRIVATE_LIBRARY requires DATABASE_URL: private mode fails closed without an account database")
 		}
-		if _, ok := media.S3ConfigFromEnv(); ok {
-			log.Fatalf("KURA_PRIVATE_LIBRARY is incompatible with the S3 media provider: direct external media URLs bypass authentication; use local media storage or disable private mode")
-		}
 	}
 
 	var dependencies httpapi.Dependencies
@@ -64,8 +61,13 @@ func main() {
 				if err := pgBackend.Ping(ctx); err != nil {
 					log.Fatalf("postgres backend unavailable in private mode: %v", err)
 				}
+				if _, configured := media.S3ConfigFromEnv(); configured {
+					if _, ok := pgBackend.MediaStore().(*media.S3Store); !ok {
+						log.Fatalf("KURA_PRIVATE_LIBRARY could not configure the S3 media store")
+					}
+				}
 				if pgBackend.UsesExternalMediaProvider() {
-					log.Fatalf("KURA_PRIVATE_LIBRARY is incompatible with the S3 media provider: direct external media URLs bypass authentication; use local media storage or disable private mode")
+					log.Fatalf("KURA_PRIVATE_LIBRARY refuses an S3 media provider that publishes external object URLs: private media must use same-origin /media paths")
 				}
 				external, err := pgBackend.HasExternalMediaURLs(ctx)
 				if err != nil {
@@ -107,6 +109,7 @@ func main() {
 				ModerationPreview:   pgBackend,
 				Jobs:                pgBackend,
 				MediaVisibility:     pgBackend,
+				MediaStore:          pgBackend.MediaStore(),
 				Duplicates:          pgBackend,
 				Similarity:          pgBackend,
 				SimilarityIndex:     pgBackend,
