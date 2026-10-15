@@ -222,7 +222,40 @@ update ctx msg model =
             else
                 case result of
                     Ok listing ->
-                        ( { model | backups = listing.backups, configured = listing.configured, truncated = listing.truncated, loading = False, receipt = Nothing, status = jobSummary model.job }, Cmd.none, [] )
+                        let
+                            job =
+                                case listing.activeJob of
+                                    Just active ->
+                                        Just active
+
+                                    Nothing ->
+                                        model.job
+
+                            next =
+                                { model | backups = listing.backups, configured = listing.configured, truncated = listing.truncated, loading = False, receipt = Nothing, job = job, status = jobSummary job }
+
+                            followUp =
+                                case listing.activeJob of
+                                    Just active ->
+                                        if active.status == "running" && model.open then
+                                            schedule request
+
+                                        else
+                                            Cmd.none
+
+                                    Nothing ->
+                                        case job of
+                                            Just current ->
+                                                if current.status == "running" && model.open then
+                                                    Api.Recovery.job ctx.apiBase ctx.credential current.id (JobChecked generation request)
+
+                                                else
+                                                    Cmd.none
+
+                                            Nothing ->
+                                                Cmd.none
+                        in
+                        ( next, followUp, [] )
 
                     Err (Http.BadStatus 401) ->
                         ( locked model, Cmd.none, [ AccessRevoked ] )
@@ -263,24 +296,9 @@ load ctx model =
     let
         request =
             model.requestId + 1
-
-        jobCmd =
-            case model.job of
-                Just current ->
-                    if current.status == "running" then
-                        Api.Recovery.job ctx.apiBase ctx.credential current.id (JobChecked ctx.generation request)
-
-                    else
-                        Cmd.none
-
-                Nothing ->
-                    Cmd.none
     in
     ( { model | requestId = request, loading = True, verifying = Nothing, receipt = Nothing, creating = False, status = Just "Loading backup list…" }
-    , Cmd.batch
-        [ Api.Recovery.list ctx.apiBase ctx.credential (Loaded ctx.generation request)
-        , jobCmd
-        ]
+    , Api.Recovery.list ctx.apiBase ctx.credential (Loaded ctx.generation request)
     , []
     )
 
@@ -366,7 +384,7 @@ jobSentence job =
             "Backup is running. It is not complete until the server publishes it."
 
         "succeeded" ->
-            "Backup " ++ job.id ++ " was published. Publishing is not verification. Restore stays offline."
+            "Backup " ++ job.id ++ " was published. Publishing is not verification. Restore stays offline." ++ maintenanceWarning job.maintenanceError
 
         "canceled" ->
             "Backup canceled before publication."
@@ -376,6 +394,28 @@ jobSentence job =
 
         _ ->
             "Backup state is unavailable."
+
+
+maintenanceWarning : String -> String
+maintenanceWarning maintenanceError =
+    case maintenanceError of
+        "" ->
+            ""
+
+        "replication is not configured; retention was skipped" ->
+            " Replication is not configured, so retention was skipped."
+
+        "replication failed; retention was skipped" ->
+            " Replication failed, so retention was skipped."
+
+        "replication succeeded, but retention failed" ->
+            " Replication succeeded, but retention failed."
+
+        "replication was not confirmed after restart; retention was skipped" ->
+            " Replication was not confirmed after restart, so retention was skipped."
+
+        _ ->
+            " Follow-up backup maintenance reported an issue; check the server logs."
 
 
 safeJobError : Maybe String -> String

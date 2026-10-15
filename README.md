@@ -156,6 +156,9 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 | `KURA_AUTH_TRUSTED_ORIGIN` | Exact public origin for cookie write checks, for example `https://library.example`. The CLI sends this origin on account-session writes when it is set. |
 | `KURA_PRIVATE_READS` | CLI opt-in to send the deployment bearer on ordinary reads and ZIP exports. Requires `KURA_API_TOKEN`. |
 | `KURA_BACKUP_ROOT` | Existing local backup directory shown in the admin recovery panel. |
+| `KURA_BACKUP_INTERVAL` | Optional automatic backup interval, at least `1h`; unset disables scheduling and retention. |
+| `KURA_BACKUP_KEEP` | Total verified primary backups to retain after a successful replica, default `7` when scheduling is enabled. |
+| `KURA_BACKUP_REPLICA_ROOT` | Optional existing second local directory outside the primary backup and media roots. |
 | `KURA_FFPROBE_PATH`, `KURA_FFMPEG_PATH` | Optional tool paths for extended formats; otherwise resolved from `PATH`. |
 | `KURA_HTTP_TIMEOUT` | CLI timeout per HTTP request; default `10s`, accepts durations such as `30s` or `1m`. |
 | `KURA_SESSION_FILE` | Optional CLI path for `kura login --persist`. The default is a file under the user config directory. |
@@ -332,6 +335,22 @@ remain incomplete. Creation has a 30-minute timeout. S3 backups and online
 restore remain unsupported; platforms without atomic no-overwrite directory
 publication refuse creation.
 
+To opt into automatic backups, set `KURA_BACKUP_INTERVAL=24h`. The first
+scheduled check waits one interval. A persisted recent backup request suppresses
+a duplicate after restart or when multiple servers share the library. Recovery
+also discovers running work after a full browser refresh.
+
+With scheduling enabled, successful backups are copied to
+`KURA_BACKUP_REPLICA_ROOT` when configured. Each copy is hash-verified before
+atomic publication. Set `KURA_BACKUP_KEEP` to retain that many verified primary
+backups, including the newest. Retention runs only after a successful matching
+replica, and only removes recognized service-created backups whose primary
+and replica still verify. Unknown, invalid, or symlinked entries remain alone.
+A missing or failed replica suppresses retention and produces a warning while
+the successfully published primary remains usable. A second directory on the
+same machine is a local copy; protecting against machine loss requires placing
+that copy on independent storage and an additional offsite workflow.
+
 For the standalone offline utility, stop the API, workers, and other writers
 first:
 
@@ -384,3 +403,17 @@ db/        PostgreSQL migrations and demo seed
 scripts/   Database commands
 docs/      Design and architecture notes
 ```
+
+The generated Docker backup lifecycle drill runs two API processes with fresh
+PostgreSQL and shared fixture storage, exercises cancellation/restart and
+replication/retention, and restores a replica into empty targets. It requires
+Docker, Go, network access for the disposable image, and no development secrets:
+
+```sh
+python3 scripts/backup-lifecycle-drill.py --run
+```
+
+It removes its own containers, network, volume, and acceptance image on exit.
+Scheduler timing is covered by clock-controlled Go tests rather than shortening
+production timer limits. The replica directory in this drill simulates another
+disk and does not establish offsite durability.

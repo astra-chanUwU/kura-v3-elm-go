@@ -42,6 +42,60 @@ suite =
         )
             && Result.toMaybe (Decode.decodeString Recovery.listingDecoder tooMany) == Nothing
       )
+    , ( "a refreshed listing can reattach to the server's running backup"
+      , let
+            initial =
+                Feature.init
+
+            model =
+                { initial | open = True, loading = True, requestId = 7 }
+
+            payload =
+                """{"configured":true,"backups":[],"truncated":false,"active_job":{"id":"backup-live","status":"running"}}"""
+
+            ( decoded, _ ) =
+                case Decode.decodeString Recovery.listingDecoder payload of
+                    Ok listing ->
+                        step ctx (Feature.Loaded 4 7 (Ok listing)) model
+
+                    Err _ ->
+                        ( model, [] )
+
+            ( polling, _, _ ) =
+                Feature.update ctx (Feature.PollTick 7) decoded
+        in
+        (decoded.job |> Maybe.map .id) == Just "backup-live"
+            && (decoded.job |> Maybe.map .status) == Just "running"
+            && (decoded.job |> Maybe.map .maintenanceError) == Just ""
+            && (decoded.status |> Maybe.map (String.contains "not complete") |> Maybe.withDefault False)
+            && polling.polls == 1
+      )
+    , ( "published backup reports a safe maintenance warning"
+      , let
+            base =
+                Feature.init
+
+            model =
+                { base | open = True, requestId = 3 }
+
+            ( published, _ ) =
+                step ctx
+                    (Feature.Created 4 3 (Ok { id = "backup-1", status = "succeeded", error = Nothing, maintenanceError = "replication failed; retention was skipped" }))
+                    model
+
+            decoded =
+                Decode.decodeString Recovery.jobDecoder """{"id":"backup-1","status":"succeeded","maintenance_error":"replication was not confirmed after restart; retention was skipped"}"""
+        in
+        (published.status |> Maybe.map (String.contains "was published") |> Maybe.withDefault False)
+            && (published.status |> Maybe.map (String.contains "Replication failed, so retention was skipped.") |> Maybe.withDefault False)
+            && (case decoded of
+                    Ok job ->
+                        job.maintenanceError == "replication was not confirmed after restart; retention was skipped"
+
+                    Err _ ->
+                        False
+               )
+      )
     , ( "closing clears backup metadata and ignores late responses"
       , let
             opened =
@@ -77,7 +131,7 @@ suite =
                 { base | open = True, configured = True, requestId = 3 }
 
             ( after, _ ) =
-                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "running", error = Nothing })) model
+                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "running", error = Nothing, maintenanceError = "" })) model
         in
         (after.job |> Maybe.map .status) == Just "running"
             && (after.status |> Maybe.map (String.contains "not complete") |> Maybe.withDefault False)
@@ -99,7 +153,7 @@ suite =
 
             accepted =
                 closed
-                    |> step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-2", status = "running", error = Nothing }))
+                    |> step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-2", status = "running", error = Nothing, maintenanceError = "" }))
                     |> Tuple.first
 
             reopened =
@@ -134,7 +188,7 @@ suite =
                 step ctx Feature.OpenRequested closed
 
             ( accepted, _ ) =
-                step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-3", status = "running", error = Nothing })) reopened
+                step ctx (Feature.Created 4 requesting.requestId (Ok { id = "backup-3", status = "running", error = Nothing, maintenanceError = "" })) reopened
         in
         reopened.open
             && reopened.creating
@@ -151,13 +205,13 @@ suite =
                 { base | open = True, configured = True, requestId = 3 }
 
             ( published, _ ) =
-                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "succeeded", error = Nothing })) model
+                step ctx (Feature.Created 4 3 (Ok { id = "backup-1", status = "succeeded", error = Nothing, maintenanceError = "" })) model
 
             ( failed, _ ) =
-                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "failed", error = Just "database dump failed" })) model
+                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "failed", error = Just "database dump failed", maintenanceError = "" })) model
 
             ( canceled, _ ) =
-                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "canceled", error = Nothing })) model
+                step ctx (Feature.JobChecked 4 3 (Ok { id = "backup-1", status = "canceled", error = Nothing, maintenanceError = "" })) model
         in
         (published.job |> Maybe.map .status) == Just "succeeded"
             && (published.status |> Maybe.map (String.contains "was published") |> Maybe.withDefault False)
@@ -177,7 +231,7 @@ suite =
                 step ctx (Feature.Created 4 3 (Err Api.Recovery.JobConflict)) model
 
             ( stale, _ ) =
-                step ctx (Feature.Created 4 2 (Ok { id = "backup-1", status = "succeeded", error = Nothing })) model
+                step ctx (Feature.Created 4 2 (Ok { id = "backup-1", status = "succeeded", error = Nothing, maintenanceError = "" })) model
 
             ( denied, deniedOuts ) =
                 step ctx (Feature.Created 4 3 (Err Api.Recovery.JobDenied)) model

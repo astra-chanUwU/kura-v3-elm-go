@@ -114,7 +114,7 @@ func main() {
 				Similarity:          pgBackend,
 				SimilarityIndex:     pgBackend,
 				Accounts:            &accountsCfg,
-				Recovery:            recovery.NewFromEnv(),
+				Recovery:            dependencies.Recovery,
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store
@@ -145,6 +145,9 @@ func main() {
 	if dependencies.Recovery != nil {
 		if err := dependencies.Recovery.Reconcile(); err != nil {
 			log.Printf("backup restart recovery failed")
+		}
+		if err := dependencies.Recovery.StartMaintenance(ctx); err != nil {
+			log.Printf("backup scheduler disabled: %v", err)
 		}
 	}
 	if privateMode && (dependencies.Accounts == nil || dependencies.Accounts.Service == nil) {
@@ -187,6 +190,15 @@ func main() {
 		}
 	} else {
 		<-ctx.Done()
+	}
+	if dependencies.Recovery != nil {
+		backupShutdownCtx, cancelBackupShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := dependencies.Recovery.Shutdown(backupShutdownCtx); err != nil {
+			log.Printf("backup shutdown timed out: %v", err)
+			cancelBackupShutdown()
+			os.Exit(1)
+		}
+		cancelBackupShutdown()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

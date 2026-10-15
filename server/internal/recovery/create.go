@@ -39,9 +39,10 @@ var remoteSettingKeys = []string{
 // directory was published after the proved snapshot copy verified its manifest.
 // Callers must not treat running, failed, or canceled as a completed backup.
 type Job struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	Error            string `json:"error,omitempty"`
+	MaintenanceError string `json:"maintenance_error,omitempty"`
 }
 
 type backupRunner func(ctx context.Context, env []string, mediaRoot, output string) error
@@ -60,6 +61,10 @@ func (s *Service) SetTestBackend(run backupRunner, lock lockHolder) {
 // Start begins one local backup. The fixed destination is KURA_BACKUP_ROOT.
 // A second request while one is active returns ErrActive.
 func (s *Service) Start(ctx context.Context) (Job, error) {
+	return s.start(ctx, nil)
+}
+
+func (s *Service) start(ctx context.Context, whileLocked func(string) error) (Job, error) {
 	if remoteConfigured() {
 		return Job{}, ErrUnsupported
 	}
@@ -76,27 +81,71 @@ func (s *Service) Start(ctx context.Context) (Job, error) {
 	if err != nil {
 		return Job{}, ErrUnconfigured
 	}
+	s.mu.Lock()
+	if s.shuttingDown || s.lifecycle.Err() != nil {
+		s.mu.Unlock()
+		return Job{}, ErrShuttingDown
+	}
 	if !s.creating.CompareAndSwap(false, true) {
+		s.mu.Unlock()
 		return Job{}, ErrActive
 	}
-	release, err := s.locker()(ctx, env)
-	if err != nil {
+	lifecycle := s.lifecycle
+	done := make(chan struct{})
+	s.activeDone = done
+	s.mu.Unlock()
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		s.mu.Lock()
+		if s.activeDone == done {
+			s.activeDone = nil
+		}
 		s.creating.Store(false)
+		s.mu.Unlock()
+		close(done)
+	}()
+	lockCtx, cancelLock := context.WithCancel(ctx)
+	stopLifecycle := context.AfterFunc(lifecycle, cancelLock)
+	defer func() {
+		stopLifecycle()
+		cancelLock()
+	}()
+	release, err := s.locker()(lockCtx, env)
+	if err != nil {
 		return Job{}, err
+	}
+	lockTransferred := false
+	defer func() {
+		if !lockTransferred {
+			release()
+		}
+	}()
+	if whileLocked != nil {
+		if err := whileLocked(root); err != nil {
+			return Job{}, err
+		}
 	}
 	id := newBackupID(s.clock())
 	job := Job{ID: id, Status: statusRunning}
+	s.mu.Lock()
+	if s.shuttingDown || lifecycle.Err() != nil {
+		s.mu.Unlock()
+		return Job{}, ErrShuttingDown
+	}
 	if err := s.writeJob(root, job); err != nil {
-		release()
-		s.creating.Store(false)
+		s.mu.Unlock()
 		return Job{}, err
 	}
-	runCtx, cancel := context.WithTimeout(context.Background(), createTimeout)
-	s.mu.Lock()
+	runCtx, cancel := context.WithTimeout(lifecycle, createTimeout)
 	s.active = id
 	s.cancel = cancel
 	s.mu.Unlock()
-	go s.finish(runCtx, cancel, release, root, env, media, filepath.Join(root, id), id)
+	go s.finish(runCtx, cancel, release, done, root, env, media, filepath.Join(root, id), id)
+	lockTransferred = true
+	started = true
 	return job, nil
 }
 
@@ -175,6 +224,7 @@ func (s *Service) Reconcile() error {
 	defer release()
 	reconcileCtx, cancelReconcile := context.WithTimeout(context.Background(), reconcileTimeout)
 	defer cancelReconcile()
+	maintenance, _ := MaintenanceConfigFromEnv()
 	dir, err := checkedJobDir(root)
 	if errors.Is(err, os.ErrNotExist) {
 		s.sweepStaging(root)
@@ -210,6 +260,11 @@ func (s *Service) Reconcile() error {
 		if validationErr == nil {
 			job.Status = statusSucceeded
 			job.Error = ""
+			if maintenance.Enabled {
+				if replicaErr := s.verifyPrimaryAndReplica(reconcileCtx, root, id); replicaErr != nil {
+					job.MaintenanceError = "replication was not confirmed after restart; retention was skipped"
+				}
+			}
 		} else {
 			job.Status = statusFailed
 			job.Error = "backup was interrupted before publication"
@@ -222,24 +277,32 @@ func (s *Service) Reconcile() error {
 	return nil
 }
 
-func (s *Service) finish(ctx context.Context, cancel context.CancelFunc, release func(), root string, env []string, media, output, id string) {
-	defer s.creating.Store(false)
-	defer release()
-	defer cancel()
+func (s *Service) finish(ctx context.Context, cancel context.CancelFunc, release func(), activeDone chan struct{}, root string, env []string, media, output, id string) {
+	defer func() {
+		cancel()
+		release()
+		s.mu.Lock()
+		if s.active == id {
+			s.active = ""
+			s.cancel = nil
+		}
+		if s.activeDone == activeDone {
+			s.activeDone = nil
+		}
+		s.creating.Store(false)
+		s.mu.Unlock()
+		close(activeDone)
+	}()
 	done := make(chan struct{})
 	defer close(done)
 	go s.watchCancel(ctx, done, root, id, cancel)
 	err := s.runner()(ctx, env, media, output)
 	s.sweepStaging(root)
-	s.mu.Lock()
-	if s.active == id {
-		s.active = ""
-		s.cancel = nil
-	}
-	s.mu.Unlock()
 	_ = os.Remove(s.cancelPath(root, id))
 	job := Job{ID: id, Status: statusFailed, Error: "backup failed"}
-	_, publicationErr := validatePublishedDirectory(context.Background(), output)
+	publicationCtx, publicationCancel := context.WithTimeout(context.Background(), createTimeout)
+	_, publicationErr := validatePublishedDirectory(publicationCtx, output)
+	publicationCancel()
 	published := publicationErr == nil
 	switch {
 	case published:
@@ -254,6 +317,29 @@ func (s *Service) finish(ctx context.Context, cancel context.CancelFunc, release
 	case err != nil:
 		job.Status = statusFailed
 		job.Error = safeBackupError(err)
+	}
+	s.mu.Lock()
+	maintenance := s.maintenance
+	s.mu.Unlock()
+	if job.Status != statusSucceeded || !maintenance.Enabled {
+		_ = s.writeJob(root, job)
+		return
+	}
+	replicaCtx, replicaCancel := context.WithTimeout(ctx, maintenanceTimeout)
+	_, replicaErr := s.Replicate(replicaCtx, id)
+	replicaCancel()
+	if replicaErr != nil {
+		if errors.Is(replicaErr, ErrReplicaUnconfigured) {
+			job.MaintenanceError = "replication is not configured; retention was skipped"
+		} else {
+			job.MaintenanceError = "replication failed; retention was skipped"
+		}
+	} else {
+		pruneCtx, pruneCancel := context.WithTimeout(ctx, maintenanceTimeout)
+		if err := s.pruneLocked(pruneCtx, root, maintenance.Keep, id); err != nil {
+			job.MaintenanceError = "replication succeeded, but retention failed"
+		}
+		pruneCancel()
 	}
 	_ = s.writeJob(root, job)
 }

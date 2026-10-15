@@ -36,7 +36,15 @@ func recoveryFixture(t *testing.T) string {
 }
 
 func TestRecoveryHandlersRequireAdminAndReturnNoPaths(t *testing.T) {
-	service := recovery.New(recoveryFixture(t))
+	root := recoveryFixture(t)
+	jobDir := filepath.Join(root, ".kura-backup-jobs")
+	if err := os.Mkdir(jobDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "backup-live.json"), []byte(`{"id":"backup-live","status":"running"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	service := recovery.New(root)
 	req := httptest.NewRequest(http.MethodGet, "/api/recovery/backups", nil)
 	w := httptest.NewRecorder()
 	RecoveryList(service).ServeHTTP(w, req)
@@ -52,6 +60,10 @@ func TestRecoveryHandlersRequireAdminAndReturnNoPaths(t *testing.T) {
 	var listing map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &listing); err != nil {
 		t.Fatal(err)
+	}
+	activeJob, ok := listing["active_job"].(map[string]any)
+	if !ok || activeJob["id"] != "backup-live" || activeJob["status"] != "running" {
+		t.Fatalf("active job was not exposed through the admin list: %v", listing["active_job"])
 	}
 	if _, ok := listing["/"].(string); ok {
 		t.Fatal("unexpected path field")

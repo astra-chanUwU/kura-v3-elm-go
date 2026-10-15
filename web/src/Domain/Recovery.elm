@@ -16,6 +16,7 @@ type alias Listing =
     { configured : Bool
     , backups : List Backup
     , truncated : Bool
+    , activeJob : Maybe Job
     }
 
 
@@ -31,6 +32,7 @@ type alias Job =
     { id : String
     , status : String
     , error : Maybe String
+    , maintenanceError : String
     }
 
 
@@ -55,10 +57,11 @@ validStatus value =
 
 listingDecoder : Decoder Listing
 listingDecoder =
-    Decode.map3 Listing
+    Decode.map4 Listing
         (Decode.field "configured" Decode.bool)
         (Decode.field "backups" (Decode.list backupDecoder |> Decode.andThen bounded))
         (Decode.field "truncated" Decode.bool)
+        (Decode.maybe (Decode.field "active_job" jobDecoder))
 
 
 bounded : List Backup -> Decoder (List Backup)
@@ -81,10 +84,11 @@ receiptDecoder =
 
 jobDecoder : Decoder Job
 jobDecoder =
-    Decode.map3 Job
+    Decode.map4 Job
         (Decode.field "id" Decode.string)
         (Decode.field "status" (Decode.string |> Decode.andThen validJobStatus))
         (Decode.maybe (Decode.field "error" Decode.string))
+        (Decode.oneOf [ Decode.field "maintenance_error" Decode.string, Decode.succeed "" ])
 
 
 validJobStatus : String -> Decoder String

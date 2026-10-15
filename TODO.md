@@ -28,11 +28,11 @@ Own a small admin health service/API plus one Elm panel and focused tests. Inven
 
 Keep the first pass read-only except explicit derived-media repair. Repair uses existing durable job/idempotency rules with authorization and retry bounds; never rewrite/delete originals or automatically remove orphans. Support local media first; report unsupported S3 checks honestly. Prove missing/corrupt/generated fixtures, denied viewers/editors, duplicate repair requests, cancellation, and safe errors. Coordinate Recovery changes with task 4 rather than editing its files concurrently.
 
-## 4. Backup lifecycle — Codex + Luna, in progress
+## 4. Backup lifecycle — Codex + Luna, implemented and verified
 
-Work is isolated from the manual dev preview. Add opt-in scheduling, guarded retention, verified copy to a second local root, and discovery of active backup work after a full browser refresh. Docker fixtures will exercise shared locks across two API processes, interruption/restart, corruption, second-copy failure, and restore into fresh database/media targets. A second local directory simulates another disk; it is not proof of offsite durability. Keep remote S3/SFTP backup and online restore out of this slice. Retention must preserve the newest verified copy and must never delete unknown, invalid, symlinked, or still-needed source data.
+Implemented opt-in KURA_BACKUP_INTERVAL (minimum 1h), KURA_BACKUP_KEEP, KURA_BACKUP_REPLICA_ROOT, active_job in the admin backup listing, and safe maintenance_error warnings. The Docker drill (`python3 scripts/backup-lifecycle-drill.py --run`) passed two-process locks/discovery/cancellation, graceful shutdown, abrupt restart, >16 MiB real PNG upload/copy/restore, retention, replica-storage failure, and corruption rejection. Clock-controlled Go tests cover scheduling. Retention uses atomic quarantine and preserves unknown/invalid/changed data. Development scheduling remains disabled; the manual preview was not interrupted. A second local directory simulates another disk, not offsite durability. Remote S3/SFTP backup, calendar-driven restore drills, and online restore remain separate work.
 
-Wait for Codex to publish the accepted task 4 contract before overlapping Recovery files or packaging its configuration.
+Use this accepted contract when packaging configuration. Coordinate any further Recovery file changes instead of overlapping an active worker.
 
 ## 5. Packaging and preflight — Grok, after task 4 contract
 

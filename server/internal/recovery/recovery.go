@@ -1,6 +1,6 @@
-// Package recovery lists, verifies, and creates local backups in the format
-// written by scripts/library-backup.py. It never restores a backup and never
-// deletes a backup that has already been published.
+// Package recovery lists, verifies, creates, and manages local backups in the
+// format written by scripts/library-backup.py. Restore remains an offline
+// operator action.
 package recovery
 
 import (
@@ -39,6 +39,7 @@ var (
 	ErrInvalid      = errors.New("backup is invalid")
 	ErrCanceled     = errors.New("backup verification canceled")
 	ErrTimeout      = errors.New("backup verification timed out")
+	ErrShuttingDown = errors.New("backup service is shutting down")
 	backupID        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
@@ -53,6 +54,7 @@ type Listing struct {
 	Configured bool     `json:"configured"`
 	Backups    []Backup `json:"backups"`
 	Truncated  bool     `json:"truncated"`
+	ActiveJob  *Job     `json:"active_job,omitempty"`
 }
 type Receipt struct {
 	ID         string `json:"id"`
@@ -72,21 +74,61 @@ type fileEntry struct {
 }
 
 type Service struct {
-	root      string
-	verifying atomic.Bool
-	creating  atomic.Bool
-	now       func() time.Time
-	run       backupRunner
-	lock      lockHolder
-	mu        sync.Mutex
-	active    string
-	cancel    context.CancelFunc
+	root         string
+	verifying    atomic.Bool
+	creating     atomic.Bool
+	now          func() time.Time
+	run          backupRunner
+	lock         lockHolder
+	mu           sync.Mutex
+	active       string
+	cancel       context.CancelFunc
+	activeDone   chan struct{}
+	lifecycle    context.Context
+	lifeCancel   context.CancelFunc
+	shuttingDown bool
+	maintenance  MaintenanceConfig
 }
 
 // New reads only the operator-provided KURA_BACKUP_ROOT value. The API never
 // accepts or returns filesystem paths.
-func New(root string) *Service { return &Service{root: strings.TrimSpace(root), now: time.Now} }
-func NewFromEnv() *Service     { return New(os.Getenv("KURA_BACKUP_ROOT")) }
+func New(root string) *Service {
+	lifecycle, cancel := context.WithCancel(context.Background())
+	return &Service{root: strings.TrimSpace(root), now: time.Now, lifecycle: lifecycle, lifeCancel: cancel}
+}
+func NewFromEnv() *Service { return New(os.Getenv("KURA_BACKUP_ROOT")) }
+
+// Shutdown rejects new backups, cancels the service lifetime, and waits for an
+// in-flight attempt to finish cleanup and release its advisory lock.
+func (s *Service) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	s.shuttingDown = true
+	lifeCancel := s.lifeCancel
+	activeCancel := s.cancel
+	done := s.activeDone
+	s.mu.Unlock()
+	if lifeCancel != nil {
+		lifeCancel()
+	}
+	if activeCancel != nil {
+		activeCancel()
+	}
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 func (s *Service) List(ctx context.Context) (Listing, error) {
 	result := Listing{Backups: []Backup{}}
@@ -98,6 +140,10 @@ func (s *Service) List(ctx context.Context) (Listing, error) {
 		return result, err
 	}
 	result.Configured = true
+	result.ActiveJob, err = s.discoverActiveJob(ctx, root)
+	if err != nil {
+		return result, err
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return result, fmt.Errorf("read backup root: %w", err)

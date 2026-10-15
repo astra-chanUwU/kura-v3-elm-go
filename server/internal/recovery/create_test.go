@@ -127,6 +127,55 @@ func TestStartFailureCancelAndBusyNeverPublish(t *testing.T) {
 	}
 }
 
+func TestShutdownCancelsActiveBackupAndWaitsForLockRelease(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MEDIA_ROOT", t.TempDir())
+	t.Setenv("DATABASE_URL", "postgresql://postgres@127.0.0.1:1/kura_test?sslmode=disable")
+	t.Setenv("S3_BUCKET", "")
+	service := New(root)
+	started := make(chan struct{})
+	runnerStopped := make(chan struct{})
+	lockReleased := make(chan struct{})
+	service.SetTestBackend(
+		func(ctx context.Context, _ []string, _, _ string) error {
+			close(started)
+			<-ctx.Done()
+			close(runnerStopped)
+			return ctx.Err()
+		},
+		func(context.Context, []string) (func(), error) {
+			return func() { close(lockReleased) }, nil
+		},
+	)
+	job, err := service.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := service.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	select {
+	case <-runnerStopped:
+	default:
+		t.Fatal("shutdown returned before the backup runner stopped")
+	}
+	select {
+	case <-lockReleased:
+	default:
+		t.Fatal("shutdown returned before the advisory lock was released")
+	}
+	if _, err := service.Start(context.Background()); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("new backup accepted after shutdown: %v", err)
+	}
+	terminal, err := service.Job(job.ID)
+	if err != nil || terminal.Status != statusCanceled {
+		t.Fatalf("terminal job=%+v err=%v", terminal, err)
+	}
+}
+
 func TestSuccessfulRunnerWithoutValidPublicationFails(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MEDIA_ROOT", t.TempDir())
