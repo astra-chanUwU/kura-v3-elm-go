@@ -537,12 +537,17 @@ func UpdateUserHandler(cfg AccountsConfig) http.HandlerFunc {
 
 // AccountsHandlers groups the account handlers for coordinator wiring.
 type AccountsHandlers struct {
-	Session    http.HandlerFunc
-	Login      http.HandlerFunc
-	Logout     http.HandlerFunc
-	ListUsers  http.HandlerFunc
-	CreateUser http.HandlerFunc
-	UpdateUser http.HandlerFunc
+	Session            http.HandlerFunc
+	Login              http.HandlerFunc
+	Logout             http.HandlerFunc
+	ListUsers          http.HandlerFunc
+	CreateUser         http.HandlerFunc
+	UpdateUser         http.HandlerFunc
+	ListInvitations    http.HandlerFunc
+	CreateInvitation   http.HandlerFunc
+	RevokeInvitation   http.HandlerFunc
+	PreviewInvitation  http.HandlerFunc
+	RegisterInvitation http.HandlerFunc
 }
 
 // NewAccountsHandlers builds every account handler from one config.
@@ -550,9 +555,15 @@ func NewAccountsHandlers(cfg AccountsConfig) AccountsHandlers {
 	if cfg.CookieName == "" {
 		cfg.CookieName = "kura_session"
 	}
+	if cfg.Limiter == nil {
+		cfg.Limiter = NewLoginLimiter()
+	}
 	return AccountsHandlers{
 		Session: SessionHandler(cfg), Login: LoginHandler(cfg), Logout: LogoutHandler(cfg),
 		ListUsers: ListUsersHandler(cfg), CreateUser: CreateUserHandler(cfg), UpdateUser: UpdateUserHandler(cfg),
+		ListInvitations: ListInvitationsHandler(cfg), CreateInvitation: CreateInvitationHandler(cfg),
+		RevokeInvitation: RevokeInvitationHandler(cfg), PreviewInvitation: PreviewInvitationHandler(cfg),
+		RegisterInvitation: RegisterInvitationHandler(cfg),
 	}
 }
 
@@ -570,4 +581,9 @@ func RegisterAuthRoutes(api chi.Router, cfg AccountsConfig) {
 	api.Get("/auth/users", h.ListUsers)
 	api.Post("/auth/users", h.CreateUser)
 	api.Patch("/auth/users/{id}", h.UpdateUser)
+	api.Get("/auth/invitations", h.ListInvitations)
+	api.Post("/auth/invitations", h.CreateInvitation)
+	api.Delete("/auth/invitations/{id}", h.RevokeInvitation)
+	api.Post("/auth/invitations/preview", h.PreviewInvitation)
+	api.Post("/auth/register", h.RegisterInvitation)
 }

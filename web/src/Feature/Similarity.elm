@@ -47,6 +47,7 @@ failed fingerprint job: the library build never requeues failed jobs,
 and a failed poll is surfaced with its error so the user can fix the
 cause and retry explicitly. Late callbacks are bound to the access
 generation, a request id, the anchor, and the applied threshold.
+
 -}
 
 import Api.Job
@@ -54,14 +55,14 @@ import Api.Post
 import Api.Similarity
 import Domain.Post exposing (PostSummary)
 import Domain.Similarity exposing (IndexResponse, SimilarMatch, SimilarPage, StatusPage)
-import Html exposing (Html, button, div, input, label, li, p, span, text, ul)
-import Html.Attributes as Attr
-import Html.Attributes exposing (attribute, checked, class, disabled, title, type_, value)
+import Html exposing (Html, button, details, div, h3, input, label, li, p, span, summary, text, ul)
+import Html.Attributes as Attr exposing (attribute, checked, class, disabled, title, type_, value)
 import Html.Events exposing (onCheck, onClick, onInput)
 import Http
 import Process
 import Set exposing (Set)
 import Task
+import Ui.Help
 import Ui.Media
 
 
@@ -322,7 +323,11 @@ update ctx msg model =
                         }
                 in
                 ( fresh
-                , Api.Similarity.listSimilar ctx.apiBase summary.id model.threshold pageLimit Nothing
+                , Api.Similarity.listSimilar ctx.apiBase
+                    summary.id
+                    model.threshold
+                    pageLimit
+                    Nothing
                     (SimilarLoaded ctx.accessGeneration id summary.id model.threshold False)
                 , []
                 )
@@ -348,7 +353,11 @@ update ctx msg model =
                                 model.requestId + 1
                         in
                         ( { model | open = True, threshold = applied, loading = True, requestId = id, pollJob = Nothing, pollId = model.pollId + 1, status = Just "Loading similar posts…" }
-                        , Api.Similarity.listSimilar ctx.apiBase summary.id applied pageLimit Nothing
+                        , Api.Similarity.listSimilar ctx.apiBase
+                            summary.id
+                            applied
+                            pageLimit
+                            Nothing
                             (SimilarLoaded ctx.accessGeneration id summary.id applied False)
                         , []
                         )
@@ -364,7 +373,11 @@ update ctx msg model =
                             model.requestId + 1
                     in
                     ( { model | loading = True, requestId = id, status = Just "Loading similar posts…" }
-                    , Api.Similarity.listSimilar ctx.apiBase summary.id model.threshold pageLimit (Just cursor)
+                    , Api.Similarity.listSimilar ctx.apiBase
+                        summary.id
+                        model.threshold
+                        pageLimit
+                        (Just cursor)
                         (SimilarLoaded ctx.accessGeneration id summary.id model.threshold True)
                     , []
                     )
@@ -376,11 +389,16 @@ update ctx msg model =
             ( { model | thresholdInput = clampThreshold value }, Cmd.none, [] )
 
         SimilarLoaded generation id forAnchor appliedThreshold appending result ->
-            if generation /= ctx.accessGeneration
-                || id /= model.requestId
-                || not model.open
-                || anchorId model /= Just forAnchor
-                || appliedThreshold /= model.threshold
+            if
+                generation
+                    /= ctx.accessGeneration
+                    || id
+                    /= model.requestId
+                    || not model.open
+                    || anchorId model
+                    /= Just forAnchor
+                    || appliedThreshold
+                    /= model.threshold
             then
                 ( model, Cmd.none, [] )
 
@@ -413,7 +431,7 @@ update ctx msg model =
                                         Nothing
 
                                     else
-                                        Just "This post has no similarity index yet, so no matches can be shown. Index this post to build it; new uploads are indexed automatically."
+                                        Just unindexedMessage
                               }
                             , Cmd.none
                             , []
@@ -488,7 +506,9 @@ update ctx msg model =
 
                     else
                         ( { model | posting = True, status = Just "Queueing index job…" }
-                        , Api.Similarity.indexPosts ctx.apiBase ctx.credential [ summary.id ]
+                        , Api.Similarity.indexPosts ctx.apiBase
+                            ctx.credential
+                            [ summary.id ]
                             (IndexAnchorLoaded ctx.accessGeneration model.requestId)
                         , []
                         )
@@ -773,7 +793,11 @@ reloadSimilar ctx model =
                     model.requestId + 1
             in
             ( { model | loading = True, requestId = id, status = Just "Loading similar posts…" }
-            , Api.Similarity.listSimilar ctx.apiBase summary.id model.threshold pageLimit Nothing
+            , Api.Similarity.listSimilar ctx.apiBase
+                summary.id
+                model.threshold
+                pageLimit
+                Nothing
                 (SimilarLoaded ctx.accessGeneration id summary.id model.threshold False)
             , []
             )
@@ -837,6 +861,11 @@ type alias ViewConfig msg =
     }
 
 
+unindexedMessage : String
+unindexedMessage =
+    "This image has not been indexed."
+
+
 view : Model -> ViewConfig msg -> Html msg
 view model config =
     let
@@ -847,19 +876,59 @@ view model config =
             not config.writesEnabled || chosenCount == 0 || isBusy model
     in
     div [ class "panel-section similarity-view" ]
-        ([ p [ class "panel-note" ] [ text "Visual near-copies can be resized or recompressed versions of a post. They can also be different posts that merely look alike — even at distance 0 — so compare before moving anything to Trash. This is not the exact-copies check, and it does not match crops, flips, or meaning." ]
+        ([ div [ class "review-panel-header similarity-panel-header" ]
+            [ h3 [ class "review-panel-title" ]
+                [ text
+                    ("Similar images"
+                        ++ (case model.anchor of
+                                Just post ->
+                                    " · #" ++ post.id ++ " · " ++ String.fromInt (List.length model.matches) ++ " loaded"
+
+                                Nothing ->
+                                    ""
+                           )
+                    )
+                ]
+            , div [ class "review-panel-actions" ]
+                [ Ui.Help.view "similarity-help" "About similar images" "Visual similarity finds resized or recompressed images, but can include different posts that look alike, even at distance 0. It does not detect crops, flips, or meaning. Compare before moving a post to Trash. Exact copies are reviewed separately. New uploads are indexed automatically; opening this panel does not run indexing."
+                , button [ class "button button-quiet", type_ "button", onClick config.onClose ] [ text "Close" ]
+                ]
+            ]
          , case model.status of
             Just message ->
-                p [ class "panel-note", attribute "role" "status" ] [ text message ]
+                if message == unindexedMessage then
+                    text ""
+
+                else
+                    p [ class "panel-note", attribute "role" "status" ] [ text message ]
 
             Nothing ->
                 text ""
          , case model.anchor of
-            Just summary ->
-                p [ class "panel-note" ] [ text ("Anchor #" ++ summary.id ++ " · " ++ String.fromInt (List.length model.matches) ++ " loaded · distance ≤ " ++ String.fromInt model.threshold) ]
+            Just _ ->
+                if model.indexed || model.loading || (model.status /= Nothing && model.status /= Just unindexedMessage) then
+                    text ""
+
+                else
+                    p [ class "panel-note similarity-index-note", attribute "role" "status" ]
+                        ([ text
+                            (if config.writesEnabled then
+                                "This image has not been indexed. "
+
+                             else
+                                "This image has not been indexed. Ask an editor to index it."
+                            )
+                         ]
+                            ++ (if config.writesEnabled then
+                                    [ button [ class "button button-quiet", type_ "button", onClick config.onIndexAnchor, disabled (model.posting || polling model || model.uncertain) ] [ text "Index this post" ] ]
+
+                                else
+                                    []
+                               )
+                        )
 
             Nothing ->
-                p [ class "panel-note" ] [ text "Pick a post to review its similar posts." ]
+                text ""
          ]
             ++ (if model.uncertain then
                     [ p []
@@ -869,44 +938,70 @@ view model config =
                 else
                     []
                )
-            ++ [ ul [ class "nav-list similarity-matches" ]
-                    (List.map (matchRow model config) model.matches)
-               , if List.isEmpty model.matches && not model.loading then
-                    p [ class "panel-note" ] [ text "No matches loaded." ]
+            ++ [ if not (List.isEmpty model.matches) then
+                    p [ class "panel-note similarity-caution" ] [ text "Similar images may be different posts. Compare before removing." ]
 
                  else
                     text ""
-               , p [ class "similarity-controls" ]
-                    [ label [ class "similarity-threshold" ]
-                        [ text "Max distance (0–16) "
-                        , input [ type_ "number", Attr.min "0", Attr.max "16", value (String.fromInt model.thresholdInput), onInput config.onThresholdChanged ] []
+               , ul [ class "nav-list similarity-matches" ]
+                    (List.map (matchRow model config) model.matches)
+               , if List.isEmpty model.matches && not model.loading && model.indexed && model.status == Nothing then
+                    p [ class "panel-note" ] [ text "No similar images found." ]
+
+                 else
+                    text ""
+               , if model.nextCursor /= Nothing then
+                    p [ class "similarity-controls" ]
+                        [ button [ class "button button-quiet", type_ "button", onClick config.onLoadMore, disabled model.loading ] [ text "Load more matches" ]
                         ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onReload, disabled model.loading ] [ text "Reload with this distance" ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onLoadMore, disabled (model.loading || model.nextCursor == Nothing) ] [ text "Load more matches" ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onClose ] [ text "Close" ]
-                    ]
-               , p [ class "similarity-controls" ]
-                    [ button [ class "button button-quiet", type_ "button", onClick config.onIndexAnchor, disabled (not config.writesEnabled || model.indexed || model.posting || polling model || model.uncertain) ] [ text "Index this post" ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onIndexLibrary, disabled (not config.writesEnabled || indexingLibrary model || model.uncertain) ] [ text "Build index for library" ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onCancelIndexLibrary, disabled (not (indexingLibrary model)) ] [ text "Stop queueing" ]
-                    , span [ class "panel-note" ] [ text (indexProgressText model config) ]
-                    ]
-               , p [ class "similarity-controls" ]
-                    [ button [ class "button", type_ "button", onClick config.onTrash, disabled trashDisabled ] [ text ("Move chosen matches to Trash (" ++ String.fromInt chosenCount ++ "/100)") ]
-                    , button [ class "button button-quiet", type_ "button", onClick config.onClearSelection, disabled (chosenCount == 0) ] [ text "Clear choice" ]
-                    , span [ class "panel-note" ]
-                        [ text
-                            (if not config.writesEnabled then
-                                " Unlock to move matches to Trash or build the index. Browsing stays available while locked."
 
-                             else if chosenCount == 0 then
-                                " Choose matches with their checkboxes first; nothing is chosen automatically. Trashed posts can be recovered from Trash."
+                 else
+                    text ""
+               , if indexingLibrary model || model.posting || polling model then
+                    p [ class "panel-note similarity-index-progress", attribute "role" "status" ] [ text (indexProgressText model config) ]
 
-                             else
-                                " You will be asked to confirm before anything moves to Trash, and it can be recovered from Trash."
-                            )
+                 else
+                    text ""
+               , details [ class "similarity-options" ]
+                    [ summary [] [ text "Options" ]
+                    , p [ class "similarity-controls" ]
+                        [ label [ class "similarity-threshold" ]
+                            [ text "Maximum distance (0–16) "
+                            , input [ type_ "number", Attr.min "0", Attr.max "16", value (String.fromInt model.thresholdInput), onInput config.onThresholdChanged ] []
+                            ]
+                        , button [ class "button button-quiet", type_ "button", onClick config.onReload, disabled model.loading ] [ text "Reload" ]
                         ]
                     ]
+               , if config.writesEnabled || indexingLibrary model || model.posting || polling model then
+                    details [ class "similarity-indexing" ]
+                        [ summary [] [ text "Indexing" ]
+                        , if config.writesEnabled then
+                            p [ class "similarity-controls" ]
+                                ([ button [ class "button button-quiet", type_ "button", onClick config.onIndexLibrary, disabled (indexingLibrary model || model.uncertain) ] [ text "Build library index" ]
+                                 ]
+                                    ++ (if indexingLibrary model then
+                                            [ button [ class "button button-quiet", type_ "button", onClick config.onCancelIndexLibrary ] [ text "Stop queueing" ] ]
+
+                                        else
+                                            []
+                                       )
+                                )
+
+                          else
+                            text ""
+                        , p [ class "panel-note" ] [ text (indexProgressText model config) ]
+                        ]
+
+                 else
+                    text ""
+               , if config.writesEnabled && chosenCount > 0 then
+                    p [ class "similarity-controls" ]
+                        [ button [ class "button", type_ "button", onClick config.onTrash, disabled trashDisabled ] [ text ("Move chosen matches to Trash (" ++ String.fromInt chosenCount ++ "/100)") ]
+                        , button [ class "button button-quiet", type_ "button", onClick config.onClearSelection ] [ text "Clear choice" ]
+                        ]
+
+                 else
+                    text ""
                ]
         )
 
@@ -934,15 +1029,19 @@ matchRow model config match =
             match.post
     in
     li [ class "nav-row similarity-match-row" ]
-        [ label [ class "similarity-match-check" ]
-            [ input
-                [ type_ "checkbox"
-                , checked (Set.member post.id model.selected)
-                , onCheck (config.onToggle post.id)
-                , attribute "aria-label" ("Choose match " ++ post.id ++ " for Trash")
+        [ if config.writesEnabled then
+            label [ class "similarity-match-check" ]
+                [ input
+                    [ type_ "checkbox"
+                    , checked (Set.member post.id model.selected)
+                    , onCheck (config.onToggle post.id)
+                    , attribute "aria-label" ("Choose match " ++ post.id ++ " for Trash")
+                    ]
+                    []
                 ]
-                []
-            ]
+
+          else
+            text ""
         , Ui.Media.image [ class "similarity-thumb" ]
             { url = Api.Post.mediaUrl config.apiBase post.previewUrl
             , postId = post.id
@@ -951,7 +1050,6 @@ matchRow model config match =
             }
         , span [ class "similarity-match-meta" ]
             [ span [] [ text ("#" ++ post.id ++ " · distance " ++ String.fromInt match.distance ++ " · " ++ post.mediaType ++ " · " ++ String.fromInt post.width ++ "×" ++ String.fromInt post.height) ]
-            , span [ class "panel-note" ] [ text "Visually similar — may still be a different post. Compare before Trash." ]
             ]
         , button [ class "button button-quiet", type_ "button", onClick (config.onCompare post.id) ] [ text "Compare" ]
         ]

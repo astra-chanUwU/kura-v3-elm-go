@@ -684,15 +684,11 @@ ratingSection config post =
                         )
                         Rating.all
                 )
-            , p [ class "panel-note" ]
-                [ text
-                    (if targetCount > 1 then
-                        "Applies to " ++ String.fromInt targetCount ++ " selected posts."
+            , if targetCount > 1 then
+                p [ class "panel-note" ] [ text ("Applies to " ++ String.fromInt targetCount ++ " selected posts.") ]
 
-                     else
-                        "Applies to this post."
-                    )
-                ]
+              else
+                text ""
             , if config.ratingUnknownVersion then
                 p [ class "panel-note" ] [ text "Rating version unknown; reload before saving." ]
 

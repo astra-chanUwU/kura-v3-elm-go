@@ -1,5 +1,6 @@
 """Private-library acceptance using generated accounts and disposable databases."""
 import http.cookiejar
+import hashlib
 import json
 import os
 import socket
@@ -57,7 +58,7 @@ class AccountsDrill(unittest.TestCase):
     def call(self, client, method, path, body=None, expected=200, origin=True, bearer=False):
         headers = {}
         if origin:
-            headers["Origin"] = self.api
+            headers["Origin"] = self.api if origin is True else origin
         if bearer:
             headers["Authorization"] = "Bearer restore-drill-token"
         if body is not None:
@@ -127,6 +128,77 @@ class AccountsDrill(unittest.TestCase):
         self.call(viewer, "GET", "/api/posts", expected=401)
         self.call(admin, "POST", "/api/auth/logout", {})
         self.call(admin, "GET", "/api/posts", expected=401)
+
+    def test_invitation_lifecycle_registration_and_public_origin_checks(self):
+        admin, owner_session = self.login("owner")
+        self.assertTrue(owner_session["is_admin"])
+
+        created = self.call(admin, "POST", "/api/auth/invitations", {"role": "viewer"}, expected=201)
+        invite = created["invitation"]
+        token = created["token"]
+        self.assertEqual(invite["role"], "viewer")
+        self.assertEqual(set(invite), {"id", "role", "created_at", "expires_at", "revoked", "used"})
+        self.assertEqual(len(token), 43)
+
+        listed = self.call(admin, "GET", "/api/auth/invitations")["invitations"]
+        self.assertTrue(any(item["id"] == invite["id"] for item in listed))
+        listing_json = json.dumps(listed)
+        self.assertNotIn(token, listing_json)
+        self.assertNotIn(hashlib.sha256(token.encode()).hexdigest(), listing_json)
+        self.assertNotIn("token", listing_json)
+
+        preview_path = "/api/auth/invitations/preview"
+        self.call(self.anonymous, "POST", preview_path, {"token": token}, expected=403, origin=False)
+        self.call(self.anonymous, "POST", preview_path, {"token": token}, expected=403,
+                  origin="https://attacker.example")
+        preview = self.call(self.anonymous, "POST", preview_path, {"token": token})
+        self.assertEqual(preview["role"], "viewer")
+        self.assertEqual(preview["library_name"], "Kura")
+
+        # Public registration accepts only token, handle, and password.
+        register_path = "/api/auth/register"
+        self.call(self.anonymous, "POST", register_path,
+                  {"token": token, "handle": "injected-role", "password": self.password, "role": "admin"},
+                  expected=400)
+        self.call(self.anonymous, "POST", register_path,
+                  {"token": token, "handle": "owner", "password": self.password}, expected=409)
+        self.call(self.anonymous, "POST", preview_path, {"token": token})
+
+        # Neither missing nor cross-site Origin reaches the registration service.
+        self.call(self.anonymous, "POST", register_path,
+                  {"token": token, "handle": "blocked-origin", "password": self.password},
+                  expected=403, origin=False)
+        self.call(self.anonymous, "POST", register_path,
+                  {"token": token, "handle": "blocked-origin", "password": self.password},
+                  expected=403, origin="https://attacker.example")
+
+        registered = self.call(self.anonymous, "POST", register_path,
+                               {"token": token, "handle": "invitee", "password": self.password}, expected=201)
+        self.assertTrue(registered["authenticated"])
+        self.assertEqual(registered["user"]["handle"], "invitee")
+        self.assertEqual(registered["user"]["role"], "viewer")
+        self.assertNotIn("token", registered)
+        self.assertNotIn("raw_token", registered)
+        registered_session = self.call(self.anonymous, "GET", "/api/auth/session")
+        self.assertTrue(registered_session["authenticated"])
+        self.assertEqual(registered_session["user"]["role"], "viewer")
+        self.call(self.anonymous, "POST", register_path,
+                  {"token": token, "handle": "replay", "password": self.password}, expected=410)
+        self.call(self.anonymous, "POST", preview_path, {"token": token}, expected=410)
+
+        # A viewer cannot manage invitations even with the newly issued session.
+        self.call(self.anonymous, "GET", "/api/auth/invitations", expected=403)
+        self.call(self.anonymous, "POST", "/api/auth/invitations", {"role": "editor"}, expected=403)
+        self.call(self.anonymous, "DELETE", "/api/auth/invitations/" + str(invite["id"]), expected=403)
+
+        # Admin revocation is visible in the list and makes preview generic 410.
+        pending = self.call(admin, "POST", "/api/auth/invitations", {"role": "editor"}, expected=201)
+        pending_token = pending["token"]
+        self.call(admin, "DELETE", "/api/auth/invitations/" + str(pending["invitation"]["id"]), expected=204)
+        self.call(self.anonymous, "POST", preview_path, {"token": pending_token}, expected=410)
+        final_list = self.call(admin, "GET", "/api/auth/invitations")["invitations"]
+        revoked = next(item for item in final_list if item["id"] == pending["invitation"]["id"])
+        self.assertTrue(revoked["revoked"])
 
 
 if __name__ == "__main__":

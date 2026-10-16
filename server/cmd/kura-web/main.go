@@ -132,6 +132,10 @@ func allowedStaticFile(cleaned string) (string, bool) {
 		return "index.html", true
 	case "/index.html":
 		return "index.html", true
+	case "/sign-in", "/sign-up", "/trouble":
+		return "index.html", true
+	case "/static/brand/auth-observatory.png":
+		return "static/brand/auth-observatory.png", true
 	case "/dist/elm.js":
 		return "dist/elm.js", true
 	}

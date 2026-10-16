@@ -5,7 +5,9 @@ import Domain.Session as Domain exposing (Role(..))
 import Feature.Session as Session
 import Http
 import Json.Decode as Decode
+import Page.Library as Library
 import String
+import Url
 
 
 suite : List ( String, Bool )
@@ -19,6 +21,20 @@ suite =
     , ( "account creation clears password before sending", caseAccountPasswordClearing )
     , ( "viewer cannot start account administration", caseViewerCannotManage )
     , ( "closing login clears password draft", caseCloseClearsDraft )
+    , ( "invitation endpoints are same origin", caseInvitationEndpoints )
+    , ( "invitation redemption retains handle and returns authenticated", caseInvitationSignup )
+    , ( "invalid invitation cannot submit account creation", caseInvalidInvitationStopsSignup )
+    , ( "navigation ignores a late invitation preview and register response", caseStaleInvitationResponses )
+    , ( "auth sign in reports authenticated without discarding its route", caseAuthLoginOutput )
+    , ( "auth fragment is captured before URL cleanup", caseAuthFragmentCleanup )
+    , ( "auth return accepts only the library route", caseSafeAuthReturn )
+    , ( "authenticated session skips the standalone sign in page", caseExistingAuthRedirect )
+    , ( "private anonymous session requests the standalone auth page", casePrivateAnonymousRedirect )
+    , ( "stale signup success refreshes server session before library resumes", caseStaleSignupReconciliation )
+    , ( "registration HTTP 400 explains password byte bounds", caseRegistrationBadRequest )
+    , ( "ambiguous signup reconciles cookie before reporting failure", caseAmbiguousSignupReconciliation )
+    , ( "session discovery failure stays unconfirmed and retryable", caseSessionDiscoveryFailure )
+    , ( "initial anonymous session cannot stale the invite preview after fragment cleanup", caseInitialInvitePreviewSurvivesSessionDiscovery )
     ]
 
 
@@ -86,15 +102,15 @@ caseLoginDraftClearing =
     requested.passwordDraft
         == ""
         && requested.handleDraft
-        == ""
+        == "owner"
         && requested.loginBusy
         && failed.passwordDraft
         == ""
         && failed.handleDraft
-        == ""
+        == "owner"
         && not failed.loginBusy
         && failed.notice
-        == Just "Handle or password was not accepted."
+        == Just "Handle or password is incorrect."
         && not (String.contains "private-secret" (Maybe.withDefault "" failed.notice))
         && not (Session.canRead failed)
 
@@ -225,6 +241,462 @@ caseCloseClearsDraft =
             Session.update ctx Session.LoginClosed withPassword
     in
     closed.passwordDraft == "" && not closed.loginOpen
+
+
+caseInvitationEndpoints : Bool
+caseInvitationEndpoints =
+    Api.endpoint "" [ "api", "auth", "invitations", "preview" ]
+        == "/api/auth/invitations/preview"
+        && Api.endpoint "" [ "api", "auth", "register" ]
+        == "/api/auth/register"
+        && Api.endpoint "" [ "api", "auth", "invitations", "17" ]
+        == "/api/auth/invitations/17"
+
+
+caseInvitationSignup : Bool
+caseInvitationSignup =
+    let
+        ctx =
+            Session.context "" 22
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( routed, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) initial
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "opaque-token") routed
+
+        ( previewReady, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 22 captured.signupGeneration (Ok { role = Viewer, expiresAt = "2026-10-23T00:00:00Z", libraryName = "Kura" })) captured
+
+        ( withHandle, _, _ ) =
+            Session.update ctx (Session.SignupHandleChanged "new-person") previewReady
+
+        ( withPassword, _, _ ) =
+            Session.update ctx (Session.SignupPasswordChanged "a-long-unique-password") withHandle
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.SignupConfirmChanged "a-long-unique-password") withPassword
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.SignupRequested ready
+
+        ( signedUp, _, outputs ) =
+            Session.update ctx (Session.SignupCompleted 22 requested.signupGeneration (Ok viewerSession)) requested
+    in
+    requested.signupBusy
+        && requested.signupHandleDraft
+        == "new-person"
+        && requested.signupPasswordDraft
+        == "a-long-unique-password"
+        && Session.canRead signedUp
+        && signedUp.signupPasswordDraft
+        == ""
+        && signedUp.signupConfirmDraft
+        == ""
+        && outputs
+        == [ Session.Authenticated ]
+
+
+caseInvalidInvitationStopsSignup : Bool
+caseInvalidInvitationStopsSignup =
+    let
+        ctx =
+            Session.context "" 23
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "bad-token") initial
+
+        ( rejected, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 23 captured.signupGeneration (Err (Http.BadStatus 410))) captured
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.SignupRequested rejected
+    in
+    not requested.signupBusy
+        && requested.invitationToken
+        == Just "bad-token"
+        && requested.signupNotice
+        == Just ( "You need a valid invitation to create an account.", Session.ErrorNotice )
+
+
+caseStaleInvitationResponses : Bool
+caseStaleInvitationResponses =
+    let
+        ctx =
+            Session.context "" 24
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "token") initial
+
+        ( navigated, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.TroublePage)) captured
+
+        ( latePreview, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 24 captured.signupGeneration (Ok { role = Viewer, expiresAt = "later", libraryName = "Kura" })) navigated
+
+        ( signUp, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) latePreview
+
+        ( capturedAgain, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "token-2") signUp
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 24 capturedAgain.signupGeneration (Ok { role = Viewer, expiresAt = "later", libraryName = "Kura" })) capturedAgain
+
+        ( handle, _, _ ) =
+            Session.update ctx (Session.SignupHandleChanged "person") ready
+
+        ( password, _, _ ) =
+            Session.update ctx (Session.SignupPasswordChanged "a-long-unique-password") handle
+
+        ( confirm, _, _ ) =
+            Session.update ctx (Session.SignupConfirmChanged "a-long-unique-password") password
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.SignupRequested confirm
+
+        ( navigatedAgain, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignInPage)) requested
+
+        ( lateRegister, _, outputs ) =
+            Session.update ctx (Session.SignupCompleted 24 requested.signupGeneration (Ok viewerSession)) navigatedAgain
+    in
+    latePreview.invitationPreview
+        == Session.InvitationMissing
+        && latePreview.invitationToken
+        == Nothing
+        && lateRegister.session
+        == navigatedAgain.session
+        && lateRegister.loading
+        && lateRegister.generation
+        == navigatedAgain.generation + 1
+        && outputs
+        == []
+
+
+caseAuthLoginOutput : Bool
+caseAuthLoginOutput =
+    let
+        ctx =
+            Session.context "" 25
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( signIn, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignInPage)) initial
+
+        ( withHandle, _, _ ) =
+            Session.update ctx (Session.HandleChanged "owner") signIn
+
+        ( withPassword, _, _ ) =
+            Session.update ctx (Session.PasswordChanged "secret") withHandle
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.LoginRequested withPassword
+
+        ( authenticated, _, outputs ) =
+            Session.update ctx (Session.LoginCompleted 25 requested.generation (Ok adminSession)) requested
+    in
+    Session.canRead authenticated
+        && Session.authPage authenticated
+        == Just Session.SignInPage
+        && outputs
+        == [ Session.Authenticated ]
+
+
+caseAuthFragmentCleanup : Bool
+caseAuthFragmentCleanup =
+    case Url.fromString "https://kura.example/sign-up?return=%2F%3Fq%3Dnight#invite=opaque-token" of
+        Nothing ->
+            False
+
+        Just url ->
+            let
+                ctx =
+                    Session.context "" 26
+
+                ( initial, _ ) =
+                    Session.init ctx
+
+                token =
+                    Library.inviteTokenFromUrl url
+
+                ( captured, _, _ ) =
+                    Session.update ctx (Session.InvitationCaptured (Maybe.withDefault "" token)) initial
+
+                cleaned =
+                    Library.cleanAuthUrl url
+            in
+            token
+                == Just "opaque-token"
+                && cleaned
+                == "/sign-up?return=%2F%3Fq%3Dnight"
+                && captured.invitationToken
+                == token
+
+
+caseSafeAuthReturn : Bool
+caseSafeAuthReturn =
+    let
+        result raw =
+            Url.fromString ("https://kura.example/sign-in?return=" ++ raw)
+                |> Maybe.map Library.authReturnFromUrl
+    in
+    result "%2F%3Fq%3Dnight" == Just "/?q=night"
+        && result "%2Fsign-in" == Just "/"
+        && result "%2Fapi%2Fauth%2Fsession" == Just "/"
+        && result "%2F%2Fevil.example" == Just "/"
+
+
+caseExistingAuthRedirect : Bool
+caseExistingAuthRedirect =
+    let
+        ctx =
+            Session.context "" 27
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( routed, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignInPage)) initial
+
+        ( loaded, _, outputs ) =
+            Session.update ctx (Session.SessionLoaded 27 1 (Ok adminSession)) routed
+    in
+    Session.canRead loaded
+        && outputs
+        == [ Session.Authenticated ]
+
+
+casePrivateAnonymousRedirect : Bool
+casePrivateAnonymousRedirect =
+    let
+        ctx =
+            Session.context "" 28
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( anonymous, _, outputs ) =
+            Session.update ctx (Session.SessionLoaded 28 1 (Ok anonymousSession)) initial
+    in
+    not (Session.canRead anonymous)
+        && outputs
+        == [ Session.AuthenticationRequired ]
+
+
+caseStaleSignupReconciliation : Bool
+caseStaleSignupReconciliation =
+    let
+        ctx =
+            Session.context "" 29
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( signupPage, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) initial
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "token") signupPage
+
+        ( previewReady, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 29 captured.signupGeneration (Ok { role = Viewer, expiresAt = "later", libraryName = "Kura" })) captured
+
+        ( handle, _, _ ) =
+            Session.update ctx (Session.SignupHandleChanged "person") previewReady
+
+        ( password, _, _ ) =
+            Session.update ctx (Session.SignupPasswordChanged "a-long-unique-password") handle
+
+        ( confirm, _, _ ) =
+            Session.update ctx (Session.SignupConfirmChanged "a-long-unique-password") password
+
+        ( busy, _, _ ) =
+            Session.update ctx (Session.SignupRequested) confirm
+
+        ( navigated, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged Nothing) busy
+
+        ( staleSuccess, _, _ ) =
+            Session.update ctx (Session.SignupCompleted 29 busy.signupGeneration (Ok viewerSession)) navigated
+
+        ( reconciled, _, outputs ) =
+            Session.update ctx (Session.SessionLoaded 29 staleSuccess.generation (Ok viewerSession)) staleSuccess
+    in
+    staleSuccess.reconcilePending
+        && Session.canRead reconciled
+        && not reconciled.reconcilePending
+        && outputs
+        == [ Session.SessionChanged ]
+
+
+caseRegistrationBadRequest : Bool
+caseRegistrationBadRequest =
+    let
+        ctx =
+            Session.context "" 30
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "token") initial
+
+        ( previewReady, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 30 captured.signupGeneration (Ok { role = Viewer, expiresAt = "later", libraryName = "Kura" })) captured
+
+        ( handle, _, _ ) =
+            Session.update ctx (Session.SignupHandleChanged "person") previewReady
+
+        ( password, _, _ ) =
+            Session.update ctx (Session.SignupPasswordChanged "short") handle
+
+        ( confirm, _, _ ) =
+            Session.update ctx (Session.SignupConfirmChanged "short") password
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.SignupRequested confirm
+
+        ( failed, _, _ ) =
+            Session.update ctx (Session.SignupCompleted 30 requested.signupGeneration (Err (Http.BadStatus 400))) requested
+    in
+    failed.signupNotice
+        == Just ( "Password must be 12–72 UTF-8 bytes. Check your handle and try again.", Session.ErrorNotice )
+        && failed.signupHandleDraft
+        == "person"
+        && failed.signupPasswordDraft
+        == ""
+
+
+caseAmbiguousSignupReconciliation : Bool
+caseAmbiguousSignupReconciliation =
+    let
+        ctx =
+            Session.context "" 31
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( routed, _, _ ) =
+            Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) initial
+
+        ( captured, _, _ ) =
+            Session.update ctx (Session.InvitationCaptured "opaque-token") routed
+
+        ( previewReady, _, _ ) =
+            Session.update ctx (Session.InvitationPreviewLoaded 31 captured.signupGeneration (Ok { role = Viewer, expiresAt = "later", libraryName = "Kura" })) captured
+
+        ( withHandle, _, _ ) =
+            Session.update ctx (Session.SignupHandleChanged "new-person") previewReady
+
+        ( withPassword, _, _ ) =
+            Session.update ctx (Session.SignupPasswordChanged "a-long-unique-password") withHandle
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.SignupConfirmChanged "a-long-unique-password") withPassword
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.SignupRequested ready
+
+        ( reconciling, _, _ ) =
+            Session.update ctx (Session.SignupCompleted 31 requested.signupGeneration (Err (Http.BadStatus 503))) requested
+
+        ( recoveredAnonymous, _, outputs ) =
+            Session.update ctx (Session.SessionLoaded 31 reconciling.generation (Ok anonymousSession)) reconciling
+    in
+    reconciling.loading
+        && reconciling.reconcileSignupPending
+        && reconciling.signupHandleDraft
+        == "new-person"
+        && reconciling.signupPasswordDraft
+        == ""
+        && recoveredAnonymous.signupNotice
+        == Just ( "Account creation could not be confirmed. Try signing in or reopen the invitation.", Session.ErrorNotice )
+        && recoveredAnonymous.signupHandleDraft
+        == "new-person"
+        && not recoveredAnonymous.reconcileSignupPending
+        && outputs
+        == []
+
+
+caseSessionDiscoveryFailure : Bool
+caseSessionDiscoveryFailure =
+    let
+        ctx =
+            Session.context "" 32
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( failed, _, outputs ) =
+            Session.update ctx (Session.SessionLoaded 32 initial.generation (Err Http.NetworkError)) initial
+    in
+    not failed.loading
+        && Session.privateMode failed
+        && failed.session
+        == Nothing
+        && Session.status failed
+        == Just "Access could not be checked. Retry when the server is available."
+        && outputs
+        == []
+
+
+caseInitialInvitePreviewSurvivesSessionDiscovery : Bool
+caseInitialInvitePreviewSurvivesSessionDiscovery =
+    case Url.fromString "https://kura.example/sign-up#invite=revoked-token" of
+        Nothing ->
+            False
+
+        Just url ->
+            let
+                ctx =
+                    Session.context "" 33
+
+                ( initial, _ ) =
+                    Session.init ctx
+
+                ( routed, _, _ ) =
+                    Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) initial
+
+                token =
+                    Library.inviteTokenFromUrl url
+
+                ( captured, _, _ ) =
+                    Session.update ctx (Session.InvitationCaptured (Maybe.withDefault "" token)) routed
+
+                ( routeReapplied, _, _ ) =
+                    Session.update ctx (Session.AuthPageChanged (Just Session.SignUpPage)) captured
+
+                cleanedUrl =
+                    Library.cleanAuthUrl url
+
+                ( discoveredAnonymous, _, _ ) =
+                    Session.update ctx (Session.SessionLoaded 33 initial.generation (Ok anonymousSession)) routeReapplied
+
+                ( rejected, _, _ ) =
+                    Session.update ctx (Session.InvitationPreviewLoaded 33 captured.signupGeneration (Err (Http.BadStatus 410))) discoveredAnonymous
+            in
+            cleanedUrl
+                == "/sign-up"
+                && token
+                == Just "revoked-token"
+                && routeReapplied.signupGeneration
+                == captured.signupGeneration
+                && discoveredAnonymous.signupGeneration
+                == captured.signupGeneration
+                && rejected.invitationPreview
+                == Session.InvitationRejected
 
 
 anonymousSession : Domain.Session

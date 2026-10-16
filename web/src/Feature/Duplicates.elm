@@ -6,14 +6,14 @@ module Feature.Duplicates exposing
     , context
     , currentHash
     , groups
+    , groupsLoading
+    , groupsRequestId
     , init
     , isOpen
     , locked
     , members
-    , membersLoading
-    , groupsLoading
-    , groupsRequestId
     , membersCount
+    , membersLoading
     , membersRequestId
     , selectedIds
     , status
@@ -38,6 +38,7 @@ groups, or a lock bumps the relevant ids, so late responses for other
 groups, pages, or access epochs are dropped. Errors keep the current
 safe state and wait for an explicit reload; mutations are never
 retried here.
+
 -}
 
 import Api.Duplicates
@@ -46,11 +47,12 @@ import Api.Post
 import Dict exposing (Dict)
 import Domain.Duplicates exposing (DuplicateGroup, DuplicateGroupsPage, DuplicateMembersPage)
 import Domain.Post exposing (MetadataSnapshot, PostSummary)
-import Html exposing (Html, button, div, input, label, li, p, span, text, ul)
+import Html exposing (Html, button, div, h3, input, label, li, p, span, text, ul)
 import Html.Attributes exposing (attribute, checked, class, disabled, title, type_)
 import Html.Events exposing (onCheck, onClick)
 import Http
 import Set exposing (Set)
+import Ui.Help
 import Ui.Media
 
 
@@ -393,10 +395,14 @@ update ctx msg model =
                     ( model, Cmd.none, [] )
 
         MembersLoaded generation id hash appending result ->
-            if generation /= ctx.accessGeneration
-                || id /= model.membersRequestId
-                || not model.open
-                || model.currentHash /= Just hash
+            if
+                generation
+                    /= ctx.accessGeneration
+                    || id
+                    /= model.membersRequestId
+                    || not model.open
+                    || model.currentHash
+                    /= Just hash
             then
                 ( model, Cmd.none, [] )
 
@@ -445,7 +451,9 @@ update ctx msg model =
                                             model.metadataRequestId + 1
                                     in
                                     ( { withMembers | metadataRequestId = mid }
-                                    , Api.Metadata.read ctx.apiBase ctx.credential freshIds
+                                    , Api.Metadata.read ctx.apiBase
+                                        ctx.credential
+                                        freshIds
                                         (\metaResult ->
                                             MetadataLoaded ctx.accessGeneration mid hash (Result.map .posts metaResult)
                                         )
@@ -674,7 +682,22 @@ type alias ViewConfig msg =
 view : Model -> ViewConfig msg -> Html msg
 view model config =
     div [ class "panel-section duplicates-view" ]
-        ([ p [ class "panel-note" ] [ text "Exact copies share identical original bytes. This is not visual similarity, and nothing is chosen or deleted automatically." ]
+        ([ div [ class "review-panel-header duplicates-panel-header" ]
+            [ h3 [ class "review-panel-title" ]
+                [ text
+                    (case model.currentHash of
+                        Just _ ->
+                            "Exact copies"
+
+                        Nothing ->
+                            "Exact-copy groups"
+                    )
+                ]
+            , div [ class "review-panel-actions" ]
+                [ Ui.Help.view "duplicates-help" "About exact copies" "Exact copies share identical original bytes. This review is separate from visual similarity. Nothing is selected automatically; compare copies before choosing any for Trash."
+                , button [ class "button button-quiet", type_ "button", onClick config.onClose ] [ text "Close" ]
+                ]
+            ]
          , case model.status of
             Just message ->
                 p [ class "panel-note", attribute "role" "status" ] [ text message ]
@@ -695,17 +718,26 @@ view model config =
 groupView : Model -> ViewConfig msg -> List (Html msg)
 groupView model config =
     [ if List.isEmpty model.groups && not model.groupsLoading then
-        p [ class "panel-note" ] [ text "No exact-copy groups found." ]
+        if model.status == Nothing then
+            p [ class "panel-note" ] [ text "No exact-copy groups found." ]
+
+        else
+            text ""
 
       else
         text ""
     , ul [ class "nav-list duplicates-groups" ]
         (List.map (groupRow config) model.groups)
     , p []
-        [ button [ class "button button-quiet", type_ "button", onClick config.onLoadMoreGroups, disabled (model.groupsLoading || model.groupsNext == Nothing) ] [ text "Load more groups" ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onReloadGroups, disabled model.groupsLoading ] [ text "Reload" ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onClose ] [ text "Close" ]
-        ]
+        ((case model.groupsNext of
+            Just _ ->
+                [ button [ class "button button-quiet", type_ "button", onClick config.onLoadMoreGroups, disabled model.groupsLoading ] [ text "Load more groups" ] ]
+
+            Nothing ->
+                []
+         )
+            ++ [ button [ class "button button-quiet", type_ "button", onClick config.onReloadGroups, disabled model.groupsLoading ] [ text "Reload" ] ]
+        )
     ]
 
 
@@ -760,37 +792,35 @@ memberView model config hash =
     [ p [ class "panel-note", title hash ] [ text ("Group " ++ shortHash hash ++ " · " ++ String.fromInt model.membersCount ++ " visible copies · " ++ String.fromInt (List.length model.members) ++ " loaded") ]
     , ul [ class "nav-list duplicates-members" ]
         (List.map (memberRow model config) model.members)
-    , if List.isEmpty model.members && not model.membersLoading then
+    , if List.isEmpty model.members && not model.membersLoading && model.status == Nothing then
         p [ class "panel-note" ] [ text "No copies loaded." ]
 
       else
         text ""
     , p []
-        [ button [ class "button button-quiet", type_ "button", onClick config.onLoadMoreMembers, disabled (model.membersLoading || model.membersNext == Nothing) ] [ text "Load more copies" ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onReloadMembers, disabled model.membersLoading ] [ text "Reload copies" ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onBack ] [ text "All groups" ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onClose ] [ text "Close" ]
-        ]
+        ((case model.membersNext of
+            Just _ ->
+                [ button [ class "button button-quiet", type_ "button", onClick config.onLoadMoreMembers, disabled model.membersLoading ] [ text "Load more copies" ]
+                ]
+
+            Nothing ->
+                []
+         )
+            ++ [ button [ class "button button-quiet", type_ "button", onClick config.onReloadMembers, disabled model.membersLoading ] [ text "Reload copies" ]
+               , button [ class "button button-quiet", type_ "button", onClick config.onBack ] [ text "All groups" ]
+               ]
+        )
     , p []
         [ button [ class "button", type_ "button", onClick config.onCompare, disabled (List.length model.members < 2 || model.membersLoading) ] [ text compareLabel ]
-        , span [ class "panel-note" ] [ text " Compare opens the regular Compare view; Back to grid returns here." ]
         ]
-    , p []
-        [ button [ class "button", type_ "button", onClick config.onTrash, disabled trashDisabled ] [ text ("Move chosen copies to Trash (" ++ String.fromInt chosenCount ++ "/100)") ]
-        , button [ class "button button-quiet", type_ "button", onClick config.onClearSelection, disabled (chosenCount == 0) ] [ text "Clear choice" ]
-        , span [ class "panel-note" ]
-            [ text
-                (if not config.writesEnabled then
-                    " Unlock to move copies to Trash. Browsing copies stays available while locked."
-
-                 else if chosenCount == 0 then
-                    " Choose copies with their checkboxes first; nothing is chosen automatically."
-
-                 else
-                    " You will be asked to confirm before anything moves to Trash."
-                )
+    , if config.writesEnabled && chosenCount > 0 then
+        p []
+            [ button [ class "button", type_ "button", onClick config.onTrash, disabled trashDisabled ] [ text ("Move chosen copies to Trash (" ++ String.fromInt chosenCount ++ "/100)") ]
+            , button [ class "button button-quiet", type_ "button", onClick config.onClearSelection ] [ text "Clear choice" ]
             ]
-        ]
+
+      else
+        text ""
     ]
 
 
@@ -814,15 +844,19 @@ memberRow model config post =
                 label ++ " " ++ value
     in
     li [ class "nav-row duplicates-member-row" ]
-        [ label [ class "duplicates-member-check" ]
-            [ input
-                [ type_ "checkbox"
-                , checked (Set.member post.id model.selected)
-                , onCheck (config.onToggle post.id)
-                , attribute "aria-label" ("Choose copy " ++ post.id ++ " for Trash")
+        [ if config.writesEnabled then
+            label [ class "duplicates-member-check" ]
+                [ input
+                    [ type_ "checkbox"
+                    , checked (Set.member post.id model.selected)
+                    , onCheck (config.onToggle post.id)
+                    , attribute "aria-label" ("Choose copy " ++ post.id ++ " for Trash")
+                    ]
+                    []
                 ]
-                []
-            ]
+
+          else
+            text ""
         , Ui.Media.image [ class "duplicates-thumb" ]
             { url = Api.Post.mediaUrl config.apiBase post.previewUrl
             , postId = post.id

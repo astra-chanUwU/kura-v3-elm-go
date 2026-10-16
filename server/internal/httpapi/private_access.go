@@ -98,11 +98,13 @@ func SessionContext(cfg AccessConfig) func(http.Handler) http.Handler {
 }
 
 var privatePublicPaths = map[string]bool{
-	"/health":           true,
-	"/api/auth/session": true,
-	"/api/auth/login":   true,
-	"/api/auth/logout":  true,
-	"/api/capabilities": true,
+	"/health":                       true,
+	"/api/auth/session":             true,
+	"/api/auth/login":               true,
+	"/api/auth/logout":              true,
+	"/api/auth/invitations/preview": true,
+	"/api/auth/register":            true,
+	"/api/capabilities":             true,
 }
 
 func isModerationPath(path string) bool {
@@ -110,7 +112,7 @@ func isModerationPath(path string) bool {
 }
 
 func isAccountAdminPath(path string) bool {
-	return path == "/api/auth/users" || strings.HasPrefix(path, "/api/auth/users/")
+	return path == "/api/auth/users" || strings.HasPrefix(path, "/api/auth/users/") || path == "/api/auth/invitations" || strings.HasPrefix(path, "/api/auth/invitations/")
 }
 
 func isUnsafeMethod(m string) bool {

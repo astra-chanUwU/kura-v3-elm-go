@@ -43,7 +43,7 @@ func effectiveAccounts(apiToken string, deps Dependencies) *AccountsConfig {
 
 func isAuthPublicPath(path string) bool {
 	switch path {
-	case "/api/auth/session", "/api/auth/login", "/api/auth/logout":
+	case "/api/auth/session", "/api/auth/login", "/api/auth/logout", "/api/auth/invitations/preview", "/api/auth/register":
 		return true
 	}
 	return false

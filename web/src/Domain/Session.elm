@@ -1,6 +1,8 @@
 module Domain.Session exposing
     ( ManagedUser
+    , Invitation
     , Role(..)
+    , invitationDecoder
     , Session
     , accountId
     , managedUserDecoder
@@ -43,6 +45,16 @@ type alias ManagedUser =
     , handle : String
     , role : Role
     , disabled : Bool
+    }
+
+
+type alias Invitation =
+    { id : String
+    , role : Role
+    , createdAt : String
+    , expiresAt : String
+    , revoked : Bool
+    , used : Bool
     }
 
 
@@ -89,6 +101,17 @@ managedUserDecoder =
         (Decode.field "handle" Decode.string)
         (Decode.field "role" roleDecoder)
         (Decode.field "disabled" Decode.bool)
+
+
+invitationDecoder : Decoder Invitation
+invitationDecoder =
+    Decode.map6 Invitation
+        (Decode.field "id" idDecoder)
+        (Decode.field "role" roleDecoder)
+        (Decode.field "created_at" Decode.string)
+        (Decode.field "expires_at" Decode.string)
+        (Decode.field "revoked" Decode.bool)
+        (Decode.field "used" Decode.bool)
 
 
 userDecoder : Decoder User

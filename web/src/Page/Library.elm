@@ -1,4 +1,4 @@
-module Page.Library exposing (Model, Msg, init, onUrlChange, onUrlRequest, subscriptions, update, view)
+module Page.Library exposing (Model, Msg, authReturnFromUrl, cleanAuthUrl, init, inviteTokenFromUrl, onUrlChange, onUrlRequest, subscriptions, update, view)
 
 import Api.ModerationPreview as ModerationPreview
 import Api.Post
@@ -51,7 +51,7 @@ import Feature.TagManagement as TagManagement
 import Feature.Survey as Survey
 import Feature.UploadQueue as UploadQueue
 import Html exposing (Html, button, div, footer, form, h1, header, input, p, span, text)
-import Html.Attributes exposing (attribute, class, classList, disabled, id, placeholder, tabindex, title, type_, value)
+import Html.Attributes exposing (attribute, class, classList, disabled, href, id, placeholder, tabindex, title, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit, preventDefaultOn)
 import Http
 import Json.Decode as Decode
@@ -60,10 +60,12 @@ import Process
 import Set exposing (Set)
 import Task exposing (Task)
 import Ui.Button
+import Ui.Help
 import Ui.Kbd
 import Ui.Icon
 import Ui.Panel exposing (Presentation(..))
 import Url exposing (Url)
+import Url.Builder
 
 
 
@@ -104,6 +106,7 @@ type DetailState
 type alias Model =
     { key : Nav.Key
     , apiBase : String
+    , origin : String
     , draftQuery : String
     , search : Search.Model
     , details : Dict String DetailState
@@ -139,6 +142,8 @@ type alias Model =
     , duplicates : Duplicates.Model
     , moderation : Moderation.Model
     , session : Session.Model
+    , authPage : Maybe Session.AuthPage
+    , authReturnHref : String
     , similarity : Similarity.Model
     , recovery : Recovery.Model
     , similarityTrash : Maybe ( String, List String, Int )
@@ -196,12 +201,19 @@ init flagsValue url key =
         route =
             Route.fromUrl url
 
+        requestedAuthPage =
+            authPageFromUrl url
+
+        returnHref =
+            authReturnFromUrl url
+
         ( sessionModel, sessionCmd ) =
-            Session.init (Session.context flags.apiBase 0)
+            Session.init (Session.withOrigin (urlOrigin url) (Session.context flags.apiBase 0))
 
         model =
             { key = key
             , apiBase = flags.apiBase
+            , origin = urlOrigin url
             , draftQuery = route.query
             , search = Search.init
             , details = Dict.empty
@@ -237,6 +249,8 @@ init flagsValue url key =
             , duplicates = Duplicates.init
             , moderation = Moderation.init
             , session = sessionModel
+            , authPage = requestedAuthPage
+            , authReturnHref = returnHref
             , similarity = Similarity.init
             , recovery = Recovery.init
             , similarityTrash = Nothing
@@ -254,21 +268,56 @@ init flagsValue url key =
             }
     in
     let
-        ( searching, searchCmd ) =
-            startSearch { model | pendingRoute = Just route } route.query
+        ( sessionRouted, routeCmd, _ ) =
+            Session.update (Session.withOrigin (urlOrigin url) (Session.context flags.apiBase 0)) (Session.AuthPageChanged requestedAuthPage) sessionModel
+
+        initialFragment =
+            inviteTokenFromUrl url
+
+        ( sessionReady, inviteCmd ) =
+            case initialFragment of
+                Just token ->
+                    let
+                        ( captured, cmd, _ ) =
+                            Session.update (Session.withOrigin (urlOrigin url) (Session.context flags.apiBase 0)) (Session.InvitationCaptured token) sessionRouted
+                    in
+                    ( captured, cmd )
+
+                Nothing ->
+                    ( sessionRouted, Cmd.none )
+
+        configured =
+            { model | session = sessionReady }
     in
-    -- Collections and search are public reads. Saved searches are
-    -- owner-scoped, so their list waits for gate discovery; the local
-    -- fallback shows until then.
-    ( searching
-    , Cmd.batch
-        [ searchCmd
-        , measureGrid 0
-        , Cmd.map SessionMsg sessionCmd
-        , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
-        , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
-        ]
-    )
+    case requestedAuthPage of
+        Just _ ->
+            ( configured
+            , Cmd.batch
+                [ Cmd.map SessionMsg sessionCmd
+                , Cmd.map SessionMsg routeCmd
+                , Cmd.map SessionMsg inviteCmd
+                , if initialFragment /= Nothing then Nav.replaceUrl key (cleanAuthUrl url) else Cmd.none
+                ]
+            )
+
+        Nothing ->
+            let
+                ( searching, searchCmd ) =
+                    startSearch { configured | pendingRoute = Just route } route.query
+            in
+            -- Collections and search are public reads. Saved searches are
+            -- owner-scoped, so their list waits for gate discovery.
+            ( searching
+            , Cmd.batch
+                [ searchCmd
+                , measureGrid 0
+                , Cmd.map SessionMsg sessionCmd
+                , Cmd.map SessionMsg routeCmd
+                , Cmd.map SessionMsg inviteCmd
+                , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
+                , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
+                ]
+            )
 
 
 
@@ -378,6 +427,144 @@ onUrlRequest =
     UrlRequested
 
 
+enterAuthRoute : Url -> Session.AuthPage -> Model -> ( Model, Cmd Msg )
+enterAuthRoute url page model =
+    let
+        nextReturn =
+            authReturnFromUrl url
+
+        ( routed, pageCmd ) =
+            if model.authPage == Just page && model.authReturnHref == nextReturn then
+                ( model, Cmd.none )
+
+            else
+                delegateSession (Session.AuthPageChanged (Just page)) { model | authPage = Just page, authReturnHref = nextReturn }
+
+        ( captured, inviteCmd ) =
+            case inviteTokenFromUrl url of
+                Just token ->
+                    delegateSession (Session.InvitationCaptured token) routed
+
+                Nothing ->
+                    ( routed, Cmd.none )
+
+        cleanCmd =
+            case inviteTokenFromUrl url of
+                Just _ ->
+                    Nav.replaceUrl model.key (cleanAuthUrl url)
+
+                Nothing ->
+                    Cmd.none
+    in
+    if isSessionAuthenticated model then
+        ( { captured | authPage = Nothing }, Nav.replaceUrl model.key nextReturn )
+
+    else
+        ( captured, Cmd.batch [ pageCmd, inviteCmd, cleanCmd ] )
+
+
+authPageFromUrl : Url -> Maybe Session.AuthPage
+authPageFromUrl url =
+    case url.path of
+        "/sign-in" ->
+            Just Session.SignInPage
+
+        "/sign-up" ->
+            Just Session.SignUpPage
+
+        "/trouble" ->
+            Just Session.TroublePage
+
+        _ ->
+            Nothing
+
+
+authReturnFromUrl : Url -> String
+authReturnFromUrl url =
+    let
+        query =
+            Maybe.withDefault "" url.query
+
+        param =
+            query
+                |> String.split "&"
+                |> List.filterMap
+                    (\part ->
+                        case String.split "=" part of
+                            key :: valueParts ->
+                                if key == "return" then
+                                    String.join "=" valueParts |> Url.percentDecode
+
+                                else
+                                    Nothing
+
+                            [] ->
+                                Nothing
+                    )
+                |> List.head
+                |> Maybe.withDefault "/"
+    in
+    if safeInternalPath param then
+        param
+
+    else
+        "/"
+
+
+safeInternalPath : String -> Bool
+safeInternalPath path =
+    String.startsWith "/" path
+        && not (String.startsWith "//" path)
+        && not (String.contains "\\" path)
+        && not (String.contains "#" path)
+        && (path == "/" || String.startsWith "/?" path)
+
+
+urlOrigin : Url -> String
+urlOrigin url =
+    let
+        scheme =
+            case url.protocol of
+                Url.Http ->
+                    "http://"
+
+                Url.Https ->
+                    "https://"
+
+        portSuffix =
+            url.port_ |> Maybe.map (\portNumber -> ":" ++ String.fromInt portNumber) |> Maybe.withDefault ""
+    in
+    scheme ++ url.host ++ portSuffix
+
+
+inviteTokenFromUrl : Url -> Maybe String
+inviteTokenFromUrl url =
+    url.fragment
+        |> Maybe.andThen
+            (\fragment ->
+                if String.startsWith "invite=" fragment then
+                    String.dropLeft 7 fragment
+                        |> String.split "&"
+                        |> List.head
+                        |> Maybe.andThen
+                            (\token ->
+                                if String.isEmpty token || String.contains "=" token then
+                                    Nothing
+
+                                else
+                                    Just token
+                            )
+
+                else
+                    Nothing
+            )
+
+
+cleanAuthUrl : Url -> String
+cleanAuthUrl url =
+    url.path ++ (url.query |> Maybe.map (\query -> "?" ++ query) |> Maybe.withDefault "")
+
+
 {-| Keeps the address bar in step with Quick Look (debounced, `replaceUrl`)
 and keeps the Filmstrip centered on the active post.
 -}
@@ -483,33 +670,48 @@ updateHelp msg model =
                     ( model, Nav.load href )
 
         UrlChanged url ->
-            let
-                route =
-                    Route.fromUrl url
+            case authPageFromUrl url of
+                Just page ->
+                    enterAuthRoute url page model
 
-                own =
-                    model.ownQuery == Just route.query
+                Nothing ->
+                    let
+                        route =
+                            Route.fromUrl url
 
-                cleared =
-                    invalidateSimilarityTrash { model | ownQuery = Nothing }
-            in
-            if route.query /= Search.query model.search || own then
-                startSearch
-                    { cleared
-                        | pendingRoute =
-                            if own then
-                                Nothing
+                        own =
+                            model.ownQuery == Just route.query
+
+                        cleared =
+                            invalidateSimilarityTrash { model | ownQuery = Nothing, authPage = Nothing }
+
+                        ( authClosed, authCmd ) =
+                            if model.authPage /= Nothing then
+                                delegateSession (Session.AuthPageChanged Nothing) cleared
 
                             else
-                                Just route
-                    }
-                    route.query
+                                ( cleared, Cmd.none )
 
-            else if route == currentRoute model then
-                ( cleared, Cmd.none )
+                        ( routed, routeCmd ) =
+                            if route.query /= Search.query authClosed.search || own then
+                                startSearch
+                                    { authClosed
+                                        | pendingRoute =
+                                            if own then
+                                                Nothing
 
-            else
-                applyRoute route cleared
+                                            else
+                                                Just route
+                                    }
+                                    route.query
+
+                            else if route == currentRoute authClosed then
+                                ( authClosed, Cmd.none )
+
+                            else
+                                applyRoute route authClosed
+                    in
+                    ( routed, Cmd.batch [ authCmd, routeCmd ] )
 
         DraftChanged draft ->
             ( { model | draftQuery = draft }, Cmd.none )
@@ -2327,7 +2529,7 @@ applyTrashOut out ( model, cmd ) =
 
 sessionContext : Model -> Session.Context
 sessionContext model =
-    Session.context model.apiBase model.access.generation
+    Session.withOrigin model.origin (Session.context model.apiBase model.access.generation)
 
 
 sessionKnownPrivate : Model -> Bool
@@ -2427,6 +2629,24 @@ applySessionOut out ( model, cmd ) =
 
         Session.AccessRevoked ->
             accessRevokedNow model |> withCmd cmd
+
+        Session.Authenticated ->
+            ( { model | authPage = Nothing }
+            , Cmd.batch [ cmd, Nav.load model.authReturnHref ]
+            )
+
+        Session.AuthenticationRequired ->
+            let
+                returnTo =
+                    Route.toHref (currentRoute model)
+
+                signInHref =
+                    Url.Builder.absolute [ "sign-in" ] [ Url.Builder.string "return" returnTo ]
+
+                ( routed, routeCmd ) =
+                    delegateSession (Session.AuthPageChanged (Just Session.SignInPage)) { model | authPage = Just Session.SignInPage, authReturnHref = returnTo }
+            in
+            ( routed, Cmd.batch [ cmd, routeCmd, Nav.replaceUrl model.key signInHref ] )
 
 
 accessRevokedNow : Model -> ( Model, Cmd Msg )
@@ -4603,8 +4823,94 @@ subscriptions model =
 view : Model -> Browser.Document Msg
 view model =
     { title = documentTitle model
-    , body = [ shell model ]
+    , body =
+        [ if model.session.loading then
+            authLoadingShell model
+
+          else if authDiscoveryFailed model then
+            authFailureShell model
+
+          else
+            case model.authPage of
+                Just page ->
+                    authShell model page
+
+                Nothing ->
+                    shell model
+        ]
     }
+
+
+authDiscoveryFailed : Model -> Bool
+authDiscoveryFailed model =
+    Session.privateMode model.session
+        && model.session.session
+        == Nothing
+        && Session.status model.session
+        /= Nothing
+
+
+authFailureShell : Model -> Html Msg
+authFailureShell model =
+    div [ class "auth-page" ]
+        [ header [ class "auth-header" ]
+            [ Html.a [ class "auth-brand", href "/" ] [ Ui.Icon.view "shelf", text "Kura" ]
+            , Ui.Button.icon (if model.prefs.darkMode then "sun" else "moon") [ class "auth-theme-toggle" ]
+                { label = if model.prefs.darkMode then "Switch to light mode" else "Switch to dark mode"
+                , key = Nothing
+                , onPress = Just ThemeToggled
+                , pressed = Just model.prefs.darkMode
+                , hint = Nothing
+                }
+            ]
+        , div [ class "auth-main" ]
+            [ div [ class "auth-content auth-loading" ]
+                [ p [ class "auth-message is-error", attribute "role" "alert", attribute "aria-live" "assertive" ]
+                    [ Ui.Icon.view "alert-circle"
+                    , text (Maybe.withDefault "Access could not be checked." (Session.status model.session))
+                    ]
+                , button [ class "auth-submit", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry" ]
+                ]
+            ]
+        ]
+
+
+authLoadingShell : Model -> Html Msg
+authLoadingShell model =
+    div [ class "auth-page" ]
+        [ header [ class "auth-header" ]
+            [ Html.a [ class "auth-brand", href "/" ] [ Ui.Icon.view "shelf", text "Kura" ]
+            , Ui.Button.icon (if model.prefs.darkMode then "sun" else "moon") [ class "auth-theme-toggle" ]
+                { label = if model.prefs.darkMode then "Switch to light mode" else "Switch to dark mode"
+                , key = Nothing
+                , onPress = Just ThemeToggled
+                , pressed = Just model.prefs.darkMode
+                , hint = Nothing
+                }
+            ]
+        , div [ class "auth-main" ]
+            [ div [ class "auth-content auth-loading" ]
+                [ p [ class "auth-message is-info", attribute "role" "status", attribute "aria-live" "polite" ] [ text "Opening your library…" ]
+                ]
+            ]
+        ]
+
+
+authShell : Model -> Session.AuthPage -> Html Msg
+authShell model page =
+    div [ class "auth-page" ]
+        [ header [ class "auth-header" ]
+            [ Html.a [ class "auth-brand", href "/" ] [ Ui.Icon.view "shelf", text "Kura" ]
+            , Ui.Button.icon (if model.prefs.darkMode then "sun" else "moon") [ class "auth-theme-toggle" ]
+                { label = if model.prefs.darkMode then "Switch to light mode" else "Switch to dark mode"
+                , key = Nothing
+                , onPress = Just ThemeToggled
+                , pressed = Just model.prefs.darkMode
+                , hint = Nothing
+                }
+            ]
+        , Html.map SessionMsg (Session.viewAuth model.session page model.authReturnHref)
+        ]
 
 
 documentTitle : Model -> String
@@ -4628,29 +4934,39 @@ documentTitle model =
 
 sessionGateView : Model -> Html Msg
 sessionGateView model =
+    let
+        returnTo =
+            Route.toHref (currentRoute model)
+
+        signInHref =
+            Url.Builder.absolute [ "sign-in" ] [ Url.Builder.string "return" returnTo ]
+    in
     div [ class "session-gate-wrap" ]
-        ([ case Session.viewGate model.session of
-            Just gate ->
-                Html.map SessionMsg gate
+        [ if Session.privateMode model.session then
+            div [ class "session-gate" ]
+                [ h1 [] [ text "This library is private" ]
+                , p [] [ text "Sign in to browse this library." ]
+                , Html.a [ class "button button-primary", href signInHref ] [ text "Sign in" ]
+                ]
 
-            Nothing ->
-                text ""
-         ]
-            ++ (if sessionGateHasError model then
-                    [ p [ class "panel-note" ] [ text "Access could not be checked. " ]
-                    , button [ class "button button-quiet", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry access check" ]
-                    ]
+          else
+            case Session.viewGate model.session of
+                Just gate ->
+                    Html.map SessionMsg gate
 
-                else
-                    []
-               )
-            ++ (if sessionGateBlocking model && not model.session.loading && not (Session.privateMode model.session) then
-                    [ button [ class "button button-quiet", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry" ] ]
+                Nothing ->
+                    text ""
+        , if sessionGateHasError model then
+            p [ class "panel-note" ] [ text "Access could not be checked." ]
 
-                else
-                    []
-               )
-        )
+          else
+            text ""
+        , if sessionGateHasError model || (sessionGateBlocking model && not model.session.loading && not (Session.privateMode model.session)) then
+            button [ class "button button-quiet", type_ "button", onClick (SessionMsg Session.RefreshRequested) ] [ text "Retry access check" ]
+
+          else
+            text ""
+        ]
 
 
 shell : Model -> Html Msg
@@ -4719,6 +5035,12 @@ topBar model =
         , div [ class "topbar-actions" ]
             [ uploadButton model
             , importButton model
+            , authEntryLink model
+            , if isSessionAuthenticated model then
+                Html.map SessionMsg (Session.viewAccount (sessionContext model) model.session)
+
+              else
+                text ""
             , themeButton model
             , accessControls model
             , Ui.Button.icon "info" [ class "button-quiet inspector-toggle" ]
@@ -4730,6 +5052,19 @@ topBar model =
                 }
             ]
         ]
+
+
+authEntryLink : Model -> Html Msg
+authEntryLink model =
+    if isSessionAuthenticated model then
+        text ""
+
+    else
+        Html.a
+            [ class "button-quiet auth-entry-link"
+            , href (Url.Builder.absolute [ "sign-in" ] [ Url.Builder.string "return" (Route.toHref (currentRoute model)) ])
+            ]
+            [ text "Sign in" ]
 
 
 themeButton : Model -> Html Msg
@@ -4753,53 +5088,61 @@ themeButton model =
 
 importButton : Model -> Html Msg
 importButton model =
-    Ui.Button.view [ class "upload-button" ]
-        { label = "Import folder"
-        , key = Nothing
-        , onPress =
-            Just
-                (ImportMsg
-                    (if BrowserImport.isOpen model.browserImport then
-                        BrowserImport.ClosePanel
+    if canWriteEffective model then
+        Ui.Button.view [ class "upload-button import-button" ]
+            { label = "Import folder"
+            , key = Nothing
+            , onPress =
+                Just
+                    (ImportMsg
+                        (if BrowserImport.isOpen model.browserImport then
+                            BrowserImport.ClosePanel
 
-                     else
-                        BrowserImport.OpenPanel
+                         else
+                            BrowserImport.OpenPanel
+                        )
                     )
-                )
-        , pressed = Just (BrowserImport.isOpen model.browserImport)
-        , hint = Just "Import a folder of images"
-        }
+            , pressed = Just (BrowserImport.isOpen model.browserImport)
+            , hint = Just "Import a folder of images"
+            }
+
+    else
+        text ""
 
 
 uploadButton : Model -> Html Msg
 uploadButton model =
-    let
-        pending =
-            UploadQueue.pendingCount model.upload
+    if canWriteEffective model then
+        let
+            pending =
+                UploadQueue.pendingCount model.upload
 
-        label =
-            if pending == 0 then
-                "Upload"
+            label =
+                if pending == 0 then
+                    "Upload"
 
-            else
-                "Upload (" ++ String.fromInt pending ++ ")"
-    in
-    Ui.Button.view [ class "upload-button" ]
-        { label = label
-        , key = Nothing
-        , onPress =
-            Just
-                (UploadMsg
-                    (if UploadQueue.isOpen model.upload then
-                        UploadQueue.ClosePanel
+                else
+                    "Upload (" ++ String.fromInt pending ++ ")"
+        in
+        Ui.Button.view [ class "upload-button" ]
+            { label = label
+            , key = Nothing
+            , onPress =
+                Just
+                    (UploadMsg
+                        (if UploadQueue.isOpen model.upload then
+                            UploadQueue.ClosePanel
 
-                     else
-                        UploadQueue.OpenPanel
+                         else
+                            UploadQueue.OpenPanel
+                        )
                     )
-                )
-        , pressed = Just (UploadQueue.isOpen model.upload)
-        , hint = Just "Upload images"
-        }
+            , pressed = Just (UploadQueue.isOpen model.upload)
+            , hint = Just "Upload images"
+            }
+
+    else
+        text ""
 
 
 {-| Compact write-access controls. Open-local mode shows a quiet label;
@@ -4811,7 +5154,7 @@ message that never echoes the draft.
 accessControls : Model -> Html Msg
 accessControls model =
     if isSessionAuthenticated model then
-        span [ class "access-state", title "Signed in with a library account. Account controls are in Library tools." ] [ text "Signed in" ]
+        text ""
 
     else
         case model.access.status of
@@ -4976,6 +5319,13 @@ libraryTools model =
             else
                 selectedIds
 
+        hasTrashSelection =
+            if model.duplicatesOrigin /= Nothing then
+                not (List.isEmpty trashIds)
+
+            else
+                Selection.count model.selection > 0
+
         selectionExport =
             Export.selectionUrl model.apiBase selectedIds model.exportMetadata
 
@@ -4987,8 +5337,7 @@ libraryTools model =
     in
     div [ class "panel-section library-tools" ]
         ([ div [ class "library-tools-row" ]
-            [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Trash" ]
-            , button [ class "button button-quiet", type_ "button", onClick (DuplicatesMsg (if Duplicates.isOpen model.duplicates then Duplicates.CloseRequested else Duplicates.OpenRequested)) ] [ text "Exact copies" ]
+            [ button [ class "button button-quiet", type_ "button", onClick (DuplicatesMsg (if Duplicates.isOpen model.duplicates then Duplicates.CloseRequested else Duplicates.OpenRequested)) ] [ text "Exact copies" ]
             , (case activePost model of
                 Just summary ->
                     button [ class "button button-quiet", type_ "button", onClick (SimilarityMsg (Similarity.OpenRequested summary)), disabled (Domain.Post.isVideoMedia summary.mediaType), title "Find visually similar images; video matching is unavailable" ] [ text "Find similar" ]
@@ -4996,24 +5345,69 @@ libraryTools model =
                 Nothing ->
                     button [ class "button button-quiet", type_ "button", disabled True, title "Select a post to find similar posts" ] [ text "Find similar" ]
               )
-            , button [ class "button button-quiet", type_ "button", onClick (ModerationMsg Moderation.OpenRequested), disabled (not (canModerateEffective model)) ] [ text "Moderation" ]
-            , button [ class "button button-quiet", type_ "button", onClick (TagManagementMsg TagManagement.OpenRequested), disabled (not (App.Access.canWrite model.access)) ] [ text "Manage tags" ]
-            , button [ class "button button-quiet", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested trashIds)), disabled (not (App.Access.canWrite model.access) || List.isEmpty trashIds) ] [ text "Move selected to Trash" ]
-            , Html.label [] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text " Include metadata" ]
-            , case selectionExport of
-                Just url ->
-                    Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text "Export selection (ZIP)" ]
+            , if canWriteEffective model && hasTrashSelection then
+                button [ class "button button-quiet selected-trash-action", type_ "button", onClick (TrashMsg (Trash.TrashSelectedRequested trashIds)) ]
+                    [ text
+                        (if model.duplicatesOrigin /= Nothing then
+                            "Move duplicate copies to Trash"
 
-                Nothing ->
-                    button [ class "button button-quiet", type_ "button", disabled True, title "Select 1–1000 posts to export" ] [ text "Export selection (ZIP)" ]
-            , case collectionExport of
-                Just url ->
-                    Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text ("Export " ++ (activeCollection |> Maybe.map .name |> Maybe.withDefault "collection") ++ " (ZIP)") ]
+                         else
+                            "Move selected to Trash"
+                        )
+                    ]
 
-                Nothing ->
-                    button [ class "button button-quiet", type_ "button", disabled True, title "Select a collection with a known version to export" ] [ text "Export collection (ZIP)" ]
+              else
+                text ""
+            , if canModerateEffective model || canWriteEffective model then
+                Html.details [ class "library-manage-menu", attribute "name" "library-tools-menu" ]
+                    [ Html.summary [] [ text "Manage" ]
+                    , div [ class "library-manage-actions" ]
+                        ([ if canModerateEffective model then
+                            button [ class "button button-quiet", type_ "button", onClick (ModerationMsg Moderation.OpenRequested) ] [ text "Moderation" ]
+
+                           else
+                            text ""
+                         , if canWriteEffective model then
+                            button [ class "button button-quiet", type_ "button", onClick (TagManagementMsg TagManagement.OpenRequested) ] [ text "Manage tags" ]
+
+                           else
+                            text ""
+                         ]
+                            ++ (if canWriteEffective model then
+                                [ button [ class "button button-quiet", type_ "button", onClick (TrashMsg Trash.OpenRequested) ] [ text "Open Trash" ] ]
+
+                                else
+                                    []
+                           )
+                            ++ (if isAdminEffective model then
+                                    [ button [ class "button button-quiet", type_ "button", onClick (RecoveryMsg Recovery.OpenRequested) ] [ text "Backups" ] ]
+
+                                else
+                                    []
+                               )
+                        )
+                    ]
+
+              else
+                text ""
+            , Html.details [ class "library-export-menu", attribute "name" "library-tools-menu" ]
+                [ Html.summary [] [ text "Export" ]
+                , div [ class "library-export-actions" ]
+                    [ Html.label [ class "export-metadata-toggle" ] [ Html.input [ type_ "checkbox", Html.Attributes.checked model.exportMetadata, Html.Events.onCheck ExportMetadataChanged ] [], text "Include metadata" ]
+                    , selectionExport
+                        |> Maybe.map (\url -> Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text "Export selection (ZIP)" ])
+                        |> Maybe.withDefault (text "")
+                    , collectionExport
+                        |> Maybe.andThen (\url -> activeCollection |> Maybe.map (\collection -> ( url, collection.name )))
+                        |> Maybe.map (\( url, collectionName ) -> Html.a [ Html.Attributes.href url, Html.Attributes.download "", class "button button-quiet" ] [ text ("Export " ++ collectionName ++ " (ZIP)") ])
+                        |> Maybe.withDefault (text "")
+                    , div [ class "library-export-guidance" ]
+                        [ text "ZIP export"
+                        , Ui.Help.view "export-limits" "ZIP export limits" "Each export can include up to 1,000 posts and 250 MiB of original files. Choose a selection or open a collection to reveal its export link."
+                        ]
+                    ]
+                ]
             ]
-         , p [ class "panel-note" ] [ text "Export up to 1,000 posts or 250 MiB of originals as ZIP." ]
          ]
             ++ (if Trash.isOpen model.trash || Trash.pendingTrashCount model.trash /= Nothing then
                     [ Html.map TrashMsg
@@ -5040,7 +5434,7 @@ libraryTools model =
                     [ Html.map DuplicatesMsg
                         (Duplicates.view model.duplicates
                             { apiBase = model.apiBase
-                            , writesEnabled = App.Access.canWrite model.access
+                            , writesEnabled = canWriteEffective model
                             , onClose = Duplicates.CloseRequested
                             , onBack = Duplicates.BackRequested
                             , onReloadGroups = Duplicates.GroupsReloadRequested
@@ -5079,12 +5473,6 @@ libraryTools model =
                 else
                     []
                )
-            ++ (if isSessionAuthenticated model then
-                    [ Html.map SessionMsg (Session.viewAccount (sessionContext model) model.session) ]
-
-                else
-                    []
-               )
             ++ (if model.mode == Grid && Similarity.isOpen model.similarity then
                     [ Similarity.view model.similarity
                         { apiBase = model.apiBase
@@ -5108,7 +5496,7 @@ libraryTools model =
                 else
                     []
                )
-            ++ (if isAdminEffective model then
+            ++ (if isAdminEffective model && Recovery.isOpen model.recovery then
                     [ Html.map RecoveryMsg (Recovery.view model.recovery) ]
 
                 else
