@@ -5237,17 +5237,33 @@ accessUnlockForm model busy =
 
 modeButton : Model -> String -> String -> Command -> Bool -> Html Msg
 modeButton model label key command active =
+    let
+        surveyNeedsSelection =
+            case command of
+                OpenSurvey ->
+                    List.length (Sequence.inOrder model.selection.selected model.sequence) < 2
+
+                _ ->
+                    False
+    in
     Ui.Button.view [ class "mode-button" ]
         { label = label
         , key = Nothing
         , onPress =
-            if Sequence.isEmpty model.sequence then
+            if Sequence.isEmpty model.sequence || surveyNeedsSelection then
                 Nothing
 
             else
                 Just (KeyCommand command)
         , pressed = Just active
-        , hint = Just (label ++ " (" ++ key ++ ")")
+        , hint =
+            Just
+                (if surveyNeedsSelection then
+                    "Select at least two images to use Survey (" ++ key ++ ")"
+
+                 else
+                    label ++ " (" ++ key ++ ")"
+                )
         }
 
 
