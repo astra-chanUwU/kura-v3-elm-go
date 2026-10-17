@@ -919,6 +919,8 @@ details[open] > summary::after { transform: rotate(90deg); }
 .session-gate { max-width: 420px; margin: 12vh auto; padding: var(--space-5); background: var(--paper-raised); border: 1px solid var(--rule); border-radius: 6px; }
 .session-gate h2 { margin-top: 0; }
 .session-login, .session-create-user { display: grid; gap: var(--space-2); }
+.session-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.topbar-notice { margin: 0; max-width: 240px; color: var(--ink-muted); font-size: 12px; line-height: 1.4; }
 .session-login label, .session-create-user label { display: grid; gap: var(--space-1); }
 .session-login input, .session-create-user input, .session-user-row select { min-width: 0; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 3px; background: var(--paper-raised); }
 .session-account { padding: var(--space-2) 0; }
@@ -986,6 +988,7 @@ details[open] > summary::after { transform: rotate(90deg); }
 .account-disclosure-body button:not(.button):hover:not(:disabled) { border-color: var(--control-hover); }
 .account-disclosure-body button:disabled { opacity: .45; }
 .account-disclosure-body .session-create-user { margin: 12px 0; }
+.account-disclosure-body .session-create-user > p { margin: 0; font-size: 12px; line-height: 1.45; }
 .account-disclosure-body .session-user-row { font-size: 12px; }
 .account-disclosure-body .session-user-row > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .account-disclosure-body .auth-admin { min-width: 0; }
@@ -1009,6 +1012,7 @@ details[open] > summary::after { transform: rotate(90deg); }
 }
 @media (max-width: 759px) {
   .topbar-actions { flex-wrap: wrap; max-width: 100%; }
+  .topbar-notice { flex: 1 1 100%; max-width: none; }
   .topbar-actions .upload-button { justify-content: center; width: 34px; height: 34px; padding: 0; }
   .topbar-actions .upload-button > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .context-help-disclosure > summary { width: 44px; height: 44px; }

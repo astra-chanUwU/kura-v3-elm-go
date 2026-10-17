@@ -4945,7 +4945,7 @@ sessionGateView model =
         [ if Session.privateMode model.session then
             div [ class "session-gate" ]
                 [ h1 [] [ text "This library is private" ]
-                , p [] [ text "Sign in to browse this library." ]
+                , p [] [ text (Maybe.withDefault "Sign in to browse this library." (Session.status model.session)) ]
                 , Html.a [ class "button button-primary", href signInHref ] [ text "Sign in" ]
                 ]
 
@@ -5036,6 +5036,7 @@ topBar model =
             [ uploadButton model
             , importButton model
             , authEntryLink model
+            , signedOutNotice model
             , if isSessionAuthenticated model then
                 Html.map SessionMsg (Session.viewAccount (sessionContext model) model.session)
 
@@ -5052,6 +5053,20 @@ topBar model =
                 }
             ]
         ]
+
+
+signedOutNotice : Model -> Html Msg
+signedOutNotice model =
+    if isSessionAuthenticated model || sessionGateBlocking model then
+        text ""
+
+    else
+        case Session.status model.session of
+            Just message ->
+                p [ class "topbar-notice", attribute "role" "status" ] [ text message ]
+
+            Nothing ->
+                text ""
 
 
 authEntryLink : Model -> Html Msg

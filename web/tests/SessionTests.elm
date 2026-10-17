@@ -742,6 +742,9 @@ casePasswordChangeDrafts =
         ( closed, _, _ ) =
             Session.update ctx Session.PasswordChangeClosed ready
 
+        ( stillBusy, _, _ ) =
+            Session.update ctx Session.PasswordChangeClosed requested
+
         ( managed, _, _ ) =
             Session.update ctx Session.UsersRequested viewer
     in
@@ -766,6 +769,8 @@ casePasswordChangeDrafts =
         && closed.confirmPasswordDraft
         == ""
         && not closed.passwordChangeOpen
+        && stillBusy.passwordChangeOpen
+        && stillBusy.passwordChangeBusy
         && not (String.contains "current-secret" (Maybe.withDefault "" requested.passwordChangeNotice))
         && not (String.contains "replacement-secret" (Maybe.withDefault "" closed.passwordChangeNotice))
 

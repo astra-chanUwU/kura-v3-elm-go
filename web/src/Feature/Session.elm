@@ -27,11 +27,14 @@ import Api.Error as ApiError
 import Api.Session as Api
 import Domain.Session as Domain exposing (Invitation, ManagedUser, Role(..), Session)
 import Html exposing (Html, a, button, details, div, form, h1, h2, input, label, li, option, p, section, select, span, summary, text, ul)
+import Browser.Dom as Dom
 import Html.Attributes exposing (attribute, class, disabled, href, name, placeholder, type_, value)
 import Html.Attributes as Attr
-import Html.Events exposing (onClick, onInput, onSubmit)
+import Html.Events exposing (onClick, onInput, onSubmit, stopPropagationOn)
 import Http
+import Json.Decode as Decode
 import String
+import Task
 import Url.Builder
 import Ui.Icon
 
@@ -176,6 +179,7 @@ type Msg
     | LogoutCompleted Int Int (Result Http.Error Session)
     | PasswordChangeOpened
     | PasswordChangeClosed
+    | PasswordFocusReturned
     | CurrentPasswordChanged String
     | NewPasswordChanged String
     | ConfirmPasswordChanged String
@@ -339,12 +343,19 @@ update ctx msg rawModel =
                     , confirmPasswordDraft = ""
                     , passwordChangeNotice = Nothing
                   }
-                , Cmd.none
+                , focusPasswordField "account-current-password"
                 , []
                 )
 
         PasswordChangeClosed ->
-            ( clearPasswordChange model, Cmd.none, [] )
+            if model.passwordChangeBusy then
+                ( model, Cmd.none, [] )
+
+            else
+                ( clearPasswordChange model, focusPasswordField "account-change-password", [] )
+
+        PasswordFocusReturned ->
+            ( model, Cmd.none, [] )
 
         CurrentPasswordChanged value ->
             ( { model | currentPasswordDraft = value, passwordChangeNotice = Nothing }, Cmd.none, [] )
@@ -1520,12 +1531,17 @@ roleTitle role =
 passwordChangeControl : Model -> Html Msg
 passwordChangeControl model =
     if model.passwordChangeOpen then
-        form [ class "session-create-user", onSubmit PasswordChangeRequested ]
-            [ p [] [ text "Changing your password signs you out everywhere. You will need to sign in again." ]
+        form
+            [ class "session-create-user"
+            , onSubmit PasswordChangeRequested
+            , stopPropagationOn "keydown" dismissPasswordChangeOnEscape
+            ]
+            [ p [ class "session-notice" ] [ text "Changing your password signs you out everywhere. You will need to sign in again." ]
             , label []
                 [ text "Current password"
                 , input
-                    [ type_ "password"
+                    [ Attr.id "account-current-password"
+                    , type_ "password"
                     , name "current-password"
                     , attribute "autocomplete" "current-password"
                     , value model.currentPasswordDraft
@@ -1558,21 +1574,43 @@ passwordChangeControl model =
                     ]
                     []
                 ]
-            , model.passwordChangeNotice |> Maybe.map (\message -> p [ class "session-notice" ] [ text message ]) |> Maybe.withDefault (text "")
-            , button [ type_ "submit", disabled model.passwordChangeBusy ]
-                [ text
-                    (if model.passwordChangeBusy then
-                        "Changing password…"
+            , model.passwordChangeNotice
+                |> Maybe.map (\message -> p [ class "session-notice", attribute "role" "alert" ] [ text message ])
+                |> Maybe.withDefault (text "")
+            , div [ class "session-form-actions" ]
+                [ button [ class "button", type_ "submit", disabled model.passwordChangeBusy ]
+                    [ text
+                        (if model.passwordChangeBusy then
+                            "Changing password…"
 
-                     else
-                        "Change password"
-                    )
+                         else
+                            "Change password"
+                        )
+                    ]
+                , button [ class "button button-quiet", type_ "button", disabled model.passwordChangeBusy, onClick PasswordChangeClosed ] [ text "Close" ]
                 ]
-            , button [ type_ "button", disabled model.passwordChangeBusy, onClick PasswordChangeClosed ] [ text "Close" ]
             ]
 
     else
-        button [ class "button button-quiet", type_ "button", onClick PasswordChangeOpened ] [ text "Change password" ]
+        button [ Attr.id "account-change-password", class "button button-quiet", type_ "button", onClick PasswordChangeOpened ] [ text "Change password" ]
+
+
+focusPasswordField : String -> Cmd Msg
+focusPasswordField fieldId =
+    Dom.focus fieldId |> Task.attempt (\_ -> PasswordFocusReturned)
+
+
+dismissPasswordChangeOnEscape : Decode.Decoder ( Msg, Bool )
+dismissPasswordChangeOnEscape =
+    Decode.field "key" Decode.string
+        |> Decode.andThen
+            (\key ->
+                if key == "Escape" then
+                    Decode.succeed ( PasswordChangeClosed, True )
+
+                else
+                    Decode.fail "not escape"
+            )
 
 
 loginForm : Model -> Html Msg
