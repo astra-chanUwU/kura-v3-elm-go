@@ -3414,6 +3414,14 @@ applyCollectionsOut out ( model, cmd ) =
             collectionRefreshLoaded arrival model |> withCmd cmd
 
         Collections.BrowseEnded ->
+            let
+                next =
+                    { query = ""
+                    , collection = NoCollection
+                    , post = Nothing
+                    , view = GridView
+                    }
+            in
             ( { model
                 | sequence = Sequence.empty
                 , selection = Selection.empty
@@ -3422,9 +3430,11 @@ applyCollectionsOut out ( model, cmd ) =
                 , uploadOrigin = Nothing
                 , returnPoint = Nothing
                 , viewport = setScroll 0 model.viewport
-                , routeNotice = Collections.status model.collections
+                , draftQuery = ""
+                , ownRoute = Just next
+                , routeNotice = Nothing
               }
-            , Cmd.none
+            , Nav.replaceUrl model.key (Route.toHref next)
             )
                 |> withCmd cmd
 
@@ -6023,18 +6033,16 @@ emptyState model =
                 Just _ ->
                     case Collections.state model.collections of
                         Collections.Idle ->
-                            [ p [] [ text "Enter a search to browse media." ]
-                            , button [ class "button", type_ "button", onClick (RunQuery "demo") ] [ text "Try “demo”" ]
-                            ]
+                            [ p [] [ text "Loading…" ] ]
 
                         Collections.Loading ->
-                            [ p [] [ text "Searching…" ] ]
+                            [ p [] [ text "Loading…" ] ]
 
                         Collections.LoadingMore ->
                             [ p [] [ text "Loading more…" ] ]
 
                         Collections.Ready ->
-                            [ p [] [ text "No posts found." ] ]
+                            [ p [] [ text "This collection is empty." ] ]
 
                         Collections.Failed message ->
                             [ p [ class "status-error", attribute "role" "alert" ] [ text message ]
@@ -6044,7 +6052,9 @@ emptyState model =
                 Nothing ->
                     case model.routeNotice of
                         Just message ->
-                            [ p [ class "status-error", attribute "role" "alert" ] [ text message ] ]
+                            [ p [ class "status-error", attribute "role" "alert" ] [ text message ]
+                            , button [ class "button", type_ "button", onClick OpenAllPosts ] [ text "All posts" ]
+                            ]
 
                         Nothing ->
                             case Search.state model.search of
