@@ -1,0 +1,125 @@
+# Local simulation is not a hosted run. These jobs execute on GitHub-hosted
+# runners for pushes and pull requests. Tool versions match server/go.mod,
+# cli/go.mod (Go 1.27) and web/elm.json (Elm 0.19.2). Go 1.27.2 is the newest
+# 1.27 patch published to actions/go-versions. The container password below
+# is a disposable fixture, not a repository secret.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: make check and CLI race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.2"
+          cache-dependency-path: |
+            server/go.sum
+            cli/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Elm 0.19.2
+        run: |
+          curl -fsSL -o elm.gz https://github.com/elm/compiler/releases/download/0.19.2/elm-0.19.2-linux-x64.gz
+          gunzip elm.gz
+          chmod +x elm
+          sudo mv elm /usr/local/bin/elm
+          test "$(elm --version)" = "0.19.2"
+          test "$(go env GOVERSION)" = "go1.27.2"
+          python3 --version
+          node --version
+
+      - name: make check
+        run: make check
+
+      - name: CLI race check
+        run: make cli-race
+
+  server-database:
+    name: serial PostgreSQL server tests and race
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kura
+          POSTGRES_PASSWORD: kura
+          POSTGRES_DB: kura_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kura -d kura_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: kura
+      PGPASSWORD: kura
+      PGDATABASE: kura_ci
+      KURA_TEST_DATABASE_URL: postgres://kura:kura@127.0.0.1:5432/kura_ci?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.2"
+          cache-dependency-path: server/go.sum
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql --version
+
+      - name: Migrate disposable database
+        run: ./scripts/db-migrate.sh
+        env:
+          DATABASE_URL: ${{ env.KURA_TEST_DATABASE_URL }}
+
+      - name: Serial server tests
+        run: make server-db-check
+
+      - name: Server race tests
+        run: make server-race
+
+      - name: Drop disposable databases
+        if: always()
+        run: sh scripts/ci-drop-disposable-databases.sh
+
+  backup-lifecycle:
+    name: generated backup lifecycle proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.2"
+          cache-dependency-path: server/go.sum
+
+      - name: Verify Docker and toolchain
+        run: |
+          docker version
+          test "$(go env GOVERSION)" = "go1.27.2"
+          python3 --version
+
+      - name: Backup create, exercise, and restore proof
+        run: python3 scripts/backup-lifecycle-drill.py --run

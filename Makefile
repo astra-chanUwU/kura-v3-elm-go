@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: server-build server-run server-check cli-check web-build web-test web-import-check web-serve db-migrate db-seed db-setup build check script-check library-drill
+.PHONY: server-build server-run server-check server-db-check server-race cli-check cli-race web-build web-test web-import-check web-serve db-migrate db-seed db-setup build check script-check library-drill
 
 server-build:
 	go -C server build ./...
@@ -12,10 +12,19 @@ server-check:
 	go -C server test -p 1 ./...
 	go -C server vet ./...
 
+server-db-check:
+	sh scripts/ci-server-test.sh --require-database -p 1 -count=1
+
+server-race:
+	sh scripts/ci-server-test.sh -race -p 1 -count=1
+
 cli-check:
 	go -C cli test ./...
 	go -C cli vet ./...
 	go -C cli build ./...
+
+cli-race:
+	go -C cli test -race -count=1 ./...
 
 web-build:
 	mkdir -p web/dist
