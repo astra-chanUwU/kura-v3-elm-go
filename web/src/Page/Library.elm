@@ -10,7 +10,7 @@ import App.Access
 import App.Keyboard as Keyboard exposing (KeyEvent, Modifiers, Target(..))
 import App.PanelEscape as PanelEscape
 import App.Prefs as Prefs exposing (Prefs)
-import App.Route as Route exposing (Route, View(..))
+import App.Route as Route exposing (CollectionRef(..), Route, View(..))
 import Browser
 import Browser.Dom as Dom
 import Browser.Events
@@ -125,7 +125,8 @@ type alias Model =
     , hint : Maybe String
     , shortcutsOpen : Bool
     , pendingRoute : Maybe Route
-    , ownQuery : Maybe String
+    , ownRoute : Maybe Route
+    , routeNotice : Maybe String
     , urlSeq : Int
     , tags : Tags.Model
     , reactions : Reactions.Model
@@ -232,7 +233,8 @@ init flagsValue url key =
             , hint = Nothing
             , shortcutsOpen = False
             , pendingRoute = Nothing
-            , ownQuery = Nothing
+            , ownRoute = Nothing
+            , routeNotice = Nothing
             , urlSeq = 0
             , tags = Tags.init
             , reactions = Reactions.init
@@ -302,14 +304,22 @@ init flagsValue url key =
 
         Nothing ->
             let
-                ( searching, searchCmd ) =
-                    startSearch { configured | pendingRoute = Just route } route.query
+                ( opened, openedCmd ) =
+                    case Route.workspace route of
+                        Route.CollectionWorkspace collectionId ->
+                            startCollection { configured | pendingRoute = Just route } collectionId
+
+                        Route.InvalidCollection ->
+                            rejectCollectionLink configured
+
+                        Route.SearchWorkspace query ->
+                            startSearch { configured | pendingRoute = Just route } query
             in
             -- Collections and search are public reads. Saved searches are
             -- owner-scoped, so their list waits for gate discovery.
-            ( searching
+            ( opened
             , Cmd.batch
-                [ searchCmd
+                [ openedCmd
                 , measureGrid 0
                 , Cmd.map SessionMsg sessionCmd
                 , Cmd.map SessionMsg routeCmd
@@ -680,10 +690,10 @@ updateHelp msg model =
                             Route.fromUrl url
 
                         own =
-                            model.ownQuery == Just route.query
+                            model.ownRoute == Just route
 
                         cleared =
-                            invalidateSimilarityTrash { model | ownQuery = Nothing, authPage = Nothing }
+                            invalidateSimilarityTrash { model | ownRoute = Nothing, authPage = Nothing }
 
                         ( authClosed, authCmd ) =
                             if model.authPage /= Nothing then
@@ -693,8 +703,8 @@ updateHelp msg model =
                                 ( cleared, Cmd.none )
 
                         ( routed, routeCmd ) =
-                            if route.query /= Search.query authClosed.search || own then
-                                startSearch
+                            if routeChangesSource route authClosed || own then
+                                followRoute route
                                     { authClosed
                                         | pendingRoute =
                                             if own then
@@ -703,7 +713,6 @@ updateHelp msg model =
                                             else
                                                 Just route
                                     }
-                                    route.query
 
                             else if route == currentRoute authClosed then
                                 ( authClosed, Cmd.none )
@@ -729,11 +738,14 @@ updateHelp msg model =
             runQuery "" model
 
         OpenCollection collectionId ->
-            delegateCollections (Collections.OpenRequested collectionId)
-                { model | navigatorDrawer = False, draftQuery = "" }
+            openCollection collectionId model
 
         CollectionsMsg subMsg ->
-            delegateCollections subMsg model
+            if unauthorizedCollectionRead model subMsg then
+                accessRevokedNow model
+
+            else
+                delegateCollections subMsg model
 
         AddToCollection ->
             delegateCollections Collections.AddRequested model
@@ -1788,7 +1800,7 @@ runCommand command model =
                     exitToGrid model
 
                 PanelEscape.Idle ->
-                    ( model, Cmd.none )
+                    ( { model | routeNotice = Nothing }, Cmd.none )
 
         EscapeField ->
             ( { model | draftQuery = Search.query model.search }, Task.attempt (\_ -> NoOp) (Dom.blur QueryEditor.fieldId) )
@@ -1903,12 +1915,37 @@ runQuery rawQuery model =
         query =
             String.trim rawQuery
 
-        route =
-            currentRoute model
+        next =
+            Route.forSearch (currentRoute model) query
     in
-    ( { model | ownQuery = Just query, draftQuery = query }
-    , Nav.pushUrl model.key (Route.toHref { route | query = query })
+    ( { model | ownRoute = Just next, draftQuery = query, routeNotice = Nothing }
+    , Nav.pushUrl model.key (Route.toHref next)
     )
+
+
+{-| A collection click pushes one history entry. Opening the collection
+already on screen reloads it in place.
+-}
+openCollection : String -> Model -> ( Model, Cmd Msg )
+openCollection collectionId model =
+    case Route.forCollection collectionId of
+        Nothing ->
+            ( { model | navigatorDrawer = False, routeNotice = Just "This link does not identify a collection." }, Cmd.none )
+
+        Just next ->
+            if Collections.browse model.collections == Just collectionId then
+                delegateCollections (Collections.OpenRequested collectionId)
+                    { model | navigatorDrawer = False, draftQuery = "", routeNotice = Nothing }
+
+            else
+                ( { model
+                    | ownRoute = Just next
+                    , draftQuery = ""
+                    , navigatorDrawer = False
+                    , routeNotice = Nothing
+                  }
+                , Nav.pushUrl model.key (Route.toHref next)
+                )
 
 
 searchContext : Model -> Search.Context
@@ -1923,12 +1960,125 @@ lifecycle, loading state, cursor, and stale-response rejection.
 startSearch : Model -> String -> ( Model, Cmd Msg )
 startSearch model query =
     let
+        leavingCollection =
+            Collections.browse model.collections /= Nothing
+
         ( search, searchCmd ) =
             Search.start (searchContext model) query model.search
     in
-    ( { model | draftQuery = query, search = search, collections = Collections.abandonBrowse model.collections }
+    ( { model
+        | draftQuery = query
+        , search = search
+        , collections = Collections.abandonBrowse model.collections
+        , routeNotice = Nothing
+        , returnPoint =
+            if leavingCollection then
+                Nothing
+
+            else
+                model.returnPoint
+      }
     , Cmd.map SearchMsg searchCmd
     )
+
+
+{-| Open one collection and drop any in-flight search. The page cursor
+stays out of the URL; scrolling still asks for the next page.
+-}
+startCollection : Model -> String -> ( Model, Cmd Msg )
+startCollection model collectionId =
+    let
+        ( collections, collectionsCmd, _ ) =
+            Collections.update (collectionsContext model) (Collections.OpenRequested collectionId) model.collections
+    in
+    ( { model
+        | draftQuery = ""
+        , search = Search.reset model.search
+        , collections = collections
+        , routeNotice = Nothing
+        , returnPoint = Nothing
+        , mode = Grid
+        , uploadOrigin = Nothing
+      }
+    , Cmd.map CollectionsMsg collectionsCmd
+    )
+
+
+{-| A collection parameter that is not a canonical id never becomes a search.
+-}
+rejectCollectionLink : Model -> ( Model, Cmd Msg )
+rejectCollectionLink model =
+    ( { model
+        | draftQuery = ""
+        , search = Search.reset model.search
+        , collections = Collections.abandonBrowse model.collections
+        , sequence = Sequence.empty
+        , selection = Selection.empty
+        , mode = Grid
+        , returnPoint = Nothing
+        , pendingRoute = Nothing
+        , uploadOrigin = Nothing
+        , viewport = setScroll 0 model.viewport
+        , routeNotice = Just "This link does not identify a collection."
+      }
+    , scrollGridLater 0
+    )
+
+
+followRoute : Route -> Model -> ( Model, Cmd Msg )
+followRoute route model =
+    case Route.workspace route of
+        Route.CollectionWorkspace collectionId ->
+            startCollection model collectionId
+
+        Route.InvalidCollection ->
+            rejectCollectionLink model
+
+        Route.SearchWorkspace query ->
+            startSearch model query
+
+
+routeChangesSource : Route -> Model -> Bool
+routeChangesSource route model =
+    Route.workspace route /= workspaceOf model
+
+
+workspaceOf : Model -> Route.Workspace
+workspaceOf model =
+    case Collections.browse model.collections of
+        Just collectionId ->
+            Route.CollectionWorkspace collectionId
+
+        Nothing ->
+            Route.SearchWorkspace (Search.query model.search)
+
+
+unauthorizedCollectionRead : Model -> Collections.Msg -> Bool
+unauthorizedCollectionRead model subMsg =
+    Session.privateMode model.session
+        && Session.canRead model.session
+        && currentCollectionUnauthorized model subMsg
+
+
+currentCollectionUnauthorized : Model -> Collections.Msg -> Bool
+currentCollectionUnauthorized model subMsg =
+    case subMsg of
+        Collections.PostsCompleted id collectionId (Err (Http.BadStatus 401)) ->
+            currentCollectionResponse id collectionId model
+
+        Collections.AppendCompleted id collectionId (Err (Http.BadStatus 401)) ->
+            currentCollectionResponse id collectionId model
+
+        Collections.RefreshCompleted id collectionId (Err (Http.BadStatus 401)) ->
+            currentCollectionResponse id collectionId model
+
+        _ ->
+            False
+
+
+currentCollectionResponse : Int -> String -> Model -> Bool
+currentCollectionResponse id collectionId model =
+    id == Collections.requestId model.collections && Collections.browse model.collections == Just collectionId
 
 
 {-| Manual retry of the current ordinary search. Collection browsing is
@@ -1941,7 +2091,7 @@ retrySearch model =
         ( search, searchCmd ) =
             Search.restart (searchContext model) model.search
     in
-    ( { model | draftQuery = Search.query search, search = search, collections = Collections.abandonBrowse model.collections }
+    ( { model | draftQuery = Search.query search, search = search, collections = Collections.abandonBrowse model.collections, routeNotice = Nothing }
     , Cmd.map SearchMsg searchCmd
     )
 
@@ -3203,8 +3353,36 @@ delegateCollections subMsg model =
     let
         ( collections, collectionsCmd, outs ) =
             Collections.update (collectionsContext model) subMsg model.collections
+
+        initialFailure =
+            case subMsg of
+                Collections.PostsCompleted id collectionId (Err _) ->
+                    case Collections.state collections of
+                        Collections.Failed _ ->
+                            id == Collections.requestId collections && Collections.browse collections == Just collectionId
+
+                        _ ->
+                            False
+
+                _ ->
+                    False
+
+        next =
+            if initialFailure then
+                { model
+                    | collections = collections
+                    , pendingRoute = Nothing
+                    , sequence = Sequence.empty
+                    , selection = Selection.empty
+                    , mode = Grid
+                    , returnPoint = Nothing
+                    , viewport = setScroll 0 model.viewport
+                }
+
+            else
+                { model | collections = collections }
     in
-    handleCollectionsOuts outs ( { model | collections = collections }, Cmd.map CollectionsMsg collectionsCmd )
+    handleCollectionsOuts outs ( next, Cmd.map CollectionsMsg collectionsCmd )
 
 
 handleCollectionsOuts : List Collections.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
@@ -3242,7 +3420,9 @@ applyCollectionsOut out ( model, cmd ) =
                 , mode = Grid
                 , pendingRoute = Nothing
                 , uploadOrigin = Nothing
+                , returnPoint = Nothing
                 , viewport = setScroll 0 model.viewport
+                , routeNotice = Collections.status model.collections
               }
             , Cmd.none
             )
@@ -3266,17 +3446,27 @@ collectionBrowseLoaded arrival current =
 
         mode =
             validMode sequence selection model.mode
+
+        updated =
+            { model
+                | sequence = sequence
+                , selection = selection
+                , mode = mode
+                , pendingRoute = Nothing
+                , viewport = setScroll 0 model.viewport
+                , uploadOrigin = Nothing
+                , routeNotice = Nothing
+            }
+
+        ( routed, routeCmd ) =
+            case current.pendingRoute of
+                Just route ->
+                    applyRoute route updated
+
+                Nothing ->
+                    ( updated, Cmd.none )
     in
-    ( { model
-        | sequence = sequence
-        , selection = selection
-        , mode = mode
-        , pendingRoute = Nothing
-        , viewport = setScroll 0 model.viewport
-        , uploadOrigin = Nothing
-      }
-    , scrollGridLater 0
-    )
+    ( routed, Cmd.batch [ scrollGridLater 0, routeCmd ] )
 
 
 collectionAppendLoaded : { posts : List PostSummary, nextCursor : Maybe String } -> Model -> ( Model, Cmd Msg )
@@ -3354,6 +3544,7 @@ clearResults model =
         , returnPoint = Nothing
         , viewport = setScroll 0 model.viewport
         , pendingRoute = Nothing
+        , routeNotice = Nothing
         , collections = Collections.abandonBrowse model.collections
     }
 
@@ -3580,12 +3771,34 @@ applyRoute route model =
 
 currentRoute : Model -> Route
 currentRoute model =
+    let
+        collection =
+            case Collections.browse model.collections of
+                Just collectionId ->
+                    case Route.forCollection collectionId of
+                        Just route ->
+                            route.collection
+
+                        Nothing ->
+                            NoCollection
+
+                Nothing ->
+                    NoCollection
+
+        query =
+            case collection of
+                NoCollection ->
+                    Search.query model.search
+
+                _ ->
+                    ""
+    in
     case ( model.mode, model.selection.active ) of
         ( Loupe, Just postId ) ->
-            { query = Search.query model.search, post = Just postId, view = LoupeView }
+            { query = query, collection = collection, post = Just postId, view = LoupeView }
 
         _ ->
-            { query = Search.query model.search, post = Nothing, view = GridView }
+            { query = query, collection = collection, post = Nothing, view = GridView }
 
 
 remember : String -> List String -> List String
@@ -5535,7 +5748,13 @@ navigatorView model =
             , collections = Collections.items model.collections
             , activeCollection = Collections.activeId model.collections
             , collectionBrowse = Collections.browse model.collections
-            , collectionStatus = Collections.status model.collections
+            , collectionStatus =
+                case Collections.status model.collections of
+                    Just status ->
+                        Just status
+
+                    Nothing ->
+                        model.routeNotice
             , collectionDraft = Collections.draft model.collections
             , onCollectionDraft = CollectionsMsg << Collections.DraftChanged
             , onCreateCollection = CollectionsMsg << Collections.CreateRequested
@@ -5818,33 +6037,38 @@ emptyState model =
                             [ p [] [ text "No posts found." ] ]
 
                         Collections.Failed message ->
-                            [ p [ class "status-error" ] [ text message ]
+                            [ p [ class "status-error", attribute "role" "alert" ] [ text message ]
                             , button [ class "button", type_ "button", onClick Retry ] [ text "Retry" ]
                             ]
 
                 Nothing ->
-                    case Search.state model.search of
-                        Search.Idle ->
-                            [ p [] [ text "Enter a search to browse media." ]
-                            , button [ class "button", type_ "button", onClick (RunQuery "demo") ] [ text "Try “demo”" ]
-                            ]
+                    case model.routeNotice of
+                        Just message ->
+                            [ p [ class "status-error", attribute "role" "alert" ] [ text message ] ]
 
-                        Search.Searching ->
-                            [ p [] [ text "Searching…" ] ]
+                        Nothing ->
+                            case Search.state model.search of
+                                Search.Idle ->
+                                    [ p [] [ text "Enter a search to browse media." ]
+                                    , button [ class "button", type_ "button", onClick (RunQuery "demo") ] [ text "Try “demo”" ]
+                                    ]
 
-                        Search.LoadingMore ->
-                            [ p [] [ text "Loading more…" ] ]
+                                Search.Searching ->
+                                    [ p [] [ text "Searching…" ] ]
 
-                        Search.RefreshingPrefix ->
-                            [ p [] [ text "Refreshing…" ] ]
+                                Search.LoadingMore ->
+                                    [ p [] [ text "Loading more…" ] ]
 
-                        Search.Ready ->
-                            [ p [] [ text "No posts found." ] ]
+                                Search.RefreshingPrefix ->
+                                    [ p [] [ text "Refreshing…" ] ]
 
-                        Search.Failed message ->
-                            [ p [ class "status-error" ] [ text message ]
-                            , button [ class "button", type_ "button", onClick Retry ] [ text "Retry" ]
-                            ]
+                                Search.Ready ->
+                                    [ p [] [ text "No posts found." ] ]
+
+                                Search.Failed message ->
+                                    [ p [ class "status-error" ] [ text message ]
+                                    , button [ class "button", type_ "button", onClick Retry ] [ text "Retry" ]
+                                    ]
             )
 
 
