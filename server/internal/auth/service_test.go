@@ -155,6 +155,29 @@ func (f *fakeStore) BootstrapAdmin(_ context.Context, handle, hash, adopt string
 	return f.add(handle, hash, "admin"), nil
 }
 
+func (f *fakeStore) ReplacePassword(_ context.Context, id int64, passwordHash string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	if u.PasswordHash == nil || *u.PasswordHash == "" {
+		if isReservedHandle(u.Handle) {
+			return ErrReservedHandle
+		}
+		return ErrNoLogin
+	}
+	hash := passwordHash
+	u.PasswordHash = &hash
+	now := time.Now()
+	for key, sess := range f.sessions {
+		if sess.UserID == id && sess.RevokedAt == nil {
+			sess.RevokedAt = &now
+			f.sessions[key] = sess
+		}
+	}
+	return nil
+}
+
 var _ Store = (*fakeStore)(nil)
 
 const testPassword = "correct-horse-12"
@@ -361,6 +384,186 @@ func TestLastAdminAndSelfProtection(t *testing.T) {
 		if !ok && err == nil {
 			t.Fatalf("ParseCanonicalUserID(%q) accepted", raw)
 		}
+	}
+}
+
+func TestChangePasswordRevokesOwnSessionsOnly(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	svc := NewService(store)
+	owner, err := svc.BootstrapAdmin(ctx, "owner", testPassword, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := svc.CreateUser(ctx, owner.Actor(), "viewer", testPassword, "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerLogin, err := svc.Login(ctx, "viewer", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Login(ctx, "viewer", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerLogin, err := svc.Login(ctx, "owner", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerBefore, err := store.GetUserByID(ctx, owner.ID)
+	if err != nil || ownerBefore.PasswordHash == nil {
+		t.Fatal(err)
+	}
+	ownerHash := *ownerBefore.PasswordHash
+
+	next := "viewer-password-2"
+	if err := svc.ChangePassword(ctx, viewerLogin.Actor, testPassword, next); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := svc.ResolveSession(ctx, viewerLogin.RawToken); ok {
+		t.Fatal("first viewer session survived password change")
+	}
+	if _, _, ok := svc.ResolveSession(ctx, second.RawToken); ok {
+		t.Fatal("second viewer session survived password change")
+	}
+	if _, _, ok := svc.ResolveSession(ctx, ownerLogin.RawToken); !ok {
+		t.Fatal("owner session was revoked by another account's password change")
+	}
+	if _, err := svc.Login(ctx, "viewer", testPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old viewer password err=%v", err)
+	}
+	if _, err := svc.Login(ctx, "viewer", next); err != nil {
+		t.Fatalf("new viewer password: %v", err)
+	}
+	ownerAfter, err := store.GetUserByID(ctx, owner.ID)
+	if err != nil || ownerAfter.PasswordHash == nil || *ownerAfter.PasswordHash != ownerHash || ownerAfter.Role != "admin" {
+		t.Fatalf("owner credential changed: %+v", ownerAfter)
+	}
+	still, err := store.GetUserByID(ctx, viewer.ID)
+	if err != nil || still.Role != "viewer" || still.Disabled {
+		t.Fatalf("viewer account mutated: %+v", still)
+	}
+
+	// A bad current password or a policy rejection must not rotate anything.
+	login, err := svc.Login(ctx, "viewer", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ChangePassword(ctx, login.Actor, "wrong-password-1", "another-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("wrong current err=%v", err)
+	}
+	if _, _, ok := svc.ResolveSession(ctx, login.RawToken); !ok {
+		t.Fatal("failed password change revoked the session")
+	}
+	if err := svc.ChangePassword(ctx, login.Actor, next, "short"); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("short password err=%v", err)
+	}
+	if _, err := svc.Login(ctx, "viewer", next); err != nil {
+		t.Fatalf("password changed after rejection: %v", err)
+	}
+	if err := svc.ChangePassword(ctx, Actor{ID: SystemActorID, System: true}, next, "system-password-1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("system actor err=%v", err)
+	}
+	if _, err := svc.Login(ctx, "viewer", "system-password-1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal("system actor changed the viewer password")
+	}
+}
+
+func TestResetPasswordExistingAccountOnly(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	svc := NewService(store)
+	owner, err := svc.BootstrapAdmin(ctx, "owner", testPassword, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := svc.Login(ctx, "owner", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := svc.CreateUser(ctx, owner.Actor(), "viewer", testPassword, "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(store.users)
+
+	reset, err := svc.ResetPassword(ctx, "owner", "owner-reset-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.ID != owner.ID || reset.Role != "admin" || reset.Disabled || reset.Handle != "owner" {
+		t.Fatalf("reset user=%+v", reset)
+	}
+	if _, _, ok := svc.ResolveSession(ctx, login.RawToken); ok {
+		t.Fatal("session survived offline reset")
+	}
+	if _, err := svc.Login(ctx, "owner", testPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old owner password err=%v", err)
+	}
+	if _, err := svc.Login(ctx, "owner", "owner-reset-password"); err != nil {
+		t.Fatalf("reset login: %v", err)
+	}
+	if _, err := svc.BootstrapAdmin(ctx, "other", testPassword, ""); !errors.Is(err, ErrBootstrapExists) {
+		t.Fatalf("bootstrap after reset err=%v", err)
+	}
+	if _, err := svc.ResetPassword(ctx, "missing-owner", "missing-password-1"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("missing account err=%v", err)
+	}
+	if len(store.users) != before {
+		t.Fatalf("user count %d want %d", len(store.users), before)
+	}
+	if _, err := svc.ResetPassword(ctx, "local", "local-password-12"); !errors.Is(err, ErrReservedHandle) {
+		t.Fatalf("unadopted local err=%v", err)
+	}
+	local, err := store.GetUserByHandle(ctx, "local")
+	if err != nil || local.PasswordHash != nil {
+		t.Fatalf("local gained a login: %+v", local)
+	}
+	viewerReset, err := svc.ResetPassword(ctx, "viewer", "viewer-reset-password")
+	if err != nil || viewerReset.Role != "viewer" || viewerReset.ID != viewer.ID {
+		t.Fatalf("viewer reset=%+v err=%v", viewerReset, err)
+	}
+	if _, err := svc.ResetPassword(ctx, "owner", "short"); !errors.Is(err, ErrInvalidPassword) {
+		t.Fatalf("short reset err=%v", err)
+	}
+	disabled := true
+	sys := Actor{ID: SystemActorID, System: true}
+	if _, err := svc.UpdateUser(ctx, sys, viewer.ID, UpdateUserPatch{Disabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := svc.ResetPassword(ctx, "viewer", "viewer-reset-password-2")
+	if err != nil || !kept.Disabled || kept.Role != "viewer" {
+		t.Fatalf("disabled reset=%+v err=%v", kept, err)
+	}
+	if _, err := svc.Login(ctx, "viewer", "viewer-reset-password-2"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal("reset re-enabled a disabled account")
+	}
+	viewerRole := "viewer"
+	if _, err := svc.UpdateUser(ctx, sys, owner.ID, UpdateUserPatch{Role: &viewerRole}); !errors.Is(err, ErrLastAdmin) {
+		t.Fatalf("last-admin protection after reset err=%v", err)
+	}
+}
+
+func TestResetPasswordAdoptedLegacyKeepsRole(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newFakeStore())
+	owner, err := svc.BootstrapAdmin(ctx, "", testPassword, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reset, err := svc.ResetPassword(ctx, "local", "adopted-reset-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.ID != owner.ID || reset.Role != "admin" || reset.Actor().ID != LocalActorID {
+		t.Fatalf("adopted reset=%+v actor=%q", reset, reset.Actor().ID)
+	}
+	if _, err := svc.Login(ctx, "local", "adopted-reset-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.BootstrapAdmin(ctx, "other", testPassword, ""); !errors.Is(err, ErrBootstrapExists) {
+		t.Fatalf("bootstrap reopened err=%v", err)
 	}
 }
 

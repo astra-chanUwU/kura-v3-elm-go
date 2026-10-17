@@ -35,6 +35,10 @@ suite =
     , ( "ambiguous signup reconciles cookie before reporting failure", caseAmbiguousSignupReconciliation )
     , ( "session discovery failure stays unconfirmed and retryable", caseSessionDiscoveryFailure )
     , ( "initial anonymous session cannot stale the invite preview after fragment cleanup", caseInitialInvitePreviewSurvivesSessionDiscovery )
+    , ( "password change endpoint does not target another account", casePasswordChangeEndpoint )
+    , ( "viewer can open change password and drafts clear on submit and close", casePasswordChangeDrafts )
+    , ( "password change drafts clear when access or session changes", casePasswordChangeClearsOnAccessChange )
+    , ( "invalid expired and ambiguous password changes do not retry", casePasswordChangeDoesNotRetry )
     ]
 
 
@@ -697,6 +701,235 @@ caseInitialInvitePreviewSurvivesSessionDiscovery =
                 == captured.signupGeneration
                 && rejected.invitationPreview
                 == Session.InvitationRejected
+
+
+casePasswordChangeEndpoint : Bool
+casePasswordChangeEndpoint =
+    Api.endpoint "" [ "api", "auth", "password" ]
+        == "/api/auth/password"
+
+
+casePasswordChangeDrafts : Bool
+casePasswordChangeDrafts =
+    let
+        ctx =
+            Session.context "" 40
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( viewer, _, _ ) =
+            Session.update ctx (Session.SessionLoaded 40 1 (Ok viewerSession)) initial
+
+        ( opened, _, _ ) =
+            Session.update ctx Session.PasswordChangeOpened viewer
+
+        ( current, _, _ ) =
+            Session.update ctx (Session.CurrentPasswordChanged "current-secret") opened
+
+        ( next, _, _ ) =
+            Session.update ctx (Session.NewPasswordChanged "replacement-secret") current
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.ConfirmPasswordChanged "replacement-secret") next
+
+        ( mismatch, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested { ready | confirmPasswordDraft = "different-secret" }
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested ready
+
+        ( closed, _, _ ) =
+            Session.update ctx Session.PasswordChangeClosed ready
+
+        ( managed, _, _ ) =
+            Session.update ctx Session.UsersRequested viewer
+    in
+    opened.passwordChangeOpen
+        && not (Session.isAdmin viewer)
+        && managed
+        == viewer
+        && mismatch.currentPasswordDraft
+        == "current-secret"
+        && not mismatch.passwordChangeBusy
+        && requested.passwordChangeBusy
+        && requested.currentPasswordDraft
+        == ""
+        && requested.newPasswordDraft
+        == ""
+        && requested.confirmPasswordDraft
+        == ""
+        && closed.currentPasswordDraft
+        == ""
+        && closed.newPasswordDraft
+        == ""
+        && closed.confirmPasswordDraft
+        == ""
+        && not closed.passwordChangeOpen
+        && not (String.contains "current-secret" (Maybe.withDefault "" requested.passwordChangeNotice))
+        && not (String.contains "replacement-secret" (Maybe.withDefault "" closed.passwordChangeNotice))
+
+
+casePasswordChangeClearsOnAccessChange : Bool
+casePasswordChangeClearsOnAccessChange =
+    let
+        ctx =
+            Session.context "" 41
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( viewer, _, _ ) =
+            Session.update ctx (Session.SessionLoaded 41 1 (Ok viewerSession)) initial
+
+        ( opened, _, _ ) =
+            Session.update ctx Session.PasswordChangeOpened viewer
+
+        ( current, _, _ ) =
+            Session.update ctx (Session.CurrentPasswordChanged "current-secret") opened
+
+        ( next, _, _ ) =
+            Session.update ctx (Session.NewPasswordChanged "replacement-secret") current
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.ConfirmPasswordChanged "replacement-secret") next
+
+        nextCtx =
+            Session.context "" 42
+
+        ( shifted, _, _ ) =
+            Session.update nextCtx Session.RefreshRequested ready
+
+        ( reopened, _, _ ) =
+            Session.update ctx Session.PasswordChangeOpened viewer
+
+        ( drafted, _, _ ) =
+            Session.update ctx (Session.CurrentPasswordChanged "current-secret") reopened
+
+        ( confirmed, _, _ ) =
+            Session.update ctx (Session.NewPasswordChanged "replacement-secret") drafted
+
+        ( filled, _, _ ) =
+            Session.update ctx (Session.ConfirmPasswordChanged "replacement-secret") confirmed
+
+        ( switched, _, _ ) =
+            Session.update ctx (Session.SessionLoaded 41 filled.generation (Ok adminSession)) filled
+    in
+    shifted.currentPasswordDraft
+        == ""
+        && shifted.newPasswordDraft
+        == ""
+        && shifted.confirmPasswordDraft
+        == ""
+        && not shifted.passwordChangeOpen
+        && switched.currentPasswordDraft
+        == ""
+        && switched.newPasswordDraft
+        == ""
+        && switched.confirmPasswordDraft
+        == ""
+        && not switched.passwordChangeOpen
+
+
+casePasswordChangeDoesNotRetry : Bool
+casePasswordChangeDoesNotRetry =
+    let
+        ctx =
+            Session.context "" 43
+
+        ( initial, _ ) =
+            Session.init ctx
+
+        ( viewer, _, _ ) =
+            Session.update ctx (Session.SessionLoaded 43 1 (Ok viewerSession)) initial
+
+        ( opened, _, _ ) =
+            Session.update ctx Session.PasswordChangeOpened viewer
+
+        ( current, _, _ ) =
+            Session.update ctx (Session.CurrentPasswordChanged "current-secret") opened
+
+        ( next, _, _ ) =
+            Session.update ctx (Session.NewPasswordChanged "replacement-secret") current
+
+        ( ready, _, _ ) =
+            Session.update ctx (Session.ConfirmPasswordChanged "replacement-secret") next
+
+        ( requested, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested ready
+
+        operation =
+            Maybe.withDefault 0 requested.passwordChangeOperation
+
+        ( invalid, _, invalidOutputs ) =
+            Session.update ctx (Session.PasswordChangeCompleted 43 operation (Err (Http.BadStatus 400))) requested
+
+        ( requestedAgain, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested ready
+
+        expiredOperation =
+            Maybe.withDefault 0 requestedAgain.passwordChangeOperation
+
+        ( expired, _, expiredOutputs ) =
+            Session.update ctx (Session.PasswordChangeCompleted 43 expiredOperation (Err (Http.BadStatus 401))) requestedAgain
+
+        ( requestedThird, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested ready
+
+        ambiguousOperation =
+            Maybe.withDefault 0 requestedThird.passwordChangeOperation
+
+        ( ambiguous, _, ambiguousOutputs ) =
+            Session.update ctx (Session.PasswordChangeCompleted 43 ambiguousOperation (Err Http.Timeout)) requestedThird
+
+        ( requestedFourth, _, _ ) =
+            Session.update ctx Session.PasswordChangeRequested ready
+
+        staleOperation =
+            Maybe.withDefault 0 requestedFourth.passwordChangeOperation
+
+        ( stale, _, staleOutputs ) =
+            Session.update ctx (Session.PasswordChangeCompleted 99 staleOperation (Ok anonymousSession)) requestedFourth
+
+        ( changed, _, changedOutputs ) =
+            Session.update ctx (Session.PasswordChangeCompleted 43 staleOperation (Ok anonymousSession)) requestedFourth
+    in
+    not invalid.passwordChangeBusy
+        && invalid.passwordChangeNotice
+        == Just "The current password is incorrect, or the new password must be 12–72 bytes."
+        && invalid.session
+        == viewer.session
+        && not invalid.loading
+        && not invalid.reconcilePending
+        && invalidOutputs
+        == []
+        && not (Session.canRead expired)
+        && expired.currentPasswordDraft
+        == ""
+        && expiredOutputs
+        == [ Session.AccessRevoked, Session.SessionChanged ]
+        && not ambiguous.passwordChangeBusy
+        && not ambiguous.reconcilePending
+        && not ambiguous.loading
+        && ambiguous.session
+        == viewer.session
+        && ambiguous.passwordChangeNotice
+        == Just "Password change could not be confirmed. Sign in to check. If the new password does not work, the previous password is still in effect."
+        && ambiguousOutputs
+        == []
+        && stale
+        == requestedFourth
+        && staleOutputs
+        == []
+        && not (Session.canRead changed)
+        && changed.notice
+        == Just "Password changed. Sign in again with your new password."
+        && changed.currentPasswordDraft
+        == ""
+        && changed.newPasswordDraft
+        == ""
+        && changedOutputs
+        == [ Session.SessionChanged ]
 
 
 anonymousSession : Domain.Session

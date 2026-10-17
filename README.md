@@ -183,6 +183,16 @@ go -C server run ./cmd/kura-account bootstrap --handle owner
 
 The bootstrap tool reads a 12–72 byte password from standard input, never a command argument. It refuses a second initial admin. To retain saved searches owned by an existing local identity, use `--adopt-legacy local` instead of `--handle owner`. Start the API with `KURA_PRIVATE_LIBRARY=true`, then sign in through the browser. Use HTTPS in deployment; for local HTTP only, explicitly set `KURA_AUTH_ALLOW_HTTP_LOCAL=true`. Admins manage accounts under **Accounts** in the account menu at the top right. Viewers browse; editors change library content; admins also moderate and manage users. Role, password, or disabled-state changes revoke that user's sessions.
 
+Signed-in viewers, editors, and admins change their own password from **Change password** in the account menu. The current password is required. A successful change revokes that account's sessions, so sign in again with the new password. This does not change any other account.
+
+If the only owner is locked out, reset that existing account from a machine that can reach the database:
+
+```sh
+go -C server run ./cmd/kura-account reset-password --handle owner
+```
+
+The new password is read from standard input (12–72 bytes), never from a command argument. The command updates that one existing login and revokes its sessions. It does not create an account, grant admin access, re-enable a disabled account, or bypass the rule that the last admin cannot be removed. Then sign in with the new password. Kura does not send password-reset email, and it does not offer a public reset page, OAuth, or passkeys.
+
 Sign in at `/sign-in`. The **Create account** link opens `/sign-up`; joining requires an invitation from an administrator. In **Accounts → Invitations**, choose the person's access level and create a link, then copy and share it yourself. Links expire after seven days and can be revoked. Each invitation can create one account, with its access level fixed by the administrator. A failed attempt using an existing handle leaves the invitation usable. Signing up also signs the new account in. Administrators can still create accounts directly.
 
 Apply migration `020_account_invitations.sql` before using invitations. Invitation tokens are shown only when created, stored as hashes, and carried in the link fragment; the browser removes the fragment after capturing it. If you reload the sign-up page, reopen the original invitation link. The first administrator still uses the offline bootstrap command above; sign-up does not enable public registration or email delivery.

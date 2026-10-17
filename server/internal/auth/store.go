@@ -54,6 +54,11 @@ type Store interface {
 	// account-write advisory lock, refusing when an enabled admin with
 	// a password already exists.
 	BootstrapAdmin(ctx context.Context, handle, passwordHash, adoptLegacy string) (UserRecord, error)
+	// ReplacePassword sets the password hash of an existing login account
+	// and revokes that account's sessions in the same transaction. It does
+	// not create accounts, change roles, or change the disabled flag.
+	// Accounts without a login password are refused.
+	ReplacePassword(ctx context.Context, id int64, passwordHash string) error
 }
 
 var errStoreNotFound = errors.New("not found")
@@ -344,6 +349,44 @@ func (s *PostgresStore) BootstrapAdmin(ctx context.Context, handle, passwordHash
 		return UserRecord{}, err
 	}
 	return s.GetUserByID(ctx, id)
+}
+
+// ReplacePassword updates one existing login password and revokes that
+// account's sessions atomically. Role and disabled state are untouched,
+// and a row without a password hash is not given a login here.
+func (s *PostgresStore) ReplacePassword(ctx context.Context, id int64, passwordHash string) error {
+	if s == nil || s.pool == nil || id <= 0 {
+		return ErrUserNotFound
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockAccountWrites(ctx, tx); err != nil {
+		return err
+	}
+	target, err := scanUser(tx.QueryRow(ctx, userSelect+" WHERE u.id = $1 FOR UPDATE OF u", id))
+	if err != nil {
+		if errors.Is(err, errStoreNotFound) {
+			return ErrUserNotFound
+		}
+		return err
+	}
+	if target.PasswordHash == nil || *target.PasswordHash == "" {
+		if isReservedHandle(target.Handle) {
+			return ErrReservedHandle
+		}
+		return ErrNoLogin
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1`, id, passwordHash); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Compile-time check that PostgresStore satisfies Store.

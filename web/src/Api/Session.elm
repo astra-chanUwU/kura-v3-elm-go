@@ -3,6 +3,7 @@ module Api.Session exposing
     , InvitationPreview
     , InvitationDraft
     , UpdateUser
+    , changePassword
     , createUser
     , createInvitation
     , deleteInvitation
@@ -74,6 +75,21 @@ login apiBase handle password toMsg =
 logout : String -> (Result Http.Error Session -> msg) -> Cmd msg
 logout apiBase toMsg =
     request "POST" (endpoint apiBase [ "api", "auth", "logout" ]) Http.emptyBody Session.sessionDecoder toMsg
+
+
+changePassword : String -> String -> String -> (Result Http.Error Session -> msg) -> Cmd msg
+changePassword apiBase currentPassword newPassword toMsg =
+    request "POST"
+        (endpoint apiBase [ "api", "auth", "password" ])
+        (Http.jsonBody
+            (Encode.object
+                [ ( "current_password", Encode.string currentPassword )
+                , ( "new_password", Encode.string newPassword )
+                ]
+            )
+        )
+        Session.sessionDecoder
+        toMsg
 
 
 users : String -> (Result Http.Error (List ManagedUser) -> msg) -> Cmd msg

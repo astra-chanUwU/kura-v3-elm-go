@@ -130,6 +130,26 @@ func (s *stubAuth) UpdateUser(_ context.Context, actor auth.Actor, id int64, pat
 	return u, nil
 }
 
+func (s *stubAuth) ChangePassword(_ context.Context, actor auth.Actor, current, next string) error {
+	if actor.UserID <= 0 {
+		return auth.ErrForbidden
+	}
+	if err := auth.ValidatePassword(next); err != nil {
+		return err
+	}
+	pw, ok := s.password[actor.UserID]
+	if !ok || pw != current {
+		return auth.ErrInvalidCredentials
+	}
+	s.password[actor.UserID] = next
+	for raw, sess := range s.sessions {
+		if sess.ID == actor.UserID {
+			delete(s.sessions, raw)
+		}
+	}
+	return nil
+}
+
 func testAccountsConfig(s *stubAuth) AccountsConfig {
 	cfg := NewAccountsConfig(s)
 	cfg.PrivateMode = true
@@ -374,5 +394,162 @@ func TestRegisterAuthRoutesMountsFrozenPaths(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"private_mode":true`) {
 		t.Fatalf("mounted session %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func passwordChangeReq(cookie *http.Cookie, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/password", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://kura.example")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	return req
+}
+
+func TestChangePasswordSelfService(t *testing.T) {
+	stub := newStubAuth()
+	cfg := testAccountsConfig(stub)
+	cfg.DeploymentToken = "deploy-secret"
+	viewer := loginCookie(t, cfg, "viewer", "viewer-password-1")
+	other := loginCookie(t, cfg, "viewer", "viewer-password-1")
+	admin := loginCookie(t, cfg, "admin", "admin-password-1")
+	editor := loginCookie(t, cfg, "editor", "editor-password-1")
+	handler := ChangePasswordHandler(cfg)
+
+	serve := func(req *http.Request) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec
+	}
+
+	if rec := serve(passwordChangeReq(nil, `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status=%d %s", rec.Code, rec.Body.String())
+	}
+	bearer := passwordChangeReq(nil, `{"current_password":"viewer-password-1","new_password":"viewer-password-2","user_id":3}`)
+	bearer.Header.Set("Authorization", "Bearer deploy-secret")
+	if rec := serve(bearer); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bearer status=%d %s", rec.Code, rec.Body.String())
+	}
+	if stub.password[3] != "viewer-password-1" || stub.password[1] != "admin-password-1" {
+		t.Fatalf("bearer changed passwords: %#v", stub.password)
+	}
+
+	targeted := passwordChangeReq(viewer, `{"current_password":"viewer-password-1","new_password":"viewer-password-2","user_id":1}`)
+	if rec := serve(targeted); rec.Code != http.StatusBadRequest {
+		t.Fatalf("targeted body status=%d %s", rec.Code, rec.Body.String())
+	}
+	if stub.password[1] != "admin-password-1" || stub.password[3] != "viewer-password-1" {
+		t.Fatalf("targeted change applied: %#v", stub.password)
+	}
+
+	patch := httptest.NewRequest(http.MethodPatch, "/api/auth/users/1", strings.NewReader(`{"password":"admin-password-2"}`))
+	patch.Header.Set("Content-Type", "application/json")
+	patch.Header.Set("Origin", "https://kura.example")
+	patch.AddCookie(viewer)
+	patchRec := httptest.NewRecorder()
+	r := chi.NewRouter()
+	r.Patch("/api/auth/users/{id}", UpdateUserHandler(cfg))
+	r.ServeHTTP(patchRec, patch)
+	if patchRec.Code != http.StatusForbidden || stub.password[1] != "admin-password-1" {
+		t.Fatalf("viewer admin patch status=%d passwords=%#v", patchRec.Code, stub.password)
+	}
+
+	wrong := passwordChangeReq(viewer, `{"current_password":"wrong-password-1","new_password":"viewer-password-2"}`)
+	if rec := serve(wrong); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "current password") {
+		t.Fatalf("wrong current status=%d %s", rec.Code, rec.Body.String())
+	}
+	if _, _, ok := stub.ResolveSession(context.Background(), viewer.Value); !ok {
+		t.Fatal("wrong current password revoked the session")
+	}
+	short := passwordChangeReq(viewer, `{"current_password":"viewer-password-1","new_password":"short"}`)
+	if rec := serve(short); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "12 and 72") {
+		t.Fatalf("short password status=%d %s", rec.Code, rec.Body.String())
+	}
+
+	untrusted := passwordChangeReq(viewer, `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`)
+	untrusted.Header.Set("Origin", "https://evil.example")
+	if rec := serve(untrusted); rec.Code != http.StatusForbidden || stub.password[3] != "viewer-password-1" {
+		t.Fatalf("untrusted origin status=%d %s", rec.Code, rec.Body.String())
+	}
+
+	okReq := passwordChangeReq(viewer, `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`)
+	rec := serve(okReq)
+	var body map[string]any
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body["authenticated"] != false || body["user"] != nil {
+		t.Fatalf("change status=%d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "viewer-password") {
+		t.Fatal("password echoed in response")
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "kura_session" && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("password change did not clear the session cookie")
+	}
+	if _, _, ok := stub.ResolveSession(context.Background(), viewer.Value); ok {
+		t.Fatal("changed account session still resolves")
+	}
+	if _, _, ok := stub.ResolveSession(context.Background(), other.Value); ok {
+		t.Fatal("second session for the same account still resolves")
+	}
+	if _, _, ok := stub.ResolveSession(context.Background(), admin.Value); !ok {
+		t.Fatal("admin session was revoked")
+	}
+	if stub.password[3] != "viewer-password-2" || stub.password[1] != "admin-password-1" || stub.password[2] != "editor-password-1" {
+		t.Fatalf("passwords=%#v", stub.password)
+	}
+	if _, err := stub.Login(context.Background(), "viewer", "viewer-password-1"); err == nil {
+		t.Fatal("old viewer password still works")
+	}
+	if _, err := stub.Login(context.Background(), "viewer", "viewer-password-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	editorReq := passwordChangeReq(editor, `{"current_password":"editor-password-1","new_password":"editor-password-2"}`)
+	if rec := serve(editorReq); rec.Code != http.StatusOK || stub.password[2] != "editor-password-2" {
+		t.Fatalf("editor change status=%d passwords=%#v body=%s", rec.Code, stub.password, rec.Body.String())
+	}
+	adminReq := passwordChangeReq(admin, `{"current_password":"admin-password-1","new_password":"admin-password-2"}`)
+	if rec := serve(adminReq); rec.Code != http.StatusOK || stub.password[1] != "admin-password-2" {
+		t.Fatalf("admin change status=%d passwords=%#v body=%s", rec.Code, stub.password, rec.Body.String())
+	}
+
+	stub.expired[admin.Value] = true
+	expired := passwordChangeReq(admin, `{"current_password":"admin-password-2","new_password":"admin-password-3"}`)
+	if rec := serve(expired); rec.Code != http.StatusUnauthorized || stub.password[1] != "admin-password-2" {
+		t.Fatalf("expired status=%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestViewerPasswordChangeBypassesWriteToken(t *testing.T) {
+	stub := newStubAuth()
+	cfg := NewAccountsConfig(stub)
+	cfg.TrustedOrigin = "https://kura.example"
+	router := NewRouterWithDependencies("deploy-secret", Dependencies{Accounts: &cfg})
+	cookie := wiringLogin(t, router, "viewer", "viewer-password-1")
+
+	blocked := httptest.NewRequest(http.MethodPost, "/api/posts", strings.NewReader(`{}`))
+	blocked.Header.Set("Content-Type", "application/json")
+	blocked.AddCookie(cookie)
+	if rec := wiringServe(router, blocked); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "write capability required") {
+		t.Fatalf("viewer library write status=%d %s", rec.Code, rec.Body.String())
+	}
+
+	missing := passwordChangeReq(nil, `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`)
+	if rec := wiringServe(router, missing); rec.Code != http.StatusUnauthorized || strings.Contains(rec.Body.String(), "write capability required") {
+		t.Fatalf("anonymous password status=%d %s", rec.Code, rec.Body.String())
+	}
+	changed := passwordChangeReq(cookie, `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`)
+	rec := wiringServe(router, changed)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"authenticated":false`) || stub.password[3] != "viewer-password-2" {
+		t.Fatalf("viewer password status=%d %s passwords=%#v", rec.Code, rec.Body.String(), stub.password)
+	}
+	if stub.password[1] != "admin-password-1" {
+		t.Fatal("another account changed")
 	}
 }

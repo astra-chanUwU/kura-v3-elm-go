@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -47,6 +48,58 @@ func TestPostgresStoreAccounts(t *testing.T) {
 	}
 	if _, _, ok := svc.ResolveSession(ctx, login.RawToken); ok {
 		t.Fatal("disabled user's session resolved")
+	}
+}
+
+func TestPostgresSelfServiceAndOfflineReset(t *testing.T) {
+	url := os.Getenv("KURA_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("KURA_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	svc := NewService(NewPostgresStore(pool))
+	sys := Actor{ID: SystemActorID, System: true}
+	handle := fmt.Sprintf("pwreset%d", time.Now().UnixNano()%100000000)
+	user, err := svc.CreateUser(ctx, sys, handle, testPassword, "viewer")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) }()
+	login, err := svc.Login(ctx, handle, testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const changed = "changed-password-1"
+	if err := svc.ChangePassword(ctx, login.Actor, testPassword, changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := svc.ResolveSession(ctx, login.RawToken); ok {
+		t.Fatal("session survived password change")
+	}
+	if _, err := svc.Login(ctx, handle, testPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old password err=%v", err)
+	}
+	current, err := svc.Login(ctx, handle, changed)
+	if err != nil || current.User.Role != "viewer" {
+		t.Fatalf("new login=%+v err=%v", current, err)
+	}
+	reset, err := svc.ResetPassword(ctx, handle, "offline-reset-password")
+	if err != nil || reset.ID != user.ID || reset.Role != "viewer" || reset.Disabled {
+		t.Fatalf("reset=%+v err=%v", reset, err)
+	}
+	if _, _, ok := svc.ResolveSession(ctx, current.RawToken); ok {
+		t.Fatal("session survived offline reset")
+	}
+	if _, err := svc.Login(ctx, handle, "offline-reset-password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResetPassword(ctx, "missing-"+handle, testPassword); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("missing reset err=%v", err)
 	}
 }
 

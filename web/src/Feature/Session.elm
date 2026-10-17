@@ -93,6 +93,14 @@ type alias Model =
     , invitationOperation : Maybe Int
     , reconcilePending : Bool
     , reconcileSignupPending : Bool
+    , seenAccessEpoch : Int
+    , passwordChangeOpen : Bool
+    , currentPasswordDraft : String
+    , newPasswordDraft : String
+    , confirmPasswordDraft : String
+    , passwordChangeBusy : Bool
+    , passwordChangeOperation : Maybe Int
+    , passwordChangeNotice : Maybe String
     }
 
 
@@ -139,6 +147,14 @@ init ctx =
             , invitationOperation = Nothing
             , reconcilePending = False
             , reconcileSignupPending = False
+            , seenAccessEpoch = ctx.accessEpoch
+            , passwordChangeOpen = False
+            , currentPasswordDraft = ""
+            , newPasswordDraft = ""
+            , confirmPasswordDraft = ""
+            , passwordChangeBusy = False
+            , passwordChangeOperation = Nothing
+            , passwordChangeNotice = Nothing
             }
     in
     ( model, Api.read ctx.apiBase (SessionLoaded ctx.accessEpoch model.generation) )
@@ -158,6 +174,13 @@ type Msg
     | LoginCompleted Int Int (Result Http.Error Session)
     | LogoutRequested
     | LogoutCompleted Int Int (Result Http.Error Session)
+    | PasswordChangeOpened
+    | PasswordChangeClosed
+    | CurrentPasswordChanged String
+    | NewPasswordChanged String
+    | ConfirmPasswordChanged String
+    | PasswordChangeRequested
+    | PasswordChangeCompleted Int Int (Result Http.Error Session)
     | AccessRevokedRequested
     | UsersRequested
     | UsersLoaded Int Int (Result Http.Error (List ManagedUser))
@@ -214,7 +237,11 @@ type NoticeKind
 
 
 update : Context -> Msg -> Model -> ( Model, Cmd Msg, List OutMsg )
-update ctx msg model =
+update ctx msg rawModel =
+    let
+        model =
+            syncAccess ctx rawModel
+    in
     case msg of
         SessionLoaded accessEpoch generation result ->
             if not (isCurrent ctx accessEpoch generation model) then
@@ -299,6 +326,75 @@ update ctx msg model =
 
             else
                 settleLogout result model
+
+        PasswordChangeOpened ->
+            if not (isAuthenticated model) || model.passwordChangeBusy then
+                ( model, Cmd.none, [] )
+
+            else
+                ( { model
+                    | passwordChangeOpen = True
+                    , currentPasswordDraft = ""
+                    , newPasswordDraft = ""
+                    , confirmPasswordDraft = ""
+                    , passwordChangeNotice = Nothing
+                  }
+                , Cmd.none
+                , []
+                )
+
+        PasswordChangeClosed ->
+            ( clearPasswordChange model, Cmd.none, [] )
+
+        CurrentPasswordChanged value ->
+            ( { model | currentPasswordDraft = value, passwordChangeNotice = Nothing }, Cmd.none, [] )
+
+        NewPasswordChanged value ->
+            ( { model | newPasswordDraft = value, passwordChangeNotice = Nothing }, Cmd.none, [] )
+
+        ConfirmPasswordChanged value ->
+            ( { model | confirmPasswordDraft = value, passwordChangeNotice = Nothing }, Cmd.none, [] )
+
+        PasswordChangeRequested ->
+            if model.passwordChangeBusy || not (isAuthenticated model) then
+                ( model, Cmd.none, [] )
+
+            else if model.currentPasswordDraft == "" || model.newPasswordDraft == "" || model.confirmPasswordDraft == "" then
+                ( { model | passwordChangeNotice = Just "Enter your current password and a new password." }, Cmd.none, [] )
+
+            else if model.newPasswordDraft /= model.confirmPasswordDraft then
+                ( { model | passwordChangeNotice = Just "New password and confirmation do not match." }, Cmd.none, [] )
+
+            else
+                let
+                    id =
+                        model.operationId + 1
+
+                    currentPassword =
+                        model.currentPasswordDraft
+
+                    newPassword =
+                        model.newPasswordDraft
+                in
+                ( { model
+                    | operationId = id
+                    , passwordChangeOperation = Just id
+                    , passwordChangeBusy = True
+                    , currentPasswordDraft = ""
+                    , newPasswordDraft = ""
+                    , confirmPasswordDraft = ""
+                    , passwordChangeNotice = Nothing
+                  }
+                , Api.changePassword ctx.apiBase currentPassword newPassword (PasswordChangeCompleted ctx.accessEpoch id)
+                , []
+                )
+
+        PasswordChangeCompleted accessEpoch id result ->
+            if accessEpoch /= ctx.accessEpoch || model.passwordChangeOperation /= Just id then
+                ( model, Cmd.none, [] )
+
+            else
+                settlePasswordChange result model
 
         AccessRevokedRequested ->
             let
@@ -466,6 +562,13 @@ update ctx msg model =
                         , loginBusy = False
                         , passwordDraft = ""
                         , loginPasswordVisible = False
+                        , passwordChangeOpen = False
+                        , currentPasswordDraft = ""
+                        , newPasswordDraft = ""
+                        , confirmPasswordDraft = ""
+                        , passwordChangeBusy = False
+                        , passwordChangeOperation = Nothing
+                        , passwordChangeNotice = Nothing
                         , generation = nextGeneration
                         , loading = model.loading || needsRead
                     }
@@ -853,6 +956,85 @@ settleLogin result model =
             ( { model | loginBusy = False, passwordDraft = "", notice = Just "Sign in could not be completed. Check the connection and try again." }, Cmd.none, [] )
 
 
+settlePasswordChange : Result Http.Error Session -> Model -> ( Model, Cmd Msg, List OutMsg )
+settlePasswordChange result model =
+    case result of
+        Ok session ->
+            if not session.authenticated then
+                ( applySession session
+                    { model
+                        | passwordChangeOpen = False
+                        , passwordChangeBusy = False
+                        , passwordChangeOperation = Nothing
+                        , currentPasswordDraft = ""
+                        , newPasswordDraft = ""
+                        , confirmPasswordDraft = ""
+                        , passwordChangeNotice = Nothing
+                        , notice = Just "Password changed. Sign in again with your new password."
+                    }
+                , Cmd.none
+                , [ SessionChanged ]
+                )
+
+            else
+                ( { model
+                    | passwordChangeBusy = False
+                    , passwordChangeOperation = Nothing
+                    , currentPasswordDraft = ""
+                    , newPasswordDraft = ""
+                    , confirmPasswordDraft = ""
+                    , passwordChangeNotice = Just "Password change could not be confirmed. Sign in to check. If the new password does not work, the previous password is still in effect."
+                  }
+                , Cmd.none
+                , []
+                )
+
+        Err (Http.BadStatus 400) ->
+            ( { model
+                | passwordChangeBusy = False
+                , passwordChangeOperation = Nothing
+                , passwordChangeNotice = Just "The current password is incorrect, or the new password must be 12–72 bytes."
+              }
+            , Cmd.none
+            , []
+            )
+
+        Err (Http.BadStatus 401) ->
+            ( clearSession
+                { model
+                    | privateMode = Just True
+                    , loading = False
+                    , notice = Just "Your session expired. Sign in again to continue."
+                    , passwordChangeNotice = Nothing
+                }
+            , Cmd.none
+            , [ AccessRevoked, SessionChanged ]
+            )
+
+        Err (Http.BadStatus 403) ->
+            ( { model
+                | passwordChangeBusy = False
+                , passwordChangeOperation = Nothing
+                , passwordChangeNotice = Just "Password change was refused."
+              }
+            , Cmd.none
+            , []
+            )
+
+        Err _ ->
+            ( { model
+                | passwordChangeBusy = False
+                , passwordChangeOperation = Nothing
+                , currentPasswordDraft = ""
+                , newPasswordDraft = ""
+                , confirmPasswordDraft = ""
+                , passwordChangeNotice = Just "Password change could not be confirmed. Sign in to check. If the new password does not work, the previous password is still in effect."
+              }
+            , Cmd.none
+            , []
+            )
+
+
 settleLogout : Result Http.Error Session -> Model -> ( Model, Cmd Msg, List OutMsg )
 settleLogout result model =
     case result of
@@ -935,6 +1117,13 @@ applySession session model =
         , userOperation = Nothing
         , passwordDraft = ""
         , loginPasswordVisible = False
+        , passwordChangeOpen = False
+        , currentPasswordDraft = ""
+        , newPasswordDraft = ""
+        , confirmPasswordDraft = ""
+        , passwordChangeBusy = False
+        , passwordChangeOperation = Nothing
+        , passwordChangeNotice = Nothing
         , signupPasswordDraft = ""
         , signupConfirmDraft = ""
         , signupPasswordVisible = False
@@ -967,6 +1156,28 @@ applySession session model =
     }
 
 
+syncAccess : Context -> Model -> Model
+syncAccess ctx model =
+    if model.seenAccessEpoch == ctx.accessEpoch then
+        model
+
+    else
+        clearPasswordChange { model | seenAccessEpoch = ctx.accessEpoch }
+
+
+clearPasswordChange : Model -> Model
+clearPasswordChange model =
+    { model
+        | passwordChangeOpen = False
+        , currentPasswordDraft = ""
+        , newPasswordDraft = ""
+        , confirmPasswordDraft = ""
+        , passwordChangeBusy = False
+        , passwordChangeOperation = Nothing
+        , passwordChangeNotice = Nothing
+    }
+
+
 clearSession : Model -> Model
 clearSession model =
     { model
@@ -982,6 +1193,13 @@ clearSession model =
         , passwordDraft = ""
         , createHandleDraft = ""
         , createPasswordDraft = ""
+        , passwordChangeOpen = False
+        , currentPasswordDraft = ""
+        , newPasswordDraft = ""
+        , confirmPasswordDraft = ""
+        , passwordChangeBusy = False
+        , passwordChangeOperation = Nothing
+        , passwordChangeNotice = Nothing
         , loginPasswordVisible = False
         , signupPasswordDraft = ""
         , signupConfirmDraft = ""
@@ -1097,7 +1315,8 @@ viewAccount _ model =
                                 |> Maybe.withDefault (text "")
                             ]
                         , div [ class "account-disclosure-body" ]
-                            [ button [ class "button button-quiet", type_ "button", disabled model.logoutBusy, onClick LogoutRequested ]
+                            [ passwordChangeControl model
+                            , button [ class "button button-quiet", type_ "button", disabled model.logoutBusy, onClick LogoutRequested ]
                                 [ text
                                     (if model.logoutBusy then
                                         "Signing out…"
@@ -1296,6 +1515,64 @@ roleTitle role =
 
         UnknownRole raw ->
             raw
+
+
+passwordChangeControl : Model -> Html Msg
+passwordChangeControl model =
+    if model.passwordChangeOpen then
+        form [ class "session-create-user", onSubmit PasswordChangeRequested ]
+            [ p [] [ text "Changing your password signs you out everywhere. You will need to sign in again." ]
+            , label []
+                [ text "Current password"
+                , input
+                    [ type_ "password"
+                    , name "current-password"
+                    , attribute "autocomplete" "current-password"
+                    , value model.currentPasswordDraft
+                    , disabled model.passwordChangeBusy
+                    , onInput CurrentPasswordChanged
+                    ]
+                    []
+                ]
+            , label []
+                [ text "New password"
+                , input
+                    [ type_ "password"
+                    , name "new-password"
+                    , attribute "autocomplete" "new-password"
+                    , value model.newPasswordDraft
+                    , disabled model.passwordChangeBusy
+                    , onInput NewPasswordChanged
+                    ]
+                    []
+                ]
+            , label []
+                [ text "Confirm new password"
+                , input
+                    [ type_ "password"
+                    , name "confirm-password"
+                    , attribute "autocomplete" "new-password"
+                    , value model.confirmPasswordDraft
+                    , disabled model.passwordChangeBusy
+                    , onInput ConfirmPasswordChanged
+                    ]
+                    []
+                ]
+            , model.passwordChangeNotice |> Maybe.map (\message -> p [ class "session-notice" ] [ text message ]) |> Maybe.withDefault (text "")
+            , button [ type_ "submit", disabled model.passwordChangeBusy ]
+                [ text
+                    (if model.passwordChangeBusy then
+                        "Changing password…"
+
+                     else
+                        "Change password"
+                    )
+                ]
+            , button [ type_ "button", disabled model.passwordChangeBusy, onClick PasswordChangeClosed ] [ text "Close" ]
+            ]
+
+    else
+        button [ class "button button-quiet", type_ "button", onClick PasswordChangeOpened ] [ text "Change password" ]
 
 
 loginForm : Model -> Html Msg

@@ -535,6 +535,63 @@ func UpdateUserHandler(cfg AccountsConfig) http.HandlerFunc {
 	}
 }
 
+// ChangePasswordHandler serves POST /api/auth/password for the signed-in
+// account. The body is only current_password and new_password; there is
+// no account id. Every role may call it. Success clears the session
+// cookie because the account's sessions were revoked.
+func ChangePasswordHandler(cfg AccountsConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		setNoStore(w)
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if !isJSONRequest(r) {
+			writeJSONError(w, http.StatusUnsupportedMediaType, "request requires application/json")
+			return
+		}
+		if cfg.Service == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "accounts unavailable")
+			return
+		}
+		actor, user, source, ok := cfg.resolveForHandlers(r)
+		if !ok || source != "cookie" || user.ID <= 0 || actor.UserID <= 0 || actor.UserID != user.ID {
+			writeJSONError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if !checkCookieCSRF(r, cfg.access()) {
+			writeJSONError(w, http.StatusForbidden, "untrusted origin")
+			return
+		}
+		var body struct {
+			CurrentPassword string `json:"current_password"`
+			NewPassword     string `json:"new_password"`
+		}
+		if !decodeBoundedJSON(w, r, &body) {
+			return
+		}
+		if err := cfg.Service.ChangePassword(r.Context(), actor, body.CurrentPassword, body.NewPassword); err != nil {
+			writeChangePasswordError(w, err)
+			return
+		}
+		cfg.clearSessionCookie(w, r)
+		writeJSON(w, http.StatusOK, anonymousSession(cfg.PrivateMode))
+	}
+}
+
+func writeChangePasswordError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeJSONError(w, http.StatusBadRequest, "current password is incorrect")
+	case errors.Is(err, auth.ErrInvalidPassword):
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, auth.ErrForbidden):
+		writeJSONError(w, http.StatusForbidden, "authentication required")
+	default:
+		writeAccountError(w, err)
+	}
+}
+
 // AccountsHandlers groups the account handlers for coordinator wiring.
 type AccountsHandlers struct {
 	Session            http.HandlerFunc
@@ -543,6 +600,7 @@ type AccountsHandlers struct {
 	ListUsers          http.HandlerFunc
 	CreateUser         http.HandlerFunc
 	UpdateUser         http.HandlerFunc
+	ChangePassword     http.HandlerFunc
 	ListInvitations    http.HandlerFunc
 	CreateInvitation   http.HandlerFunc
 	RevokeInvitation   http.HandlerFunc
@@ -561,6 +619,7 @@ func NewAccountsHandlers(cfg AccountsConfig) AccountsHandlers {
 	return AccountsHandlers{
 		Session: SessionHandler(cfg), Login: LoginHandler(cfg), Logout: LogoutHandler(cfg),
 		ListUsers: ListUsersHandler(cfg), CreateUser: CreateUserHandler(cfg), UpdateUser: UpdateUserHandler(cfg),
+		ChangePassword:  ChangePasswordHandler(cfg),
 		ListInvitations: ListInvitationsHandler(cfg), CreateInvitation: CreateInvitationHandler(cfg),
 		RevokeInvitation: RevokeInvitationHandler(cfg), PreviewInvitation: PreviewInvitationHandler(cfg),
 		RegisterInvitation: RegisterInvitationHandler(cfg),
@@ -571,13 +630,14 @@ func NewAccountsHandlers(cfg AccountsConfig) AccountsHandlers {
 // Coordinator wiring:
 //
 //	api.Route("/auth", ...) is NOT used; call this on the /api router so
-//	paths become /api/auth/session, /api/auth/login, /api/auth/logout and
-//	/api/auth/users[/{id}].
+//	paths become /api/auth/session, /api/auth/login, /api/auth/logout,
+//	/api/auth/password and /api/auth/users[/{id}].
 func RegisterAuthRoutes(api chi.Router, cfg AccountsConfig) {
 	h := NewAccountsHandlers(cfg)
 	api.Get("/auth/session", h.Session)
 	api.Post("/auth/login", h.Login)
 	api.Post("/auth/logout", h.Logout)
+	api.Post("/auth/password", h.ChangePassword)
 	api.Get("/auth/users", h.ListUsers)
 	api.Post("/auth/users", h.CreateUser)
 	api.Patch("/auth/users/{id}", h.UpdateUser)

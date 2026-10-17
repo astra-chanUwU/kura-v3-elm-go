@@ -69,6 +69,18 @@ func TestPrivateModeBoundariesAndCSRF(t *testing.T) {
 	if rec := serve(req); rec.Code != http.StatusForbidden {
 		t.Fatalf("viewer write status=%d", rec.Code)
 	}
+	req = cookieReq(t, stub, acfg, "viewer", "viewer-password-1", http.MethodPost, "/api/auth/password")
+	if rec := serve(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer password change without origin status=%d", rec.Code)
+	}
+	req = cookieReq(t, stub, acfg, "viewer", "viewer-password-1", http.MethodPost, "/api/auth/password")
+	req.Header.Set("Origin", "https://kura.example")
+	if rec := serve(req); rec.Code != http.StatusOK {
+		t.Fatalf("viewer password change status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := serve(httptest.NewRequest(http.MethodPost, "/api/auth/password", strings.NewReader(`{}`))); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous password change status=%d", rec.Code)
+	}
 
 	// Editor: write requires exact trusted Origin (CSRF).
 	req = cookieReq(t, stub, acfg, "editor", "editor-password-1", http.MethodPost, "/api/collections")

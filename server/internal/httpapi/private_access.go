@@ -19,6 +19,7 @@ type AuthService interface {
 	ListUsers(ctx context.Context, actor auth.Actor) ([]auth.User, error)
 	CreateUser(ctx context.Context, actor auth.Actor, handle, password, role string) (auth.User, error)
 	UpdateUser(ctx context.Context, actor auth.Actor, id int64, patch auth.UpdateUserPatch) (auth.User, error)
+	ChangePassword(ctx context.Context, actor auth.Actor, currentPassword, newPassword string) error
 }
 
 // AccessConfig configures private-library access control and the session
@@ -213,6 +214,10 @@ func (cfg AccessConfig) Wrap(next http.Handler) http.Handler {
 		r = withActorSource(r, actor, source)
 		// Capability gates by role.
 		switch {
+		case r.URL.Path == "/api/auth/password":
+			// Any signed-in role may change its own password. Viewers do
+			// not have write capability; the handler accepts only the
+			// cookie session's account.
 		case isAccountAdminPath(r.URL.Path):
 			if !auth.HasAdminCapability(actor) {
 				writeJSONError(w, http.StatusForbidden, "admin capability required")

@@ -49,6 +49,10 @@ func isAuthPublicPath(path string) bool {
 	return false
 }
 
+func isSelfServicePasswordPath(path string) bool {
+	return path == "/api/auth/password"
+}
+
 // accessMiddleware picks the root actor middleware. Private mode replaces
 // the legacy write gate with PrivateAccess; off mode keeps the legacy gate
 // and layers SessionContext inside it so a resolved session actor is never
@@ -66,7 +70,10 @@ func accessMiddleware(apiToken string, accounts *AccountsConfig) func(http.Handl
 		}
 		gated := writeGate(inner)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if accounts != nil && accounts.Service != nil && isAuthPublicPath(r.URL.Path) {
+			// Login stays public. Password change is authenticated, but it
+			// must not require the deployment write token: viewers change
+			// their own password with the session cookie alone.
+			if accounts != nil && accounts.Service != nil && (isAuthPublicPath(r.URL.Path) || isSelfServicePasswordPath(r.URL.Path)) {
 				inner.ServeHTTP(w, r)
 				return
 			}

@@ -22,6 +22,7 @@ const BcryptCost = 12
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrInvalidPassword    = errors.New("password must be between 12 and 72 bytes")
+	ErrNoLogin            = errors.New("account has no login password")
 	ErrInvalidHandle      = errors.New("handle must be 1-64 characters of letters, digits, '.', '_' or '-'")
 	ErrInvalidRole        = errors.New("role must be viewer, editor or admin")
 	ErrReservedHandle     = errors.New("handle is reserved")
@@ -307,6 +308,72 @@ func (s *Service) UpdateUser(ctx context.Context, actor Actor, id int64, patch U
 		return User{}, err
 	}
 	return rec.Public(), nil
+}
+
+// ChangePassword replaces the signed-in account's password after verifying
+// the current one. Only actor.UserID is updated; there is no target id.
+// Success revokes that account's sessions. Callers must sign in again.
+func (s *Service) ChangePassword(ctx context.Context, actor Actor, currentPassword, newPassword string) error {
+	if s == nil || s.Store == nil || actor.UserID <= 0 {
+		return ErrForbidden
+	}
+	if err := ValidatePassword(newPassword); err != nil {
+		return err
+	}
+	rec, err := s.Store.GetUserByID(ctx, actor.UserID)
+	if err != nil || rec.ID != actor.UserID || rec.Disabled || rec.PasswordHash == nil || *rec.PasswordHash == "" {
+		return ErrInvalidCredentials
+	}
+	if !checkPassword(*rec.PasswordHash, currentPassword) {
+		return ErrInvalidCredentials
+	}
+	hash, err := HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	return s.Store.ReplacePassword(ctx, rec.ID, hash)
+}
+
+// ResetPassword replaces the password of an existing login account. It is
+// the offline recovery path: it does not create users, grant admin, adopt
+// a legacy row, or change role or disabled state. Sessions for that
+// account are revoked with the password write.
+func (s *Service) ResetPassword(ctx context.Context, handle, password string) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrUserNotFound
+	}
+	handle = strings.TrimSpace(handle)
+	if handle == "" {
+		return User{}, ErrInvalidHandle
+	}
+	if err := ValidatePassword(password); err != nil {
+		return User{}, err
+	}
+	rec, err := s.Store.GetUserByHandle(ctx, handle)
+	if err != nil {
+		if errors.Is(err, errStoreNotFound) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, err
+	}
+	if rec.PasswordHash == nil || *rec.PasswordHash == "" {
+		if isReservedHandle(rec.Handle) {
+			return User{}, ErrReservedHandle
+		}
+		return User{}, ErrNoLogin
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return User{}, err
+	}
+	if err := s.Store.ReplacePassword(ctx, rec.ID, hash); err != nil {
+		return User{}, err
+	}
+	updated, err := s.Store.GetUserByID(ctx, rec.ID)
+	if err != nil {
+		return rec.Public(), nil
+	}
+	return updated.Public(), nil
 }
 
 // BootstrapAdmin creates the initial login admin, offline only. It fails
