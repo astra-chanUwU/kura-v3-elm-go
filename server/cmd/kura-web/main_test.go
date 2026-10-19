@@ -147,3 +147,25 @@ func TestValidateProxyTargetAndSelfLoop(t *testing.T) {
 		t.Fatal("API target on port 8080 incorrectly treated as frontend loop")
 	}
 }
+
+func TestWebRootUsesPackageBesideExecutable(t *testing.T) {
+	root := t.TempDir()
+	webDir := filepath.Join(root, "web")
+	if err := os.MkdirAll(webDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("Kura UI"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := webRootFrom("", filepath.Join(root, "bin", "kura-web"), os.Stat)
+	if filepath.Clean(got) != filepath.Clean(webDir) {
+		t.Fatalf("web root=%s want %s", got, webDir)
+	}
+	override := filepath.Join(root, "custom")
+	if webRootFrom(override, filepath.Join(root, "bin", "kura-web"), os.Stat) != override {
+		t.Fatal("KURA_WEB_ROOT was ignored")
+	}
+	if got := webRootFrom("", filepath.Join(t.TempDir(), "bin", "kura-web"), os.Stat); got != filepath.Join("..", "web") {
+		t.Fatalf("fallback=%s", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,8 @@ const (
 
 func main() {
 	log.Print("Kura frontend: http://localhost:8000")
-	handler, err := newWebHandler("../web", os.Getenv("KURA_API_PROXY_URL"))
+	executable, _ := os.Executable()
+	handler, err := newWebHandler(webRootFrom(os.Getenv("KURA_WEB_ROOT"), executable, os.Stat), os.Getenv("KURA_API_PROXY_URL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -39,6 +41,20 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func webRootFrom(envRoot, executable string, stat func(string) (os.FileInfo, error)) string {
+	if root := strings.TrimSpace(envRoot); root != "" {
+		return root
+	}
+	if stat != nil && strings.TrimSpace(executable) != "" {
+		candidate := filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "web"))
+		info, err := stat(filepath.Join(candidate, "index.html"))
+		if err == nil && info != nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return filepath.Join("..", "web")
 }
 
 func newWebHandler(staticDir, configuredTarget string) (http.Handler, error) {

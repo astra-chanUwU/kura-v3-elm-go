@@ -471,3 +471,54 @@ func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+type regularFileInfo struct{}
+
+func (regularFileInfo) Name() string       { return "online_backup_proof.py" }
+func (regularFileInfo) Size() int64        { return 1 }
+func (regularFileInfo) Mode() os.FileMode  { return 0o644 }
+func (regularFileInfo) ModTime() time.Time { return time.Time{} }
+func (regularFileInfo) IsDir() bool        { return false }
+func (regularFileInfo) Sys() any           { return nil }
+
+func TestOnlineBackupScriptUsesPackageBesideExecutable(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	scriptDir := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scriptDir, "online_backup_proof.py")
+	if err := os.WriteFile(script, []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := onlineBackupScript(filepath.Join(binDir, "kura-server"), "", os.Stat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(got) != filepath.Clean(script) {
+		t.Fatalf("script=%s want %s", got, script)
+	}
+}
+
+func TestOnlineBackupScriptOverrideDoesNotSearchElsewhere(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.py")
+	if _, err := onlineBackupScript(filepath.Join("bin", "kura-server"), missing, os.Stat); err == nil {
+		t.Fatal("missing override was accepted")
+	}
+}
+
+func TestOnlineBackupScriptFallsBackToSourceCheckout(t *testing.T) {
+	got, err := onlineBackupScript(filepath.Join("elsewhere", "kura-server"), "", func(path string) (os.FileInfo, error) {
+		if filepath.ToSlash(path) == "scripts/online_backup_proof.py" {
+			return regularFileInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	})
+	if err != nil || filepath.ToSlash(got) != "scripts/online_backup_proof.py" {
+		t.Fatalf("script=%s err=%v", got, err)
+	}
+}

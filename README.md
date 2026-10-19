@@ -337,10 +337,10 @@ Administrators can create local backups while Kura stays online from the
 **Recovery** panel. Set `KURA_BACKUP_ROOT` to an existing dedicated backup
 directory outside `MEDIA_ROOT`, and set `MEDIA_ROOT` to the library's actual
 directory without symlink components. The server needs Python 3.9+ and
-compatible `psql` and `pg_dump` tools on `PATH`. It locates the backup script
-from the repository or server directory; packaged deployments should set
-`KURA_ONLINE_BACKUP_SCRIPT` to the installed `scripts/online_backup_proof.py`,
-with `library-backup.py` beside it.
+compatible `psql` and `pg_dump` tools on `PATH`. A source checkout uses
+`scripts/online_backup_proof.py`. A packaged server uses the `scripts`
+directory beside `bin`, with `library-backup.py` next to that script.
+`KURA_ONLINE_BACKUP_SCRIPT` overrides either location.
 
 The panel tracks creation and cancellation, lists published backups, and
 verifies their manifests and hashes. Creation uses one PostgreSQL snapshot
@@ -381,24 +381,43 @@ this backup workflow.
 
 ## Release and preflight
 
-`make package` builds a Linux and macOS release with Go 1.27 and Elm 0.19.2.
-It cross-compiles the server, frontend server, and CLI with CGO disabled,
-then copies the built Elm program, CSS, backup script, and migrations into
-`dist/kura-release` with `SHA256SUMS`. The archive does not seed a database
-and does not include a media library.
+`make package` builds a release for the computer that runs it, using Go 1.27 and Elm 0.19.2.
+It compiles the API server, frontend server, account tool, and CLI for that one host with CGO disabled,
+then copies the built Elm program, CSS, sign-in artwork, backup scripts, and migrations into
+`dist/kura-release` with `SHA256SUMS`. The archive lists only that host. It does not seed a database
+and does not include a media library. Run it again on another operating system before claiming that platform.
 
-Before starting a packaged server, run `kura-server preflight`. It checks
-that `DATABASE_URL` is set, that PostgreSQL is reachable, that the `posts`
-and `jobs` tables exist, that `MEDIA_ROOT` is a writable local directory,
-and that `psql`, `pg_dump` 16 or newer, and `pg_restore` are on `PATH`.
-An unset backup root or a missing FFmpeg is reported as disabled. Preflight
-never prints the database URL, and it never migrates or seeds. Apply
-migrations with `scripts/db-migrate.sh` yourself. `GET /health` stays the
-liveness check; preflight is the separate readiness check.
+Before starting a packaged server, run its `preflight` command. It checks
+that `DATABASE_URL` is set, that PostgreSQL is reachable, and that the schema matches
+this release, including posts, jobs, account invitations, and account password storage.
+It also checks that `MEDIA_ROOT` is a writable local directory and that Python 3.9 or newer,
+`psql`, `pg_dump` 16 or newer, and `pg_restore` are on `PATH`.
+An unset backup root or a missing FFmpeg is reported as disabled, and that does not fail the check.
+Preflight never prints the database URL or raw tool errors, and it never migrates or seeds.
+Each dependency probe stops after a few seconds. Apply migrations with the packaged
+`scripts/db-migrate.sh`. That script reapplies the current additive SQL files and is safe
+for a library that already has them. `GET /health` stays the liveness check and does not
+contact PostgreSQL. Preflight is the separate readiness check.
 
-The API server allows 30 minutes to read a request so a large upload can
-finish, and it does not set a write timeout, so streamed media and ZIP
-exports are not cut off. Request headers and idle connections are bounded.
+Install a new library by installing PostgreSQL 16 or newer, putting `DATABASE_URL`,
+`MEDIA_ROOT`, and `HTTP_ADDR` in the environment, creating an empty database, and running
+`scripts/db-migrate.sh` from the package. Do not pass the database URL or tokens on the
+command line, and do not seed a library that already has data. Run preflight, then start
+`bin/kura-server-<os>-<arch>`. Start `bin/kura-web-<os>-<arch>` to serve the packaged `web`
+directory beside `bin`. Set `KURA_WEB_ROOT` only when those assets live somewhere else.
+FFmpeg is optional and is needed only for extended media.
+
+Upgrade by stopping the server, keeping the existing database and `MEDIA_ROOT`, and replacing
+the binaries, `web` assets, `scripts`, and `db/migrations`. Run `scripts/db-migrate.sh` again.
+Do not seed, and do not delete the database or media directory. Run preflight, then start the server.
+
+The packaged server finds `scripts/online_backup_proof.py` beside `bin`, and `library-backup.py`
+beside that script, without a source checkout. Scheduled backups stay disabled until
+`KURA_BACKUP_INTERVAL` is at least 1h. Restore only into an empty database after every writer has stopped.
+
+The API server and the frontend server allow 30 minutes to read a request so a large upload can
+finish, and neither sets a write timeout, so streamed media and ZIP exports are not cut off.
+Request headers and idle connections are bounded.
 
 ## Checks
 

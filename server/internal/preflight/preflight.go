@@ -79,15 +79,18 @@ func Evaluate(ctx context.Context, probe Probe) Report {
 		checks = append(checks, Check{Name: "database", Status: "fail", Detail: "DATABASE_URL is not set"})
 	} else {
 		checks = append(checks, Check{Name: "database", Status: "ok", Detail: "configured"})
-		posts, jobs, err := probe.Database(ctx, databaseURL)
+		corePresent, releaseSchema, err := probe.Database(ctx, databaseURL)
 		if err != nil {
 			checks = append(checks, Check{Name: "database_connectivity", Status: "fail", Detail: "database is unavailable"})
 			checks = append(checks, Check{Name: "migrations", Status: "fail", Detail: "not checked because the database is unavailable"})
 		} else {
 			checks = append(checks, Check{Name: "database_connectivity", Status: "ok", Detail: "reachable"})
-			if posts && jobs {
-				checks = append(checks, Check{Name: "migrations", Status: "ok", Detail: "posts and jobs tables are present"})
-			} else {
+			switch {
+			case corePresent && releaseSchema:
+				checks = append(checks, Check{Name: "migrations", Status: "ok", Detail: "schema matches this release"})
+			case corePresent:
+				checks = append(checks, Check{Name: "migrations", Status: "fail", Detail: "schema is behind this release; run scripts/db-migrate.sh without seeding"})
+			default:
 				checks = append(checks, Check{Name: "migrations", Status: "fail", Detail: "database is reachable and has not been migrated; run scripts/db-migrate.sh without seeding"})
 			}
 		}
@@ -168,6 +171,9 @@ func overlaps(a, b string) bool {
 }
 
 func toolsCheck(ctx context.Context, probe Probe) Check {
+	if detail, ok := pythonReady(ctx, probe); !ok {
+		return Check{Name: "backup_tools", Status: "fail", Detail: detail}
+	}
 	for _, name := range []string{"psql", "pg_dump", "pg_restore"} {
 		path, err := probe.LookPath(name)
 		if err != nil || strings.TrimSpace(path) == "" {
@@ -180,7 +186,46 @@ func toolsCheck(ctx context.Context, probe Probe) Check {
 			}
 		}
 	}
-	return Check{Name: "backup_tools", Status: "ok", Detail: "psql, pg_dump, and pg_restore are available"}
+	return Check{Name: "backup_tools", Status: "ok", Detail: "python, psql, pg_dump, and pg_restore are available"}
+}
+
+func pythonReady(ctx context.Context, probe Probe) (string, bool) {
+	var found string
+	for _, name := range []string{"python3", "python"} {
+		path, err := probe.LookPath(name)
+		if err == nil && strings.TrimSpace(path) != "" {
+			found = path
+			break
+		}
+	}
+	if found == "" {
+		return "Python 3.9 or newer, psql, pg_dump, and pg_restore are required", false
+	}
+	out, err := probe.CommandOut(ctx, found, "--version")
+	if err != nil || !pythonAtLeast(out, 3, 9) {
+		return "Python 3.9 or newer is required", false
+	}
+	return "", true
+}
+
+func pythonAtLeast(text string, major, minor int) bool {
+	for _, field := range strings.Fields(text) {
+		field = strings.Trim(field, "()")
+		parts := strings.Split(field, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		maj, err1 := strconv.Atoi(parts[0])
+		min, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if maj > major || (maj == major && min >= minor) {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 func ffmpegCheck(ctx context.Context, probe Probe) Check {
@@ -226,13 +271,22 @@ func queryMigrationState(ctx context.Context, databaseURL string) (bool, bool, e
 		return false, false, errDatabaseUnavailable
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
-	var posts, jobs bool
+	var corePresent, releaseSchema bool
 	err = conn.QueryRow(queryCtx, `
-SELECT to_regclass('public.posts') IS NOT NULL, to_regclass('public.jobs') IS NOT NULL`).Scan(&posts, &jobs)
+SELECT
+    to_regclass('public.posts') IS NOT NULL AND to_regclass('public.jobs') IS NOT NULL,
+    to_regclass('public.account_invitations') IS NOT NULL
+        AND EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+                AND table_name = 'users'
+                AND column_name = 'password_hash'
+        )`).Scan(&corePresent, &releaseSchema)
 	if err != nil {
 		return false, false, errDatabaseUnavailable
 	}
-	return posts, jobs, nil
+	return corePresent, releaseSchema, nil
 }
 
 var errDatabaseUnavailable = errors.New("database is unavailable")

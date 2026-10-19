@@ -15,7 +15,7 @@ func TestValidPreflightOmitsSecrets(t *testing.T) {
 	if !report.OK || strings.Contains(text, secret) || strings.Contains(text, "postgres://") {
 		t.Fatalf("report leaked or failed: ok=%v\n%s", report.OK, text)
 	}
-	if !strings.Contains(text, "ok\tdatabase_connectivity\treachable") || !strings.Contains(text, "disabled\tffmpeg\t") {
+	if !strings.Contains(text, "ok\tdatabase_connectivity\treachable") || !strings.Contains(text, "ok\tmigrations\tschema matches this release") || !strings.Contains(text, "disabled\tffmpeg\t") {
 		t.Fatalf("report = %s", text)
 	}
 }
@@ -76,6 +76,48 @@ func TestOptionalFFmpegDisabledStillPasses(t *testing.T) {
 	}
 }
 
+func TestSchemaBehindReleaseIsNotSeeded(t *testing.T) {
+	probe := readyProbe("secret")
+	probe.Database = func(context.Context, string) (bool, bool, error) {
+		return true, false, nil
+	}
+	text := render(Evaluate(context.Background(), probe))
+	if !strings.Contains(text, "fail\tmigrations\tschema is behind this release") || strings.Contains(text, "ok\tmigrations") || strings.Contains(text, "secret") {
+		t.Fatalf("report = %s", text)
+	}
+}
+
+func TestMissingPythonFailsAndLeavesFFmpegOptional(t *testing.T) {
+	probe := readyProbe("secret")
+	probe.LookPath = func(name string) (string, error) {
+		if name == "python3" || name == "python" || name == "ffmpeg" {
+			return "", errors.New("missing")
+		}
+		return name, nil
+	}
+	report := Evaluate(context.Background(), probe)
+	if report.OK || !has(report, "backup_tools", "fail") || !has(report, "ffmpeg", "disabled") {
+		t.Fatalf("report = %+v", report.Checks)
+	}
+	if strings.Contains(render(report), "secret") {
+		t.Fatal("report leaked the database secret")
+	}
+}
+
+func TestOldPythonFailsWithoutToolOutput(t *testing.T) {
+	probe := readyProbe("secret")
+	probe.CommandOut = func(_ context.Context, name string, _ ...string) (string, error) {
+		if strings.Contains(strings.ToLower(name), "python") {
+			return "Python 3.8.2 postgres://kura:secret@127.0.0.1/db", nil
+		}
+		return "pg_dump (PostgreSQL) 16.11", nil
+	}
+	text := render(Evaluate(context.Background(), probe))
+	if !strings.Contains(text, "fail\tbackup_tools\tPython 3.9 or newer is required") || strings.Contains(text, "secret") || strings.Contains(text, "3.8") || strings.Contains(text, "postgres://") {
+		t.Fatalf("report = %s", text)
+	}
+}
+
 func TestUnmigratedDatabaseIsNotSeeded(t *testing.T) {
 	probe := readyProbe("secret")
 	probe.Database = func(context.Context, string) (bool, bool, error) {
@@ -96,7 +138,10 @@ func readyProbe(secret string) Probe {
 			}
 			return name, nil
 		},
-		CommandOut: func(context.Context, string, ...string) (string, error) {
+		CommandOut: func(_ context.Context, name string, _ ...string) (string, error) {
+			if strings.Contains(strings.ToLower(name), "python") {
+				return "Python 3.12.3", nil
+			}
 			return "pg_dump (PostgreSQL) 16.11", nil
 		},
 		Database: func(context.Context, string) (bool, bool, error) {

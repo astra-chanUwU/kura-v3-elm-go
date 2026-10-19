@@ -816,20 +816,42 @@ external = os.environ.get("KURA_ONLINE_BACKUP_EXTERNAL_LOCK") == "1"
 mod.run_online_backup(sys.argv[2], sys.argv[3], mod.open_postgres_snapshot(os.environ, external_lock=external))
 `
 
-func defaultBackupRun(ctx context.Context, env []string, mediaRoot, output string) error {
-	script := strings.TrimSpace(os.Getenv("KURA_ONLINE_BACKUP_SCRIPT"))
-	if script == "" {
-		for _, candidate := range []string{
-			filepath.Join("scripts", "online_backup_proof.py"),
-			filepath.Join("..", "scripts", "online_backup_proof.py"),
-		} {
-			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-				script = candidate
-				break
-			}
+func onlineBackupScript(executable, envValue string, stat func(string) (os.FileInfo, error)) (string, error) {
+	if stat == nil {
+		stat = os.Stat
+	}
+	if script := strings.TrimSpace(envValue); script != "" {
+		info, err := stat(script)
+		if err != nil || info == nil || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("backup tool is unavailable")
+		}
+		return script, nil
+	}
+	candidates := make([]string, 0, 4)
+	if strings.TrimSpace(executable) != "" {
+		dir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(dir, "..", "scripts", "online_backup_proof.py"),
+			filepath.Join(dir, "scripts", "online_backup_proof.py"),
+		)
+	}
+	candidates = append(candidates,
+		filepath.Join("scripts", "online_backup_proof.py"),
+		filepath.Join("..", "scripts", "online_backup_proof.py"),
+	)
+	for _, candidate := range candidates {
+		info, err := stat(candidate)
+		if err == nil && info != nil && info.Mode().IsRegular() {
+			return candidate, nil
 		}
 	}
-	if _, err := os.Stat(script); err != nil {
+	return "", fmt.Errorf("backup tool is unavailable")
+}
+
+func defaultBackupRun(ctx context.Context, env []string, mediaRoot, output string) error {
+	executable, _ := os.Executable()
+	script, err := onlineBackupScript(executable, os.Getenv("KURA_ONLINE_BACKUP_SCRIPT"), os.Stat)
+	if err != nil {
 		return fmt.Errorf("backup tool is unavailable")
 	}
 	python, err := findPython()
