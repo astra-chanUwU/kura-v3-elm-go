@@ -19,13 +19,18 @@ import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/auth"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/health"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/httpapi"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/httpserver"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/preflight"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "preflight" {
+		os.Exit(preflight.Run(os.Stdout, preflight.Probe{}))
+	}
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -159,7 +164,7 @@ func main() {
 		defer closeBackend()
 	}
 
-	server := &http.Server{Addr: addr, Handler: httpapi.NewRouterWithDependencies(apiToken, dependencies)}
+	server := httpserver.New(addr, httpapi.NewRouterWithDependencies(apiToken, dependencies))
 	go func() {
 		log.Printf("kura-server listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
