@@ -441,11 +441,19 @@ isBusy model =
 
 
 {-| Leave collection browsing without touching the collection list,
-selection, draft, notices, or removal markers.
+selection, draft, notices, or removal markers. The request generation
+moves forward so a page still in flight cannot land after the
+workspace has switched to search or another collection.
 -}
 abandonBrowse : Model -> Model
 abandonBrowse model =
-    { model | browse = Nothing, refresh = Nothing, cursor = Nothing, state = Idle }
+    { model
+        | browse = Nothing
+        , refresh = Nothing
+        , cursor = Nothing
+        , state = Idle
+        , requestId = model.requestId + 1
+    }
 
 
 {-| Credentials went away: notices, in-flight markers, and unconfirmed
@@ -651,7 +659,15 @@ update ctx msg model =
                         )
 
                     Err error ->
-                        ( { model | state = Failed (errorToString error), browse = Just collectionId }
+                        let
+                            message =
+                                browseFailureMessage error
+                        in
+                        ( { model
+                            | state = Failed message
+                            , status = Just message
+                            , browse = Just collectionId
+                          }
                         , Cmd.none
                         , []
                         )
@@ -1702,10 +1718,14 @@ refreshPageFailed ctx collectionId refresh error model =
             restartPrefixRefresh ctx collectionId refresh "The page cursor was invalid. Reloading…" model
 
         CollectionLogic.TransportError ->
+            let
+                message =
+                    browseFailureMessage error
+            in
             ( { model
-                | state = Failed (errorToString error)
+                | state = Failed message
                 , refresh = Nothing
-                , status = Just (errorToString error)
+                , status = Just message
               }
             , Cmd.none
             , []
@@ -1728,9 +1748,13 @@ appendFailed ctx collectionId error model =
                 { model | status = Just "The page cursor was invalid. Reloading…" }
 
         CollectionLogic.TransportError ->
+            let
+                message =
+                    browseFailureMessage error
+            in
             ( { model
-                | state = Failed (errorToString error)
-                , status = Just (errorToString error)
+                | state = Failed message
+                , status = Just message
               }
             , Cmd.none
             , []
@@ -1782,6 +1806,25 @@ refreshPageArrived ctx collectionId refresh response model =
         , summariesCmd
         , [ RefreshLoaded { sequence = next.fetched, nextCursor = next.cursor } ]
         )
+
+
+{-| A missing or forbidden collection is named in the workspace. Other
+transport failures keep the shared search wording.
+-}
+browseFailureMessage : Http.Error -> String
+browseFailureMessage error =
+    case error of
+        Http.BadStatus 404 ->
+            "This collection is missing or was deleted."
+
+        Http.BadStatus 403 ->
+            "You no longer have access to this collection."
+
+        Http.BadStatus 401 ->
+            "Sign in to open this collection."
+
+        _ ->
+            errorToString error
 
 
 {-| Transport failures reuse the workspace wording verbatim; the shared

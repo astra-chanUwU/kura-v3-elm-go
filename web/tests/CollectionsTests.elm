@@ -460,6 +460,52 @@ caseAbandonKeepsList =
         && Collections.activeId abandoned == Collections.activeId browsed
 
 
+caseAbandonDropsLatePage : Bool
+caseAbandonDropsLatePage =
+    let
+        abandoned =
+            Collections.abandonBrowse opened
+
+        ( settled, outs ) =
+            run (Collections.PostsCompleted (Collections.requestId opened) "c1" (Ok (page [ "p9" ] Nothing))) abandoned
+    in
+    Collections.requestId abandoned /= Collections.requestId opened
+        && outs == []
+        && settled == abandoned
+
+
+caseMissingCollection : Bool
+caseMissingCollection =
+    let
+        ( settled, outs ) =
+            run (Collections.PostsCompleted (Collections.requestId opened) "c1" (Err (Http.BadStatus 404))) opened
+    in
+    outs == []
+        && Collections.browse settled == Just "c1"
+        && Collections.state settled == Collections.Failed "This collection is missing or was deleted."
+        && Collections.status settled == Just "This collection is missing or was deleted."
+
+
+caseRevokedCollection : Bool
+caseRevokedCollection =
+    let
+        ( settled, _ ) =
+            run (Collections.PostsCompleted (Collections.requestId opened) "c1" (Err (Http.BadStatus 403))) opened
+    in
+    Collections.state settled == Collections.Failed "You no longer have access to this collection."
+        && Collections.status settled == Just "You no longer have access to this collection."
+
+
+caseSignedOutCollection : Bool
+caseSignedOutCollection =
+    let
+        ( settled, _ ) =
+            run (Collections.PostsCompleted (Collections.requestId opened) "c1" (Err (Http.BadStatus 401))) opened
+    in
+    Collections.state settled == Collections.Failed "Sign in to open this collection."
+        && Collections.browse settled == Just "c1"
+
+
 caseLockedKeepsBrowse : Bool
 caseLockedKeepsBrowse =
     let
@@ -556,6 +602,10 @@ suite =
     , ( "remove success clears the marker", caseRemoveSuccessClearsMarker )
     , ( "retry needs a browsed collection", caseRetryNeedsBrowse )
     , ( "abandon keeps the list", caseAbandonKeepsList )
+    , ( "abandon drops a late page", caseAbandonDropsLatePage )
+    , ( "missing collection stays browsable as an error", caseMissingCollection )
+    , ( "revoked collection names the denial", caseRevokedCollection )
+    , ( "signed-out collection asks for sign-in", caseSignedOutCollection )
     , ( "lock keeps browsing", caseLockedKeepsBrowse )
     , ( "draft edits clear the notice", caseDraftClearsNotice )
     , ( "select activates", caseSelectActivates )
