@@ -13,6 +13,7 @@ module Domain.Session exposing
     )
 
 import Json.Decode as Decode exposing (Decoder)
+import String
 
 
 type Role
@@ -37,6 +38,7 @@ type alias User =
     { id : String
     , handle : String
     , role : Role
+    , username : Maybe String
     }
 
 
@@ -116,10 +118,32 @@ invitationDecoder =
 
 userDecoder : Decoder User
 userDecoder =
-    Decode.map3 User
+    Decode.map4 User
         (Decode.field "id" idDecoder)
         (Decode.field "handle" Decode.string)
         (Decode.field "role" roleDecoder)
+        usernameDecoder
+
+
+usernameDecoder : Decoder (Maybe String)
+usernameDecoder =
+    Decode.oneOf
+        [ Decode.map presentUsername (Decode.field "username" Decode.string)
+        , Decode.succeed Nothing
+        ]
+
+
+presentUsername : String -> Maybe String
+presentUsername raw =
+    let
+        trimmed =
+            String.trim raw
+    in
+    if String.isEmpty trimmed then
+        Nothing
+
+    else
+        Just trimmed
 
 
 idDecoder : Decoder String

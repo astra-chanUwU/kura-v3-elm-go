@@ -53,7 +53,7 @@ caseSessionDecoder =
                 && session.canModerate
                 && session.isAdmin
                 && session.user
-                == Just { id = "12", handle = "owner", role = Administrator }
+                == Just { id = "12", handle = "owner", role = Administrator, username = Nothing }
 
         Err _ ->
             False
@@ -953,7 +953,7 @@ adminSession : Domain.Session
 adminSession =
     { privateMode = True
     , authenticated = True
-    , user = Just { id = "12", handle = "owner", role = Administrator }
+    , user = Just { id = "12", handle = "owner", role = Administrator, username = Nothing }
     , canRead = True
     , canWrite = True
     , canModerate = True
@@ -965,7 +965,7 @@ viewerSession : Domain.Session
 viewerSession =
     { privateMode = True
     , authenticated = True
-    , user = Just { id = "13", handle = "viewer", role = Viewer }
+    , user = Just { id = "13", handle = "viewer", role = Viewer, username = Nothing }
     , canRead = True
     , canWrite = False
     , canModerate = False

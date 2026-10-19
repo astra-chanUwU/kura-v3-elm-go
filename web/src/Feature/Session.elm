@@ -25,6 +25,7 @@ module Feature.Session exposing
 
 import Api.Error as ApiError
 import Api.Session as Api
+import Domain.Profile as Profile
 import Domain.Session as Domain exposing (Invitation, ManagedUser, Role(..), Session)
 import Html exposing (Html, a, button, details, div, form, h1, h2, input, label, li, option, p, section, select, span, summary, text, ul)
 import Browser.Dom as Dom
@@ -186,6 +187,7 @@ type Msg
     | PasswordChangeRequested
     | PasswordChangeCompleted Int Int (Result Http.Error Session)
     | AccessRevokedRequested
+    | OpenProfileRequested
     | UsersRequested
     | UsersLoaded Int Int (Result Http.Error (List ManagedUser))
     | CreateHandleChanged String
@@ -218,6 +220,7 @@ type OutMsg
     | AccessRevoked
     | Authenticated
     | AuthenticationRequired
+    | OpenProfile
 
 
 type AuthPage
@@ -416,6 +419,9 @@ update ctx msg rawModel =
             , Cmd.none
             , [ AccessRevoked, SessionChanged ]
             )
+
+        OpenProfileRequested ->
+            ( model, Cmd.none, [ OpenProfile ] )
 
         UsersRequested ->
             if not (isAdmin model) || model.usersBusy then
@@ -1312,6 +1318,28 @@ viewGate model =
                 ]
 
 
+profileLink : Domain.Session -> Html Msg
+profileLink session =
+    case session.user of
+        Just user ->
+            let
+                label =
+                    user.username |> Maybe.withDefault user.handle
+            in
+            div [ class "account-profile-link" ]
+                [ span [ class "account-avatar", attribute "aria-hidden" "true" ] [ text (Profile.initials label) ]
+                , case user.username of
+                    Just username ->
+                        a [ href ("/u/" ++ username) ] [ text "My profile" ]
+
+                    Nothing ->
+                        button [ class "button button-quiet", type_ "button", onClick OpenProfileRequested ] [ text "My profile" ]
+                ]
+
+        Nothing ->
+            text ""
+
+
 viewAccount : Context -> Model -> Html Msg
 viewAccount _ model =
     case model.session of
@@ -1326,7 +1354,8 @@ viewAccount _ model =
                                 |> Maybe.withDefault (text "")
                             ]
                         , div [ class "account-disclosure-body" ]
-                            [ passwordChangeControl model
+                            [ profileLink session
+                            , passwordChangeControl model
                             , button [ class "button button-quiet", type_ "button", disabled model.logoutBusy, onClick LogoutRequested ]
                                 [ text
                                     (if model.logoutBusy then

@@ -1,6 +1,6 @@
 module RouteTests exposing (allPassed, suite)
 
-import App.Route as Route exposing (CollectionRef(..), View(..), Workspace(..))
+import App.Route as Route exposing (CollectionRef(..), ProfileRef(..), View(..), Workspace(..))
 import Url
 
 
@@ -14,7 +14,7 @@ parse href =
             { query = "UNPARSED"
             , collection = RejectedCollection
             , post = Nothing
-            , view = GridView
+            , view = GridView, profile = NoProfile
             }
 
 
@@ -43,7 +43,7 @@ caseLoupeRoundTrip =
         route =
             parse "/?q=cats&post=7&view=loupe"
     in
-    route == { query = "cats", collection = NoCollection, post = Just "7", view = LoupeView }
+    route == { query = "cats", collection = NoCollection, post = Just "7", view = LoupeView, profile = NoProfile }
         && Route.toHref route == "/?q=cats&post=7&view=loupe"
 
 
@@ -79,7 +79,7 @@ caseCollectionLoupeRoundTrip =
         route =
             parse "/?collection=42&post=7&view=loupe"
     in
-    route == { query = "", collection = Collection "42", post = Just "7", view = LoupeView }
+    route == { query = "", collection = Collection "42", post = Just "7", view = LoupeView, profile = NoProfile }
         && Route.toHref route == "/?collection=42&post=7&view=loupe"
 
 
@@ -118,7 +118,7 @@ caseCollectionBounds =
     List.all accepts [ "1", "42", "9223372036854775807" ]
         && List.all rejects [ "0", "01", "-1", "%2B1", "1.5", "abc", "9223372036854775808", "10000000000000000000", "1e2" ]
         && Route.workspace (parse "/?collection=%2042%20") == CollectionWorkspace "42"
-        && Route.forCollection "42" == Just { query = "", collection = Collection "42", post = Nothing, view = GridView }
+        && Route.forCollection "42" == Just { query = "", collection = Collection "42", post = Nothing, view = GridView, profile = NoProfile }
         && Route.forCollection "01" == Nothing
 
 
@@ -126,12 +126,12 @@ caseSearchLeavesCollection : Bool
 caseSearchLeavesCollection =
     let
         collection =
-            { query = "", collection = Collection "42", post = Just "7", view = LoupeView }
+            { query = "", collection = Collection "42", post = Just "7", view = LoupeView, profile = NoProfile }
 
         search =
             Route.forSearch collection "cats"
     in
-    search == { query = "cats", collection = NoCollection, post = Just "7", view = LoupeView }
+    search == { query = "cats", collection = NoCollection, post = Just "7", view = LoupeView, profile = NoProfile }
         && Route.toHref search == "/?q=cats&post=7&view=loupe"
         && Route.workspace search == SearchWorkspace "cats"
 
@@ -150,8 +150,24 @@ caseDropsCursorTokenAndSelection =
 
 caseEmptyLibrary : Bool
 caseEmptyLibrary =
-    parse "/" == { query = "", collection = NoCollection, post = Nothing, view = GridView }
+    parse "/" == { query = "", collection = NoCollection, post = Nothing, view = GridView, profile = NoProfile }
         && Route.toHref (parse "/") == "/"
+
+
+caseProfileRoundTrip : Bool
+caseProfileRoundTrip =
+    let
+        route =
+            parse "/u/Ada_Lane"
+    in
+    route.profile == Profile "ada_lane"
+        && route.query == ""
+        && route.collection == NoCollection
+        && Route.toHref route == "/u/ada_lane"
+        && roundTrip "/u/Ada_Lane" == "/u/ada_lane"
+        && (parse "/u/a.b").profile == RejectedProfile
+        && (parse "/u/").profile == RejectedProfile
+        && (parse "/?q=cats").profile == NoProfile
 
 
 allPassed : Bool
@@ -173,4 +189,5 @@ suite =
     , ( "search leaves the collection", caseSearchLeavesCollection )
     , ( "url drops cursor token and selection", caseDropsCursorTokenAndSelection )
     , ( "empty library url", caseEmptyLibrary )
+    , ( "profile url round trip", caseProfileRoundTrip )
     ]

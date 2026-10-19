@@ -36,6 +36,17 @@
           try { localStorage.setItem("kura.prefs", JSON.stringify(prefs)); } catch (e) {}
         });
       }
+      if (app.ports && app.ports.profileDirty) {
+        app.ports.profileDirty.subscribe(function (dirty) {
+          window.__kuraProfileDirty = dirty === true;
+        });
+        window.addEventListener("beforeunload", function (event) {
+          if (window.__kuraProfileDirty) {
+            event.preventDefault();
+            event.returnValue = "";
+          }
+        });
+      }
     </script>
   </body>
 </html>

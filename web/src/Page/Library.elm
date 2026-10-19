@@ -30,6 +30,8 @@ import Feature.BulkMetadata as BulkMetadata
 import Feature.Duplicates as Duplicates
 import Feature.Moderation as Moderation
 import Feature.Health as Health
+import Feature.Profile as Profile
+import App.LeaveGuard as LeaveGuard
 import Feature.Recovery as Recovery
 import Feature.Session as Session
 import Feature.Similarity as Similarity
@@ -161,6 +163,8 @@ type alias Model =
     , detailEpoch : Int
     , exportMetadata : Bool
     , tagSuggestions : TagSuggestions.Model
+    , profile : Maybe Profile.Model
+    , leavePrompt : Maybe String
     }
 
 
@@ -270,6 +274,8 @@ init flagsValue url key =
             , detailEpoch = 0
             , exportMetadata = True
             , tagSuggestions = TagSuggestions.init
+            , profile = Nothing
+            , leavePrompt = Nothing
             }
     in
     let
@@ -306,31 +312,54 @@ init flagsValue url key =
             )
 
         Nothing ->
-            let
-                ( opened, openedCmd ) =
-                    case Route.workspace route of
-                        Route.CollectionWorkspace collectionId ->
-                            startCollection { configured | pendingRoute = Just route } collectionId
+            case Route.profileOf route of
+                Route.NoProfile ->
+                    let
+                        ( opened, openedCmd ) =
+                            case Route.workspace route of
+                                Route.CollectionWorkspace collectionId ->
+                                    startCollection { configured | pendingRoute = Just route, profile = Nothing } collectionId
 
-                        Route.InvalidCollection ->
-                            rejectCollectionLink configured
+                                Route.InvalidCollection ->
+                                    rejectCollectionLink { configured | profile = Nothing }
 
-                        Route.SearchWorkspace query ->
-                            startSearch { configured | pendingRoute = Just route } query
-            in
-            -- Collections and search are public reads. Saved searches are
-            -- owner-scoped, so their list waits for gate discovery.
-            ( opened
-            , Cmd.batch
-                [ openedCmd
-                , measureGrid 0
-                , Cmd.map SessionMsg sessionCmd
-                , Cmd.map SessionMsg routeCmd
-                , Cmd.map SessionMsg inviteCmd
-                , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
-                , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
-                ]
-            )
+                                Route.SearchWorkspace query ->
+                                    startSearch { configured | pendingRoute = Just route, profile = Nothing } query
+                    in
+                    ( opened
+                    , Cmd.batch
+                        [ openedCmd
+                        , measureGrid 0
+                        , Cmd.map SessionMsg sessionCmd
+                        , Cmd.map SessionMsg routeCmd
+                        , Cmd.map SessionMsg inviteCmd
+                        , Api.Collection.summaries flags.apiBase (CollectionsMsg << Collections.SummariesCompleted 0)
+                        , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
+                        , LeaveGuard.profileDirty False
+                        ]
+                    )
+
+                _ ->
+                    let
+                        ( profile, profileCmd ) =
+                            Profile.open flags.apiBase route
+
+                        canonical =
+                            profile
+                                |> Profile.pageHref
+                                |> Maybe.map (\href -> if url.path == href then Cmd.none else Nav.replaceUrl key href)
+                                |> Maybe.withDefault Cmd.none
+                    in
+                    ( { configured | profile = Just profile }
+                    , Cmd.batch
+                        [ Cmd.map ProfileMsg profileCmd
+                        , canonical
+                        , Cmd.map SessionMsg sessionCmd
+                        , Cmd.map SessionMsg routeCmd
+                        , Cmd.map SessionMsg inviteCmd
+                        , Api.Access.discover flags.apiBase (CapabilitiesReceived model.access.generation)
+                        ]
+                    )
 
 
 
@@ -370,6 +399,9 @@ type Command
 type Msg
     = UrlChanged Url
     | UrlRequested Browser.UrlRequest
+    | ConfirmLeave
+    | DismissLeave
+    | ProfileMsg Profile.Msg
     | DraftChanged String
     | SearchSubmitted
     | SearchMsg Search.Msg
@@ -531,7 +563,106 @@ safeInternalPath path =
         && not (String.startsWith "//" path)
         && not (String.contains "\\" path)
         && not (String.contains "#" path)
-        && (path == "/" || String.startsWith "/?" path)
+        && (path == "/" || String.startsWith "/?" path || isProfileReturn path)
+
+
+isProfileReturn : String -> Bool
+isProfileReturn path =
+    case Route.profileOf (Route.fromUrl { protocol = Url.Https, host = "kura.local", port_ = Nothing, path = path, query = Nothing, fragment = Nothing }) of
+        Route.Profile _ ->
+            True
+
+        _ ->
+            False
+
+
+followLibraryUrl : Route -> Model -> ( Model, Cmd Msg )
+followLibraryUrl route model =
+    let
+        own =
+            model.ownRoute == Just route
+
+        cleared =
+            invalidateSimilarityTrash { model | ownRoute = Nothing, authPage = Nothing, profile = Nothing, leavePrompt = Nothing }
+
+        ( authClosed, authCmd ) =
+            if model.authPage /= Nothing then
+                delegateSession (Session.AuthPageChanged Nothing) cleared
+
+            else
+                ( cleared, Cmd.none )
+
+        ( routed, routeCmd ) =
+            if routeChangesSource route authClosed || own then
+                followRoute route
+                    { authClosed
+                        | pendingRoute =
+                            if own then
+                                Nothing
+
+                            else
+                                Just route
+                    }
+
+            else if route == currentRoute authClosed then
+                ( authClosed, Cmd.none )
+
+            else
+                applyRoute route authClosed
+    in
+    ( routed, Cmd.batch [ authCmd, routeCmd, LeaveGuard.profileDirty False ] )
+
+
+enterProfileUrl : Url -> Route -> Model -> ( Model, Cmd Msg )
+enterProfileUrl url route model =
+    let
+        cleared =
+            { model | ownRoute = Nothing, authPage = Nothing, leavePrompt = Nothing }
+
+        ( authClosed, authCmd ) =
+            if model.authPage /= Nothing then
+                delegateSession (Session.AuthPageChanged Nothing) cleared
+
+            else
+                ( cleared, Cmd.none )
+
+        ( profile, profileCmd ) =
+            case authClosed.profile of
+                Just current ->
+                    Profile.retarget model.apiBase route current
+
+                Nothing ->
+                    Profile.open model.apiBase route
+
+        canonical =
+            profile
+                |> Profile.pageHref
+                |> Maybe.map (\href -> if url.path == href then Cmd.none else Nav.replaceUrl model.key href)
+                |> Maybe.withDefault Cmd.none
+    in
+    ( { authClosed | profile = Just profile }
+    , Cmd.batch [ authCmd, Cmd.map ProfileMsg profileCmd, canonical, LeaveGuard.profileDirty (Profile.isDirty profile) ]
+    )
+
+
+leavingDirtyProfile : Model -> Url -> Bool
+leavingDirtyProfile model url =
+    profileIsDirty model && (model.profile |> Maybe.andThen Profile.pageHref) /= Just url.path
+
+
+profileIsDirty : Model -> Bool
+profileIsDirty model =
+    model.profile |> Maybe.map Profile.isDirty |> Maybe.withDefault False
+
+
+applyProfileOuts : List Profile.OutMsg -> ( Model, Cmd Msg ) -> ( Model, Cmd Msg )
+applyProfileOuts outs ( model, cmd ) =
+    case outs of
+        [] ->
+            ( model, cmd )
+
+        Profile.NavigateTo href :: rest ->
+            applyProfileOuts rest ( model, Cmd.batch [ cmd, Nav.pushUrl model.key href ] )
 
 
 urlOrigin : Url -> String
@@ -678,10 +809,25 @@ updateHelp msg model =
         UrlRequested request ->
             case request of
                 Browser.Internal url ->
-                    ( model, Nav.pushUrl model.key (Url.toString url) )
+                    if leavingDirtyProfile model url then
+                        ( { model | leavePrompt = Just (Url.toString url) }, Cmd.none )
+
+                    else
+                        ( model, Nav.pushUrl model.key (Url.toString url) )
 
                 Browser.External href ->
                     ( model, Nav.load href )
+
+        ConfirmLeave ->
+            case model.leavePrompt of
+                Just href ->
+                    ( { model | leavePrompt = Nothing }, Nav.pushUrl model.key href )
+
+                Nothing ->
+                    ( model, Cmd.none )
+
+        DismissLeave ->
+            ( { model | leavePrompt = Nothing }, Cmd.none )
 
         UrlChanged url ->
             case authPageFromUrl url of
@@ -692,39 +838,28 @@ updateHelp msg model =
                     let
                         route =
                             Route.fromUrl url
+                    in
+                    case Route.profileOf route of
+                        Route.NoProfile ->
+                            followLibraryUrl route model
 
-                        own =
-                            model.ownRoute == Just route
+                        _ ->
+                            enterProfileUrl url route model
 
-                        cleared =
-                            invalidateSimilarityTrash { model | ownRoute = Nothing, authPage = Nothing }
-
-                        ( authClosed, authCmd ) =
-                            if model.authPage /= Nothing then
-                                delegateSession (Session.AuthPageChanged Nothing) cleared
-
-                            else
-                                ( cleared, Cmd.none )
+        ProfileMsg subMsg ->
+            case model.profile of
+                Just profile ->
+                    let
+                        ( next, cmd, outs ) =
+                            Profile.update model.apiBase (App.Access.canWrite model.access) subMsg profile
 
                         ( routed, routeCmd ) =
-                            if routeChangesSource route authClosed || own then
-                                followRoute route
-                                    { authClosed
-                                        | pendingRoute =
-                                            if own then
-                                                Nothing
-
-                                            else
-                                                Just route
-                                    }
-
-                            else if route == currentRoute authClosed then
-                                ( authClosed, Cmd.none )
-
-                            else
-                                applyRoute route authClosed
+                            applyProfileOuts outs ( { model | profile = Just next }, Cmd.map ProfileMsg cmd )
                     in
-                    ( routed, Cmd.batch [ authCmd, routeCmd ] )
+                    ( routed, Cmd.batch [ routeCmd, LeaveGuard.profileDirty (Profile.isDirty next) ] )
+
+                Nothing ->
+                    ( model, Cmd.none )
 
         DraftChanged draft ->
             ( { model | draftQuery = draft }, Cmd.none )
@@ -1927,11 +2062,18 @@ runQuery rawQuery model =
             String.trim rawQuery
 
         next =
-            Route.forSearch (currentRoute model) query
+            Route.forSearch (libraryRoute model) query
+
+        href =
+            Route.toHref next
     in
-    ( { model | ownRoute = Just next, draftQuery = query, routeNotice = Nothing }
-    , Nav.pushUrl model.key (Route.toHref next)
-    )
+    if profileIsDirty model then
+        ( { model | leavePrompt = Just href }, Cmd.none )
+
+    else
+        ( { model | ownRoute = Just next, draftQuery = query, routeNotice = Nothing, profile = Nothing }
+        , Nav.pushUrl model.key href
+        )
 
 
 {-| A collection click pushes one history entry. Opening the collection
@@ -1944,7 +2086,10 @@ openCollection collectionId model =
             ( { model | navigatorDrawer = False, routeNotice = Just "This link does not identify a collection." }, Cmd.none )
 
         Just next ->
-            if Collections.browse model.collections == Just collectionId then
+            if profileIsDirty model then
+                ( { model | leavePrompt = Just (Route.toHref next) }, Cmd.none )
+
+            else if Collections.browse model.collections == Just collectionId then
                 delegateCollections (Collections.OpenRequested collectionId)
                     { model | navigatorDrawer = False, draftQuery = "", routeNotice = Nothing }
 
@@ -2791,6 +2936,13 @@ applySessionOut out ( model, cmd ) =
         Session.AccessRevoked ->
             accessRevokedNow model |> withCmd cmd
 
+        Session.OpenProfile ->
+            let
+                ( profile, profileCmd ) =
+                    Profile.openOwn model.apiBase (Maybe.withDefault Profile.init model.profile)
+            in
+            ( { model | profile = Just profile }, Cmd.batch [ cmd, Cmd.map ProfileMsg profileCmd ] )
+
         Session.Authenticated ->
             ( { model | authPage = Nothing }
             , Cmd.batch [ cmd, Nav.load model.authReturnHref ]
@@ -2838,6 +2990,8 @@ accessRevokedNow model =
                 , duplicateTrash = Nothing
                 , tagManagement = TagManagement.locked model.tagManagement
                 , tagSuggestions = TagSuggestions.init
+                , profile = Nothing
+                , leavePrompt = Nothing
                 , details = Dict.empty
                 , sequence = Sequence.empty
                 , selection = Selection.empty
@@ -2848,7 +3002,7 @@ accessRevokedNow model =
                 , hint = Just "Your session expired. Sign in again to continue."
             }
     in
-    ( cleared, Cmd.batch [ ModerationPreview.releaseAll, Nav.reload ] )
+    ( cleared, Cmd.batch [ ModerationPreview.releaseAll, Nav.reload, LeaveGuard.profileDirty False ] )
 
 
 similarityContext : Model -> Similarity.Context
@@ -3451,6 +3605,7 @@ applyCollectionsOut out ( model, cmd ) =
                     , collection = NoCollection
                     , post = Nothing
                     , view = GridView
+                    , profile = Route.NoProfile
                     }
             in
             ( { model
@@ -3812,6 +3967,16 @@ applyRoute route model =
 
 currentRoute : Model -> Route
 currentRoute model =
+    case model.profile |> Maybe.andThen Profile.route of
+        Just route ->
+            route
+
+        Nothing ->
+            libraryRoute model
+
+
+libraryRoute : Model -> Route
+libraryRoute model =
     let
         collection =
             case Collections.browse model.collections of
@@ -3836,10 +4001,10 @@ currentRoute model =
     in
     case ( model.mode, model.selection.active ) of
         ( Loupe, Just postId ) ->
-            { query = query, collection = collection, post = Just postId, view = LoupeView }
+            { query = query, collection = collection, post = Just postId, view = LoupeView, profile = Route.NoProfile }
 
         _ ->
-            { query = query, collection = collection, post = Nothing, view = GridView }
+            { query = query, collection = collection, post = Nothing, view = GridView, profile = Route.NoProfile }
 
 
 remember : String -> List String -> List String
@@ -4895,7 +5060,14 @@ httpErrorToString error =
 
 commandFor : Model -> KeyEvent -> Maybe Command
 commandFor model event =
-    if model.shortcutsOpen then
+    if model.profile /= Nothing && not model.shortcutsOpen then
+        if event.target == Editable && event.key == "Escape" then
+            Just EscapeField
+
+        else
+            Nothing
+
+    else if model.shortcutsOpen then
         if event.key == "Escape" || event.key == "?" then
             Just CloseShortcuts
 
@@ -5171,21 +5343,26 @@ authShell model page =
 
 documentTitle : Model -> String
 documentTitle model =
-    case Collections.activeName model.collections of
-        Just name ->
-            name ++ " · Kura"
+    case model.profile of
+        Just _ ->
+            model.profile |> Maybe.map Profile.title |> Maybe.withDefault "Kura"
 
         Nothing ->
-            if String.trim (Search.query model.search) == "" then
-                "Kura"
+            case Collections.activeName model.collections of
+                Just name ->
+                    name ++ " · Kura"
 
-            else
-                case ( model.mode, model.selection.active ) of
-                    ( Loupe, Just postId ) ->
-                        "#" ++ postId ++ " · " ++ Search.query model.search ++ " · Kura"
+                Nothing ->
+                    if String.trim (Search.query model.search) == "" then
+                        "Kura"
 
-                    _ ->
-                        Search.query model.search ++ " · Kura"
+                    else
+                        case ( model.mode, model.selection.active ) of
+                            ( Loupe, Just postId ) ->
+                                "#" ++ postId ++ " · " ++ Search.query model.search ++ " · Kura"
+
+                            _ ->
+                                Search.query model.search ++ " · Kura"
 
 
 sessionGateView : Model -> Html Msg
@@ -5235,8 +5412,22 @@ shell model =
 
           else
             div [ class "kura-body" ]
-            [ navigatorView model
-            , div [ class "workspace" ]
+            [ if model.profile /= Nothing then
+                div [ class "workspace profile-workspace" ]
+                    [ case model.profile of
+                        Just profile ->
+                            Html.map ProfileMsg (Profile.view (App.Access.canWrite model.access) profile)
+
+                        Nothing ->
+                            text ""
+                    , leavePromptView model
+                    ]
+
+              else
+                text ""
+            , if model.profile == Nothing then navigatorView model else text ""
+            , if model.profile == Nothing then
+                div [ class "workspace" ]
                 [ if model.prefs.filterBar && model.mode == Grid then
                     QueryEditor.filterBar
                         { query = if Collections.browse model.collections == Nothing then Search.query model.search else ""
@@ -5254,17 +5445,37 @@ shell model =
                 , libraryTools model
                 , stage model
                 ]
-            , inspectorView model
-            , Html.map UploadMsg (UploadQueue.view (App.Access.canWrite model.access) model.upload)
-            , Html.map ImportMsg (BrowserImport.view (App.Access.canWrite model.access) (Collections.items model.collections) model.browserImport)
+              else
+                text ""
+            , if model.profile == Nothing then inspectorView model else text ""
+            , if model.profile == Nothing then Html.map UploadMsg (UploadQueue.view (App.Access.canWrite model.access) model.upload) else text ""
+            , if model.profile == Nothing then Html.map ImportMsg (BrowserImport.view (App.Access.canWrite model.access) (Collections.items model.collections) model.browserImport) else text ""
             ]
-        , statusBar model
+        , if model.profile == Nothing then
+            statusBar model
+
+          else
+            text ""
         , if model.shortcutsOpen then
             Shortcuts.view (KeyCommand CloseShortcuts)
 
           else
             text ""
         ]
+
+
+leavePromptView : Model -> Html Msg
+leavePromptView model =
+    case model.leavePrompt of
+        Nothing ->
+            text ""
+
+        Just _ ->
+            div [ class "profile-leave", attribute "role" "dialog" ]
+                [ p [] [ text "Discard unsaved profile changes?" ]
+                , button [ class "button", type_ "button", onClick ConfirmLeave ] [ text "Discard" ]
+                , button [ class "button button-quiet", type_ "button", onClick DismissLeave ] [ text "Keep editing" ]
+                ]
 
 
 topBar : Model -> Html Msg
@@ -5281,13 +5492,21 @@ topBar model =
                 ]
                 [ Ui.Icon.view "shelf", text "Kura" ]
             ]
-        , QueryEditor.field { draft = model.draftQuery, onInput = DraftChanged, onSubmit = SearchSubmitted }
-        , div [ class "mode-switch", attribute "role" "group", attribute "aria-label" "View mode" ]
-            [ modeButton model "Grid" "G" BackToGrid (model.mode == Grid)
-            , modeButton model "Loupe" "E" OpenLoupe (model.mode == Loupe)
-            , modeButton model "Compare" "C" OpenCompare (isCompare model.mode)
-            , modeButton model "Survey" "N" OpenSurvey (isSurvey model.mode)
-            ]
+        , if model.profile == Nothing then
+            QueryEditor.field { draft = model.draftQuery, onInput = DraftChanged, onSubmit = SearchSubmitted }
+
+          else
+            text ""
+        , if model.profile == Nothing then
+            div [ class "mode-switch", attribute "role" "group", attribute "aria-label" "View mode" ]
+                [ modeButton model "Grid" "G" BackToGrid (model.mode == Grid)
+                , modeButton model "Loupe" "E" OpenLoupe (model.mode == Loupe)
+                , modeButton model "Compare" "C" OpenCompare (isCompare model.mode)
+                , modeButton model "Survey" "N" OpenSurvey (isSurvey model.mode)
+                ]
+
+          else
+            text ""
         , div [ class "topbar-actions" ]
             [ uploadButton model
             , importButton model

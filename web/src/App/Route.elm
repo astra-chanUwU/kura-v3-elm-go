@@ -1,11 +1,14 @@
 module App.Route exposing
     ( CollectionRef(..)
+    , ProfileRef(..)
     , Route
     , View(..)
     , Workspace(..)
     , forCollection
+    , forProfile
     , forSearch
     , fromUrl
+    , profileOf
     , toHref
     , workspace
     )
@@ -44,7 +47,17 @@ type alias Route =
     , collection : CollectionRef
     , post : Maybe String
     , view : View
+    , profile : ProfileRef
     }
+
+
+{-| Public profile identity. `RejectedProfile` is a `/u/…` path that is
+not a username, so it does not fall through to the library.
+-}
+type ProfileRef
+    = NoProfile
+    | Profile String
+    | RejectedProfile
 
 
 {-| Which result set the route identifies. Collection wins over `q`.
@@ -73,7 +86,7 @@ collection. Submitting a search leaves the collection workspace.
 -}
 forSearch : Route -> String -> Route
 forSearch route query =
-    { route | query = query, collection = NoCollection }
+    { route | query = query, collection = NoCollection, profile = NoProfile }
 
 
 {-| Grid route for one validated collection. `Nothing` when the id is
@@ -88,66 +101,145 @@ forCollection raw =
                 , collection = Collection id
                 , post = Nothing
                 , view = GridView
+                , profile = NoProfile
                 }
 
         Nothing ->
             Nothing
 
 
+{-| Grid route for one public profile. The username is stored lowercase. -}
+forProfile : String -> Route
+forProfile name =
+    { query = ""
+    , collection = NoCollection
+    , post = Nothing
+    , view = GridView
+    , profile = Profile (String.toLower name)
+    }
+
+
+profileOf : Route -> ProfileRef
+profileOf route =
+    route.profile
+
+
 fromUrl : Url -> Route
 fromUrl url =
-    let
-        params =
-            url.query |> Maybe.map parseParams |> Maybe.withDefault []
+    case profileFromPath url.path of
+        Just ref ->
+            { query = ""
+            , collection = NoCollection
+            , post = Nothing
+            , view = GridView
+            , profile = ref
+            }
 
-        param name =
-            params
-                |> List.filter (\( key, _ ) -> key == name)
-                |> List.head
-                |> Maybe.map Tuple.second
+        Nothing ->
+            let
+                params =
+                    url.query |> Maybe.map parseParams |> Maybe.withDefault []
 
-        post =
-            param "post" |> Maybe.map String.trim |> Maybe.andThen nonEmpty
-    in
-    { query = param "q" |> Maybe.withDefault ""
-    , collection = collectionFrom param
-    , post = post
-    , view =
-        if param "view" == Just "loupe" && post /= Nothing then
-            LoupeView
+                param name =
+                    params
+                        |> List.filter (\( key, _ ) -> key == name)
+                        |> List.head
+                        |> Maybe.map Tuple.second
 
-        else
-            GridView
-    }
+                post =
+                    param "post" |> Maybe.map String.trim |> Maybe.andThen nonEmpty
+            in
+            { query = param "q" |> Maybe.withDefault ""
+            , collection = collectionFrom param
+            , post = post
+            , view =
+                if param "view" == Just "loupe" && post /= Nothing then
+                    LoupeView
+
+                else
+                    GridView
+            , profile = NoProfile
+            }
 
 
 toHref : Route -> String
 toHref route =
-    let
-        source =
-            case route.collection of
-                Collection id ->
-                    [ Url.Builder.string "collection" id ]
+    case route.profile of
+        Profile name ->
+            Url.Builder.absolute [ "u", name ] []
 
-                RejectedCollection ->
-                    []
+        RejectedProfile ->
+            "/u"
 
-                NoCollection ->
-                    if String.trim route.query == "" then
-                        []
+        NoProfile ->
+            let
+                source =
+                    case route.collection of
+                        Collection id ->
+                            [ Url.Builder.string "collection" id ]
 
-                    else
-                        [ Url.Builder.string "q" route.query ]
+                        RejectedCollection ->
+                            []
 
-        loupe =
-            case ( route.view, route.post ) of
-                ( LoupeView, Just post ) ->
-                    [ Url.Builder.string "post" post, Url.Builder.string "view" "loupe" ]
+                        NoCollection ->
+                            if String.trim route.query == "" then
+                                []
 
-                _ ->
-                    []
-    in
-    Url.Builder.absolute [] (source ++ loupe)
+                            else
+                                [ Url.Builder.string "q" route.query ]
+
+                loupe =
+                    case ( route.view, route.post ) of
+                        ( LoupeView, Just post ) ->
+                            [ Url.Builder.string "post" post, Url.Builder.string "view" "loupe" ]
+
+                        _ ->
+                            []
+            in
+            Url.Builder.absolute [] (source ++ loupe)
+
+
+profileFromPath : String -> Maybe ProfileRef
+profileFromPath path =
+    if path == "/u" || path == "/u/" then
+        Just RejectedProfile
+
+    else
+        case String.split "/" path of
+            "" :: "u" :: segment :: rest ->
+                if rest /= [] || String.isEmpty segment then
+                    Just RejectedProfile
+
+                else if validProfileSegment segment then
+                    Just (Profile (String.toLower segment))
+
+                else
+                    Just RejectedProfile
+
+            _ ->
+                Nothing
+
+
+validProfileSegment : String -> Bool
+validProfileSegment raw =
+    if String.isEmpty raw || String.length raw > 32 || String.contains "." raw then
+        False
+
+    else
+        case String.uncons raw of
+            Nothing ->
+                False
+
+            Just ( first, rest ) ->
+                isProfileAlnum first
+                    && String.all (\char -> isProfileAlnum char || char == '_' || char == '-') rest
+
+
+isProfileAlnum : Char -> Bool
+isProfileAlnum char =
+    (char >= 'a' && char <= 'z')
+        || (char >= 'A' && char <= 'Z')
+        || (char >= '0' && char <= '9')
 
 
 collectionFrom : (String -> Maybe String) -> CollectionRef
