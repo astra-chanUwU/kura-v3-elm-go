@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/httpserver"
 )
 
 const (
@@ -29,10 +31,10 @@ func main() {
 	server := &http.Server{
 		Addr:              webAddress,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       2 * time.Minute,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+		ReadHeaderTimeout: httpserver.ReadHeaderTimeout,
+		ReadTimeout:       httpserver.ReadTimeout,
+		IdleTimeout:       httpserver.IdleTimeout,
+		MaxHeaderBytes:    httpserver.MaxHeaderBytes,
 	}
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)

@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: server-build server-run server-check server-db-check server-race cli-check cli-race web-build web-test web-import-check web-serve db-migrate db-seed db-setup build check script-check library-drill
+.PHONY: server-build server-run server-check server-db-check server-race cli-check cli-race web-build web-test web-import-check web-serve db-migrate db-seed db-setup build check script-check library-drill package
 
 server-build:
 	go -C server build ./...
@@ -63,3 +63,6 @@ library-drill:
 	python3 -m unittest discover -s scripts -p '*integration.py' -v
 
 check: server-build server-check cli-check web-build web-test script-check
+
+package:
+	sh scripts/package-release.sh
