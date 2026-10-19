@@ -14,6 +14,7 @@ type Target
     | CloseDuplicates
     | CloseSimilarity
     | CloseModeration
+    | CloseHealth
     | CloseRecovery
     | CloseDrawers
     | ExitMode
@@ -26,6 +27,7 @@ type alias Open =
     , duplicates : Bool
     , similarity : Bool
     , moderation : Bool
+    , health : Bool
     , recovery : Bool
     , drawers : Bool
     , grid : Bool
@@ -48,6 +50,9 @@ next open =
 
     else if open.moderation then
         CloseModeration
+
+    else if open.health then
+        CloseHealth
 
     else if open.recovery then
         CloseRecovery
