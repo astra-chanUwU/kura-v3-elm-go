@@ -13,14 +13,14 @@ func TestAuthenticationRoutesKeepStaticAllowlistClosed(t *testing.T) {
 	writeFixture(t, root, "static/brand/private.png", "not public")
 	writeFixture(t, root, "static/media/private.png", "private media")
 	handler := restrictedStaticHandler(root)
-	for _, target := range []string{"/sign-in", "/sign-up", "/trouble"} {
+	for _, target := range []string{"/sign-in", "/sign-up", "/trouble", "/u/Ada", "/u/ada_1", "/u/a-b"} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 		if rec.Code != http.StatusOK || rec.Body.String() != "Kura authentication shell" {
 			t.Fatalf("auth route %s = %d %q", target, rec.Code, rec.Body.String())
 		}
 	}
-	for _, target := range []string{"/static/brand/auth-observatory.png", "/static/brand/private.png", "/static/brand/../media/private.png", "/sign-up/not-a-route"} {
+	for _, target := range []string{"/static/brand/auth-observatory.png", "/static/brand/private.png", "/static/brand/../media/private.png", "/sign-up/not-a-route", "/u", "/u/", "/u/a/b", "/u/a.b", "/u/_hidden", "/static/avatars/a.jpg"} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 		want := http.StatusNotFound

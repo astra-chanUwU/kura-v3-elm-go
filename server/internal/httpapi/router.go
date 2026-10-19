@@ -53,6 +53,19 @@ func isSelfServicePasswordPath(path string) bool {
 	return path == "/api/auth/password"
 }
 
+// isSelfProfileMutation is the viewer's own profile editor. It is not a
+// library write: collection creation stays behind the write capability.
+func isSelfProfileMutation(method, path string) bool {
+	switch path {
+	case "/api/profile":
+		return method == http.MethodPatch
+	case "/api/profile/avatar":
+		return method == http.MethodPost || method == http.MethodDelete
+	default:
+		return false
+	}
+}
+
 // accessMiddleware picks the root actor middleware. Private mode replaces
 // the legacy write gate with PrivateAccess; off mode keeps the legacy gate
 // and layers SessionContext inside it so a resolved session actor is never
@@ -73,7 +86,7 @@ func accessMiddleware(apiToken string, accounts *AccountsConfig) func(http.Handl
 			// Login stays public. Password change is authenticated, but it
 			// must not require the deployment write token: viewers change
 			// their own password with the session cookie alone.
-			if accounts != nil && accounts.Service != nil && (isAuthPublicPath(r.URL.Path) || isSelfServicePasswordPath(r.URL.Path)) {
+			if accounts != nil && accounts.Service != nil && (isAuthPublicPath(r.URL.Path) || isSelfServicePasswordPath(r.URL.Path) || isSelfProfileMutation(r.Method, r.URL.Path)) {
 				inner.ServeHTTP(w, r)
 				return
 			}
@@ -156,6 +169,19 @@ func NewRouterWithDependencies(apiToken string, deps Dependencies) http.Handler 
 		api.Post("/saved-searches", createSavedSearch(deps.SavedSearches))
 		api.Patch("/saved-searches/{id}", updateSavedSearch(deps.SavedSearches))
 		api.Delete("/saved-searches/{id}", deleteSavedSearch(deps.SavedSearches))
+
+		// Public profiles. Self edits are /api/profile so a username of "me"
+		// cannot shadow them. Avatar bytes stay on the API, not under web/static.
+		if deps.Profiles != nil {
+			api.Get("/profile", getOwnProfile(deps.Profiles))
+			api.Patch("/profile", patchOwnProfile(deps.Profiles))
+			api.Post("/profile/avatar", postProfileAvatar(deps.Profiles))
+			api.Delete("/profile/avatar", deleteProfileAvatar(deps.Profiles))
+			api.Get("/profiles/{username}/lists", listProfileLists(deps.Profiles, deps.ProfileLists))
+			api.Get("/profiles/{username}/avatar", getProfileAvatar(deps.Profiles))
+			api.Head("/profiles/{username}/avatar", getProfileAvatar(deps.Profiles))
+			api.Get("/profiles/{username}", getProfile(deps.Profiles))
+		}
 
 		// Ordered collections (collections.go).
 		api.Get("/collections", listCollections(deps.Collections))

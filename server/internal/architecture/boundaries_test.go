@@ -28,7 +28,7 @@ func TestBackendImportBoundaries(t *testing.T) {
 		},
 		{
 			name:        "domain packages do not depend on chi or httpapi",
-			directories: []string{"posts", "auth", "jobs", "media"},
+			directories: []string{"posts", "auth", "jobs", "media", "profiles"},
 			forbidden: func(path string) bool {
 				return hasImportPrefix(path, "github.com/go-chi/chi") || hasImportPrefix(path, modulePath+"/internal/httpapi")
 			},

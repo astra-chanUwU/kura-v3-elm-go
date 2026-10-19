@@ -5,6 +5,7 @@ import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/profiles"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
 
@@ -48,6 +49,11 @@ type Dependencies struct {
 	Accounts      *AccountsConfig
 	Recovery      *recovery.Service
 	LibraryHealth *libhealth.Service
+	// Profiles serves public account pages. Nil leaves those routes unregistered.
+	Profiles *profiles.Service
+	// ProfileLists lists collections created by one account. It does not
+	// infer an owner from the signed-in viewer.
+	ProfileLists posts.ProfileListReader
 }
 
 // legacyDependencies preserves the historical Searcher-based constructors.

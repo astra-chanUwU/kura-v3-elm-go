@@ -519,6 +519,29 @@ func TestMoveCollectionPostPresence(t *testing.T) {
 	}
 }
 
+func TestCreateCollectionStampsAuthenticatedAccount(t *testing.T) {
+	fake := &fakeCollections{}
+	handler := createCollection(fake)
+	request := withActor(httptest.NewRequest(http.MethodPost, "/api/collections", bytes.NewBufferString(`{"name":"Mine"}`)), Actor{ID: "user:9", UserID: 9})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || fake.created.CreatedBy == nil || *fake.created.CreatedBy != 9 || fake.created.Name != "Mine" {
+		t.Fatalf("stamped create status=%d request=%#v", response.Code, fake.created)
+	}
+	request = withActor(httptest.NewRequest(http.MethodPost, "/api/collections", bytes.NewBufferString(`{"name":"Shared"}`)), Actor{ID: "local"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || fake.created.CreatedBy != nil {
+		t.Fatalf("legacy create request=%#v", fake.created)
+	}
+	request = withActor(httptest.NewRequest(http.MethodPost, "/api/collections", bytes.NewBufferString(`{"name":"Mine","created_by":1}`)), Actor{ID: "user:9", UserID: 9})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("client owner status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestMoveCollectionPostRequiresWriteCapability(t *testing.T) {
 	fake := &fakeCollections{}
 	router := NewRouterWithToken("move-token", fake)

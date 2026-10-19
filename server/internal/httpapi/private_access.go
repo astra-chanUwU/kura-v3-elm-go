@@ -218,6 +218,10 @@ func (cfg AccessConfig) Wrap(next http.Handler) http.Handler {
 			// Any signed-in role may change its own password. Viewers do
 			// not have write capability; the handler accepts only the
 			// cookie session's account.
+		case isSelfProfileMutation(r.Method, r.URL.Path):
+			// Any signed-in role may edit its own profile. The handler
+			// uses the session user id and never a client-supplied owner.
+			// This does not grant collection or library writes.
 		case isAccountAdminPath(r.URL.Path):
 			if !auth.HasAdminCapability(actor) {
 				writeJSONError(w, http.StatusForbidden, "admin capability required")

@@ -78,6 +78,16 @@ func TestPrivateModeBoundariesAndCSRF(t *testing.T) {
 	if rec := serve(req); rec.Code != http.StatusOK {
 		t.Fatalf("viewer password change status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	req = cookieReq(t, stub, acfg, "viewer", "viewer-password-1", http.MethodPatch, "/api/profile")
+	req.Header.Set("Origin", "https://kura.example")
+	if rec := serve(req); rec.Code != http.StatusOK || rec.Header().Get("X-Actor") != "user:3" {
+		t.Fatalf("viewer profile edit status=%d actor=%q", rec.Code, rec.Header().Get("X-Actor"))
+	}
+	req = cookieReq(t, stub, acfg, "viewer", "viewer-password-1", http.MethodPost, "/api/collections")
+	req.Header.Set("Origin", "https://kura.example")
+	if rec := serve(req); rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer profile edit granted library write status=%d", rec.Code)
+	}
 	if rec := serve(httptest.NewRequest(http.MethodPost, "/api/auth/password", strings.NewReader(`{}`))); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous password change status=%d", rec.Code)
 	}

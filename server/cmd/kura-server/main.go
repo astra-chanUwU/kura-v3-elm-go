@@ -22,6 +22,7 @@ import (
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/jobs"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/media"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/posts"
+	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/profiles"
 	"github.com/astra-chanUwU/kura-v3-elm-go/server/internal/recovery"
 )
 
@@ -79,6 +80,8 @@ func main() {
 				}
 			}
 			accountsCfg := httpapi.NewAccountsConfig(auth.NewService(pgBackend.AccountStore()))
+			profileStore := profiles.NewPostgresStore(pgBackend.Pool())
+			accountsCfg.ProfileNames = profileStore
 			accountsCfg.PrivateMode = privateMode
 			accountsCfg.DeploymentToken = strings.TrimSpace(apiToken)
 			accountsCfg.AllowHTTPLocal = allowHTTPLocal
@@ -117,6 +120,8 @@ func main() {
 				Accounts:            &accountsCfg,
 				Recovery:            dependencies.Recovery,
 				LibraryHealth:       libraryHealth(pgBackend, dependencies.Recovery),
+				Profiles:            profiles.NewService(profileStore, pgBackend.MediaStore()),
+				ProfileLists:        pgBackend,
 			}
 			closeBackend = pgBackend.Close
 			// One shared pool: the backend owns it, and the job store

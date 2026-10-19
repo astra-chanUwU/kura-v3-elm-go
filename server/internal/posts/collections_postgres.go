@@ -3,6 +3,7 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 
@@ -155,8 +156,15 @@ func (s *PostgresBackend) CreateCollection(ctx context.Context, request CreateCo
 	if err != nil {
 		return Collection{}, err
 	}
+	var owner any
+	if validated.CreatedBy != nil {
+		if *validated.CreatedBy <= 0 {
+			return Collection{}, fmt.Errorf("%w: owner is not an account", ErrInvalidCollections)
+		}
+		owner = *validated.CreatedBy
+	}
 	var collection Collection
-	err = s.pool.QueryRow(ctx, insertCollectionSQL, validated.Name).Scan(&collection.ID, &collection.Name, &collection.Version)
+	err = s.pool.QueryRow(ctx, insertCollectionSQL, validated.Name, owner).Scan(&collection.ID, &collection.Name, &collection.Version)
 	if err != nil {
 		return Collection{}, err
 	}

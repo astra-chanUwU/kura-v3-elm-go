@@ -21,6 +21,10 @@ type Collection struct {
 
 type CreateCollectionRequest struct {
 	Name string `json:"name"`
+	// CreatedBy is the authenticated account's users.id. It is not part of
+	// the JSON body; the HTTP layer sets it from the actor. Nil keeps a
+	// legacy or shared list with no owner. Ordinary edits do not change it.
+	CreatedBy *int64 `json:"-"`
 }
 
 type AddCollectionPostsRequest struct {
@@ -116,7 +120,7 @@ func ValidateCreateCollection(request CreateCollectionRequest) (CreateCollection
 	if name == "" || len([]rune(name)) > maxCollectionNameLength {
 		return CreateCollectionRequest{}, fmt.Errorf("%w: name must contain 1 to %d characters", ErrInvalidCollections, maxCollectionNameLength)
 	}
-	return CreateCollectionRequest{Name: name}, nil
+	return CreateCollectionRequest{Name: name, CreatedBy: request.CreatedBy}, nil
 }
 
 func ValidateAddCollectionPosts(request AddCollectionPostsRequest) (AddCollectionPostsRequest, error) {

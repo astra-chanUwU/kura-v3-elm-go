@@ -139,6 +139,9 @@ func allowedStaticFile(cleaned string) (string, bool) {
 	case "/dist/elm.js":
 		return "dist/elm.js", true
 	}
+	if rest, ok := strings.CutPrefix(cleaned, "/u/"); ok && profilePathSegment(rest) {
+		return "index.html", true
+	}
 	if rest, ok := strings.CutPrefix(cleaned, "/static/icons/"); ok {
 		if rest == "" || strings.Contains(rest, "/") || strings.HasPrefix(rest, ".") || !strings.HasSuffix(rest, ".svg") {
 			return "", false
@@ -159,6 +162,25 @@ func allowedStaticFile(cleaned string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// profilePathSegment is the static-server half of a public username: one
+// path segment, no dots or slashes, so /u/../media cannot escape the shell.
+func profilePathSegment(raw string) bool {
+	if raw == "" || len(raw) > 32 || strings.Contains(raw, "/") || strings.Contains(raw, "\\") || strings.Contains(raw, ".") {
+		return false
+	}
+	for i, r := range raw {
+		alnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		extra := r == '_' || r == '-'
+		if i == 0 && !alnum {
+			return false
+		}
+		if !alnum && !extra {
+			return false
+		}
+	}
+	return true
 }
 
 func isAPIProxyPath(path string) bool {

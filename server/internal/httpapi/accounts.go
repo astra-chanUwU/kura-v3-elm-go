@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ type AccountsConfig struct {
 	TrustedOrigin   string
 	CookieName      string
 	Limiter         *LoginLimiter
+	ProfileNames    ProfileNamer
 }
 
 // NewAccountsConfig returns a config with secure defaults over service.
@@ -77,9 +79,16 @@ func setNoStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-sto
 // --- session discovery shape (frozen) ---
 
 type sessionUserJSON struct {
-	ID     int64  `json:"id"`
-	Handle string `json:"handle"`
-	Role   string `json:"role"`
+	ID       int64  `json:"id"`
+	Handle   string `json:"handle"`
+	Role     string `json:"role"`
+	Username string `json:"username,omitempty"`
+}
+
+// ProfileNamer reads the public username for a session menu link. Login
+// still uses the handle. A nil namer leaves the session document unchanged.
+type ProfileNamer interface {
+	Username(ctx context.Context, userID int64) (string, bool, error)
 }
 
 type sessionResponse struct {
@@ -102,6 +111,16 @@ func sessionFor(cfg AccountsConfig, actor auth.Actor, user auth.User, source str
 		CanModerate: auth.HasModerateCapability(actor), IsAdmin: auth.HasAdminCapability(actor)}
 	if source == "cookie" && user.ID > 0 {
 		resp.User = &sessionUserJSON{ID: user.ID, Handle: user.Handle, Role: user.Role}
+	}
+	return resp
+}
+
+func (cfg AccountsConfig) sessionDocument(ctx context.Context, actor auth.Actor, user auth.User, source string) sessionResponse {
+	resp := sessionFor(cfg, actor, user, source)
+	if resp.User != nil && cfg.ProfileNames != nil && user.ID > 0 {
+		if name, ok, err := cfg.ProfileNames.Username(ctx, user.ID); err == nil && ok && name != "" {
+			resp.User.Username = name
+		}
 	}
 	return resp
 }
@@ -133,7 +152,7 @@ func SessionHandler(cfg AccountsConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setNoStore(w)
 		if actor, user, source, ok := cfg.resolveForHandlers(r); ok {
-			writeJSON(w, http.StatusOK, sessionFor(cfg, actor, user, source))
+			writeJSON(w, http.StatusOK, cfg.sessionDocument(r.Context(), actor, user, source))
 			return
 		}
 		writeJSON(w, http.StatusOK, anonymousSession(cfg.PrivateMode))
@@ -313,7 +332,7 @@ func LoginHandler(cfg AccountsConfig) http.HandlerFunc {
 			return
 		}
 		cfg.setSessionCookie(w, r, result.RawToken, result.ExpiresAt)
-		writeJSON(w, http.StatusOK, sessionFor(cfg, result.Actor, result.User, "cookie"))
+		writeJSON(w, http.StatusOK, cfg.sessionDocument(r.Context(), result.Actor, result.User, "cookie"))
 	}
 }
 

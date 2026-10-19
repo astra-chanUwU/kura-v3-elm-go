@@ -236,6 +236,6 @@ func RegisterInvitationHandler(cfg AccountsConfig) http.HandlerFunc {
 			return
 		}
 		cfg.setSessionCookie(w, r, result.RawToken, result.ExpiresAt)
-		writeJSON(w, http.StatusCreated, sessionFor(cfg, result.Actor, result.User, "cookie"))
+		writeJSON(w, http.StatusCreated, cfg.sessionDocument(r.Context(), result.Actor, result.User, "cookie"))
 	}
 }

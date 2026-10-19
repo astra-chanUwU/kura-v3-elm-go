@@ -305,8 +305,49 @@ ORDER BY c.created_at, c.id
 `
 
 const insertCollectionSQL = `
-INSERT INTO collections (name) VALUES ($1)
+INSERT INTO collections (name, created_by) VALUES ($1, $2)
 RETURNING id::text, name, version
+`
+
+// listProfileListsSQL returns one account's lists, newest first. Visible
+// counts and the cover post exclude deleted and unpublished media. Legacy
+// lists with a null creator are not returned.
+const listProfileListsSQL = `
+SELECT c.id, c.name, c.created_at, COUNT(p.id),
+       (
+           SELECT p2.id::text
+           FROM collection_posts cp2
+           JOIN posts p2 ON p2.id = cp2.post_id
+             AND p2.deleted_at IS NULL
+             AND p2.moderation_state = 'published'
+           WHERE cp2.collection_id = c.id
+           ORDER BY cp2.position, cp2.post_id
+           LIMIT 1
+       ),
+       (
+           SELECT p2.preview_url
+           FROM collection_posts cp2
+           JOIN posts p2 ON p2.id = cp2.post_id
+             AND p2.deleted_at IS NULL
+             AND p2.moderation_state = 'published'
+           WHERE cp2.collection_id = c.id
+           ORDER BY cp2.position, cp2.post_id
+           LIMIT 1
+       )
+FROM collections c
+LEFT JOIN collection_posts cp ON cp.collection_id = c.id
+LEFT JOIN posts p ON p.id = cp.post_id
+  AND p.deleted_at IS NULL
+  AND p.moderation_state = 'published'
+WHERE c.created_by = $1
+  AND (
+    $2::timestamptz IS NULL
+    OR c.created_at < $2::timestamptz
+    OR (c.created_at = $2::timestamptz AND c.id < $3::bigint)
+  )
+GROUP BY c.id
+ORDER BY c.created_at DESC, c.id DESC
+LIMIT $4
 `
 
 const collectionExistsSQL = `SELECT 1 FROM collections WHERE id = $1::bigint`

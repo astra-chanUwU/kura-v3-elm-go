@@ -163,7 +163,9 @@ For numbers, `>=` means "at least", `<=` means "at most", `>` means "more than",
 | `KURA_HTTP_TIMEOUT` | CLI timeout per HTTP request; default `10s`, accepts durations such as `30s` or `1m`. |
 | `KURA_SESSION_FILE` | Optional CLI path for `kura login --persist`. The default is a file under the user config directory. |
 
-Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
+Local originals live in `MEDIA_ROOT/uploads`; thumbnails live in `MEDIA_ROOT/derivatives`. Profile pictures live in the same media root under `avatars/` and are included when that directory is backed up with PostgreSQL. Both runtime directories are ignored by Git at the default location. Back up the media directory together with PostgreSQL. The tracked `demo` directory contains bundled fixtures.
+
+A profile username (`/u/USERNAME`) is separate from the login handle. Changing it does not change the handle, sessions, or the account's actor id. Old username links stop resolving. Login still uses the handle.
 
 Set `S3_ENDPOINT` and `S3_BUCKET` to use S3-compatible storage. Additional settings are `S3_REGION` (default `us-east-1`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_URL_PREFIX` for browser-facing object URLs in public mode. Public mode stores those URLs and the browser loads them directly, so bucket access controls must cover them; `/media/` checks do not apply.
 

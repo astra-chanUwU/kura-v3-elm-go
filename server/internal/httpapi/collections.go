@@ -99,6 +99,11 @@ func createCollection(mutator posts.CollectionMutator) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		validated.CreatedBy = nil
+		if actor, ok := actorFromRequest(r); ok && actor.UserID > 0 {
+			owner := actor.UserID
+			validated.CreatedBy = &owner
+		}
 		result, err := mutator.CreateCollection(r.Context(), validated)
 		if err != nil {
 			writeCollectionError(w, err)

@@ -6,8 +6,9 @@ import (
 )
 
 func TestValidateCreateCollection(t *testing.T) {
-	got, err := ValidateCreateCollection(CreateCollectionRequest{Name: "  Favorites  "})
-	if err != nil || got.Name != "Favorites" {
+	owner := int64(4)
+	got, err := ValidateCreateCollection(CreateCollectionRequest{Name: "  Favorites  ", CreatedBy: &owner})
+	if err != nil || got.Name != "Favorites" || got.CreatedBy == nil || *got.CreatedBy != 4 {
 		t.Fatalf("normalized collection: %#v, %v", got, err)
 	}
 	for _, name := range []string{"", "   ", string(make([]rune, maxCollectionNameLength+1))} {

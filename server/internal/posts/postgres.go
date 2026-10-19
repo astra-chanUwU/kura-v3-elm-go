@@ -52,6 +52,15 @@ func NewPostgresBackendWithStore(ctx context.Context, databaseURL string, store 
 	}, nil
 }
 
+// Pool returns the shared PostgreSQL pool. Profile storage uses it so the
+// process does not open a second pool.
+func (s *PostgresBackend) Pool() *pgxpool.Pool {
+	if s == nil {
+		return nil
+	}
+	return s.pool
+}
+
 // MediaStore returns the configured object store. Callers open it only with
 // a key resolved from a stored media reference.
 func (s *PostgresBackend) MediaStore() media.Store {
