@@ -1,97 +1,227 @@
-# Cursor handoff: accept the existing feature-completion branch
+# Cursor handoff: Kura: daily-library workflow and feature-completion acceptance
 
-Prepared 20 October 2026. Handoff publication branch: `main` at inspected
-baseline `eb4844d`. Fetched candidate:
+Expanded 20 October 2026. **24 ordered packages.** This file schedules work;
+it does not claim the planned behavior is implemented or accepted.
+
+Publication branch: `main` at `ac82c00`. Latest fetched feature candidate:
 `origin/codex/complete-features` at `e2a9617`.
-This handoff does not merge or certify that candidate.
+That candidate already contains password reset/change, persisted profiles,
+avatars/lists, collection routes, health/repair/preflight, CI and host packaging.
+Those are acceptance/repair tasks until an actual gap is reproduced.
+
+Read README.md and TODO.md, then compare actual candidate source rather than
+implement old 'confirmed gap' labels. Main's Mac checkout still has unrelated
+uncommitted analytics, design and handoff changes; do not reset/stage them or
+assume the other PC has them. This file independently states public reads and
+authenticated contributions, so it does not require untracked GROK-UI-HANDOFF.md.
+Keep Elm/Go/chi/PostgreSQL and current Library/Loupe compositions. The objective
+is dependable management of the actual image library, using disposable fixtures
+for all destructive acceptance.
 
 ## Paste into Cursor
 
-Read CURSOR-HANDOFF.md and check live Ultra usage. Reconcile the existing
-feature-completion branch in an isolated checkout, then prove a small set of
-daily workflows and fix reproduced failures. Do not reimplement password
-recovery, profiles, health tools or packaging that already exist in the candidate.
-Keep Elm/Go/PostgreSQL and the current Library/Loupe design.
+Read CURSOR-HANDOFF.md completely. Check both live Ultra usage meters, then
+continue through its ready task queue. Implement missing slices, verify and
+repair existing workflows, commit each completed package and check usage before
+continuing. Do not stop after the first package; honor the 95%/97% budget rules.
 
-## Read first and preserve local work
+## Run the queue, not just the first task
 
-Read README.md and TODO.md, but treat old gap labels as historical until compared
-with current source. Review main...origin/codex/complete-features. The candidate
-contains password change/offline reset, persisted profiles/avatar/lists,
-collection routing, health/repair/preflight, CI and host packaging.
+The owner explicitly expanded this assignment on 20 October 2026. Continue
+through READY packages while the shared quota check permits; do not stop merely
+because the first package or the former short handoff is complete. This replaces
+the earlier "stop after two/three packages" scope limit. Each package is a
+checkpoint and reviewable commit, not a request for another permission.
 
-The original Mac checkout has unrelated uncommitted analytics changes in
-Makefile, README.md, server/cmd/kura-web/main.go, web/index.html,
-web/src/Page/Library.elm and new analytics sources/tests. It also has modified
-TODO.md/docs/frontend-design.md and an untracked GROK-UI-HANDOFF.md.
-These local-only changes are NOT transported by this documentation commit.
-Do not reset, stage or assume the other PC has them. This handoff is self-contained
-about the public-gallery correction below; do not depend on an untracked guide.
+- BUILD means implement the stated remaining slice after confirming the current
+  source. VERIFY means exercise existing behavior and fix reproduced failures,
+  not build another version or invent a defect. IF NEEDED requires the named
+  evidence before changing it. GATED means perform safe local preparation only;
+  leave missing owner inputs explicit and continue with independent ready work.
+- Work in ID order, respecting dependencies. On the first pass, check whether
+  each item is already satisfied, blocked or ready. Use existing tests/evidence;
+  do not spend the allowance rewriting working features or rerunning unchanged
+  full suites. Already-satisfied items need only proportionate current evidence.
+- After a completed package, record its ID, commit, checks, remaining limitation
+  and current usage briefly in chat, then take the next ready package. If blocked,
+  name the exact dependency, leave the draft safe and move to a ready independent
+  package. Stop when all ready work is exhausted, the quota/deadline requires it,
+  or a required answer blocks all remaining work.
+- Default implementation uses the Cursor Models pool. A separately assigned
+  Other Models pass should review a named difficult change such as payment
+  invariants, release configuration or authorization, with a small output and
+  concrete regression requirements. Do not run two overlapping implementations.
+- Keep an isolated work branch/checkout and disposable data. Fetch and inspect
+  AGENTS.md/status/diffs first. Preserve existing changes, production identities,
+  keys, environments, databases, uploads and running previews. On Windows use
+  current project instructions and WSL2 for shell/Make where appropriate.
+- Commit only verified scope to the work branch. Do not merge or push
+  implementation to main, deploy, publish a release, buy services or make live
+  payment/provider calls without the owner's instruction. Local simulators and
+  generated fixtures are available for implementation and failure testing.
+- Split a large package into small working slices when needed. Test meaningful
+  behavior proportionately, then run integrated checks after shared-contract
+  changes. A failed or unrun browser/native/provider check stays explicit.
+  Never call source presence or HTTP 200 production acceptance.
+- Keep progress in chat. Update permanent README/setup only where behavior
+  changed; do not create new Markdown plans/completion reports. Keep this handoff
+  while tasks remain and remove it only after completion or explicit rescoping.
 
-## K0. Reconcile and establish the candidate baseline
+## Ordered packages
 
-Create a work branch from pulled main containing this handoff, then review/merge
-the fetched candidate into that branch. Do not merge or push implementation to
-main. Inspect all applicable instructions, migrations and conflicts first.
-Preserve import/request generations, optimistic versions, domain/module import
-boundaries, roles, private-media checks and backup verification.
+### K01. Reconcile the feature-completion candidate [VERIFY]
 
-Use disposable database/storage. Run current candidate checks. A clean compile
-is not browser acceptance; list checks actually run and unavailable dependencies.
-Stop for usage checkpoint before K1.
+Create a work branch from pulled main containing this file; inspect/merge origin/codex/complete-features there, preserving main's scoped changes.
 
-## K1. Public viewing and authenticated contributions
+**Done:** Migrations, generated artifacts and package scripts agree; run one current baseline and record real failures/unavailable dependencies. Do not duplicate existing password/profile/health/package implementations.
 
-Product requirement: unsigned visitors can enjoy the intended public gallery.
-Uploads, edits, reactions and other contributions require a signed-in account
-and the applicable role. Remove the legacy token-unlock UI from ordinary public
-gallery use if it is still present. Preserve explicitly selected private mode.
-Do not enable anonymous writes through the legacy open-local/system actor.
+### K02. Make public gallery reads work signed out [VERIFY]
 
-Acceptance: unsigned visitor browses/searches/opens public media; direct mutation
-requests are denied; viewer/editor/admin controls match direct HTTP enforcement;
-sign-in/out and account switches clear stale privileged state. Private-mode
-catalog/media remain protected. Check desktop and phone browser navigation and
-focus. Fix reproduced violations with regression coverage, then checkpoint usage.
+Own access middleware, API/media routes, Session and ordinary visitor chrome.
 
-## K2. Accept the shipped account/profile and recovery slices
+**Done:** Unsigned visitors browse/search/open public posts, profiles, lists and avatars without deployment-token unlock UI. Explicitly private mode remains protected. Do not remove auth configuration to simulate success.
 
-Verify password change for every signed-in role, wrong-current-password failure,
-session revocation and a generated sole-owner offline reset. Preserve last-admin
-protection; never recover against the real owner's database.
+### K03. Require authenticated, role-gated contributions [VERIFY]
 
-Verify persisted display name/bio, avatar crop/save/cancel/removal and personal
-lists with owner/visitor visibility. Reload, switch accounts and test expired
-sessions, failed saves and conflicting edits. Keep server authorization and
-private-list isolation. Check responsive compositions, keyboard/touch behavior
-and narrow-screen reachable controls. UI presence does not prove persistence.
+Own SessionContext/PrivateAccess/write capability and direct mutation handlers.
 
-Use server/internal/{auth,profiles}, httpapi account/profile handlers,
-cmd/kura-account, web/src/Feature/{Session,Profile}.elm and associated APIs/tests.
-Fix only reproduced gaps; do not introduce OAuth/passkeys or a redesign.
-Stop after this package and its usage checkpoint.
+**Done:** Anonymous upload/edit/reaction/collection mutations fail; viewer/editor/admin rules agree across UI and HTTP. Legacy open-local/system actor cannot accidentally authorize anonymous public-gallery writes.
 
-## K3. Optional next package after a fresh budget check
+### K04. Accept password change and sole-owner recovery [VERIFY]
 
-Pick ONE: collection Back/Forward/reload with surviving selection and nonzero
-scroll; health scan/cancel/retry and explicit thumbnail repair; or packaged host
-fresh setup/upgrade/backup verification. Use the candidate's existing tools,
-fixtures and README. Do not claim 100k-library acceptance from a small fixture,
-or a recoverable backup from a file's existence. Stop at that package's acceptance.
+Own auth service/store, accounts handlers and cmd/kura-account reset-password.
 
-## Verification and stopping point
+**Done:** Every signed-in role changes only its own password after current-password proof; sessions revoke. Generated sole owner recovers offline via stdin without rebootstrap, privilege changes or weakening last-admin protection.
 
-Run proportional targeted tests, then make check for integrated changes.
-On the fetched candidate, make server-db-check requires an explicitly disposable
-PostgreSQL test configuration; inspect scripts/ci-server-test.sh first.
-Use make server-race for relevant server concurrency, make web-test for Elm/import
-boundaries, and make package for packaging changes. Run git diff --check.
-Database tests may truncate; never point them at the daily library.
+### K05. Keep profile usernames separate from identity [VERIFY]
 
-Separate automated, HTTP, browser, package/restore and unavailable evidence.
-Keep results in chat and lasting setup changes in README. This is bounded
-acceptance and repair, not permission to rewrite the product or generate more
-planning/completion Markdown.
+Own internal/profiles, route resolution and stable actor attribution.
+
+**Done:** Case/normalization, reserved/conflicting names and deliberate rename preserve account ID, sessions, saved searches/history and creator identity. Old profile-link behavior is explicit; adopted local/system actors remain stable.
+
+### K06. Persist complete profile editing [VERIFY]
+
+Own Profile feature/API and profile storage/view mapping.
+
+**Done:** Display name, bio, optional website and empty-field clearing persist across reload/second session. Safe URL/text handling, save/cancel, stale versions and failed-save draft recovery work for every signed-in role.
+
+### K07. Finish avatar crop and upload behavior [VERIFY]
+
+Own profiles/avatar.go and actual crop/preview UI.
+
+**Done:** Bounded JPEG/PNG/static-WebP crop/replace/remove works on desktop/touch; malformed/animated/oversized uploads fail. Failed/cancelled replacement retains old image, metadata is stripped and cache refresh shows the new asset.
+
+### K08. Include avatars in backup/visibility boundaries [VERIFY]
+
+Own profile asset storage, backup inventory/restore and profile media routes.
+
+**Done:** Public/private account modes expose only eligible avatars; backup/restore retains matching asset bytes. Avatar removal never deletes library originals or creates an unintended gallery post.
+
+### K09. Prove user list ownership and attribution [VERIFY]
+
+Own profile_lists store/HTTP and Profile/Collections features.
+
+**Done:** New list records use actual authenticated stable creator, not a client field; unknown legacy collections stay shared/legacy. Reordering/renaming preserves creator and current collaboration permissions.
+
+### K10. Keep list previews and counts visibility-safe [VERIFY]
+
+Own list cover/count queries, profile pagination and media predicates.
+
+**Done:** Hidden/trashed/private media cannot leak through count, cover or direct list/profile links. Two accounts and signed-out/private-mode fixtures verify empty, missing/disabled account and deleted-list behavior.
+
+### K11. Accept collection URL and history routing [VERIFY]
+
+Own App/Route.elm, Collections state and collection request generations.
+
+**Done:** Collection -> Loupe -> Back, collection -> search -> Back, direct link, reload and private sign-in return restore correct collection. Deleted/missing/revoked collections recover clearly without stale search results.
+
+### K12. Preserve active selection and real scroll return [VERIFY]
+
+Own Page/Library, navigation modes, MediaGrid and request sequencing.
+
+**Done:** Across multi-page results, Inspector/Loupe/Compare/Survey return preserves surviving selection and nonzero scroll. Browser history, resize and late network responses do not jump focus or reapply stale state.
+
+### K13. Prove reload-resumable browser import [VERIFY]
+
+Own browser-import.js, Feature/Import and receipt reconciliation.
+
+**Done:** Pick files/folder, cancel, reload and explicitly resume using fixtures; quota/storage/unsupported input and uncertain writes recover without duplicate attachments. Never move/delete source files or silently resume after account change.
+
+### K14. Resolve optimistic metadata/tag conflicts [VERIFY]
+
+Own Metadata/BulkMetadata/Tags/TagManagement and matching HTTP/domain owners.
+
+**Done:** Concurrent tag/artist/source/rating edits preserve drafts and expose retry/reload choices; rename/merge/history/revert maintain references and role checks across bulk operations.
+
+### K15. Accept duplicate review, moderation and Trash [VERIFY]
+
+Own Duplicates/similarity, moderation routes and Trash feature.
+
+**Done:** Exact-copy and perceptual review keep scope honest; moderate/trash/restore fixtures with protected previews and history. Selection, collections and visibility remain correct after restore; no silent permanent deletion.
+
+### K16. Verify ZIP export and CLI/browser agreement [VERIFY]
+
+Own export jobs/HTTP, CLI commands and existing parity fixtures.
+
+**Done:** Requested original bytes match archive contents and visibility/limits; cancel/retry/expired access recover usefully. Relevant CLI and browser paths enforce the same role and ownership contracts.
+
+### K17. Accept bounded health inventory and cancellation [VERIFY]
+
+Own internal/health, HTTP health handlers and Feature/Health.
+
+**Done:** Missing originals/derivatives, failed backlog, unknown storage and latest verified backup display accurately. Explicit scans are bounded/cancelable and rediscovered after reload; cheap /health stays independent.
+
+### K18. Prove thumbnail repair durability [VERIFY]
+
+Own health repair and existing durable jobs/store; leave originals immutable.
+
+**Done:** Duplicate repair coalesces; corrupt/missing derivative retries, crash/restart and cancellation keep accurate progress with bounded attempts. Original hashes stay unchanged and unauthorized repair fails.
+
+### K19. Boot the actual release package [VERIFY]
+
+Own scripts/package-release.sh, server/web/account/CLI binaries, migrations and bundled scripts.
+
+**Done:** On one available host target, clean package boots without source checkout, resolves all assets/tools/checksums and supports account setup. Claim additional OS/architecture only after actual builds/boots.
+
+### K20. Accept migration/preflight and upgrades [VERIFY]
+
+Own internal/preflight, server startup/resource limits and existing upgrade instructions.
+
+**Done:** Existing generated library upgrades and restarts without losing data; incompatible schema, missing DB/tools and unwritable paths report actionable sanitized errors. Limits do not break supported uploads/video/ZIP streams.
+
+### K21. Run backup lifecycle and restore proof [VERIFY]
+
+Reuse library-backup.py, make library-drill and existing lifecycle drill with explicitly disposable PostgreSQL/storage.
+
+**Done:** Create/verify/cancel/discover backup, process crash, replica retention and new-environment restore retain records/originals/avatars. Missing or corrupt manifest/data fails; a directory's existence is not recovery evidence.
+
+### K22. Measure a real large-library browser [VERIFY]
+
+Reuse library-perf-100k.py and generated fixtures; browser_scale_100k.py geometry alone is not measured browser evidence.
+
+**Done:** Record hardware/browser, first usable grid, search, deep scroll, mounted cells, interaction delay and retained memory with 100k rows/useful collections. Keep raw measurements ignored/temp; no extra Markdown report.
+
+### K23. Fix measured retention and interaction bottlenecks [IF NEEDED]
+
+Own Domain.Sequence/feature pagination, virtualized grid and measured query paths; use K22 evidence first.
+
+**Done:** Address observed stalls or growth with before/after measurements and navigation correctness. Distinguish mounted DOM size from retained sequence pages; do not redesign pagination or claim bounded memory without evidence.
+
+### K24. Finish CI and device-class daily acceptance [VERIFY]
+
+Own existing workflow, disposable DB scripts and relevant UI tests. Preserve mechanically checked Elm import boundaries.
+
+**Done:** Intended database/race/backup tests execute rather than silently skip; hosted/local results are distinct. Run keyboard/touch and phone/tablet/desktop profile/library flows, fix reproduced regressions and update practical README instructions. No OAuth, feeds, messaging or speculative infrastructure.
+
+## Project checks
+
+On the integrated candidate use make check, make web-test, relevant server
+tests and make server-race. Inspect scripts/ci-server-test.sh before using
+make server-db-check: explicitly disposable DB configuration is required.
+Use make package and the existing lifecycle/restore drill only for affected
+contracts. Never run destructive integration helpers against the daily library.
+Always run git diff --check before committing. Keep automated, HTTP/database,
+actual browser, native/package and unavailable evidence distinct.
 
 ## Shared Ultra budget: check between milestones
 
@@ -145,20 +275,3 @@ Sources checked 20 October 2026:
 [usage](https://cursor.com/help/models-and-usage/usage-limits),
 [hooks](https://cursor.com/docs/hooks),
 [team Admin API](https://cursor.com/docs/account/teams/admin-api).
-
-## Working and delivery rules
-
-Read applicable AGENTS.md and README, fetch first, inspect branch/status/diff,
-and reproduce the current gap before editing. Use an isolated work branch or
-checkout. Preserve existing uncommitted files, environments, databases, media
-and previews. Use disposable fixtures/databases; never copy secrets through Git.
-On Windows prefer WSL2 for the existing shell/Make workflows and follow the
-current README; do not rewrite the stack to work around local setup.
-
-Implement the packages below in order, checking usage between them. Commit only
-the verified scope to the work branch; do not merge or push implementation to
-main, deploy, publish releases or make real provider calls without the owner's
-instruction. Keep progress in chat: behavior, commit, relevant checks, browser
-evidence, unavailable checks and next unfinished step. Do not add completion
-reports or expand the roadmap. Keep this file while its tasks remain; remove it
-in a scoped cleanup commit only after completion or explicit rescoping.
